@@ -104,7 +104,7 @@ export function ChatHeader({ sessionId, sessionTitle, onSaveAsWorkflow, onRename
   }
 
   return (
-    <div className="px-5 py-3 border-b border-border/60 flex items-center gap-3 bg-card/30 backdrop-blur-sm">
+    <div className="relative z-20 px-5 py-3 border-b border-border/60 flex items-center gap-3 bg-card/30 backdrop-blur-sm">
       <MessageSquare size={15} className="text-muted-foreground shrink-0" />
 
       {editing ? (
