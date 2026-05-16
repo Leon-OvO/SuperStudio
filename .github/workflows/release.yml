@@ -10,6 +10,12 @@ on:
     tags:
       - 'v*.*.*'
 
+# The default GITHUB_TOKEN (since 2022) is read-only for new repos. We need
+# write access to Releases for electron-builder's github publisher to upload
+# the installers + manifests.
+permissions:
+  contents: write
+
 jobs:
   release:
     name: Build & publish (${{ matrix.os }})
@@ -34,6 +40,8 @@ jobs:
 
       - name: Build artifacts (Windows)
         if: matrix.os == 'windows-latest'
+        # EP_DRAFT=false flips electron-builder's default draft-release behavior
+        # so the release shows up under "Releases" right away, not in Drafts.
         run: npm run dist:win
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
