@@ -119,6 +119,13 @@ const api = {
     return () => ipcRenderer.removeAllListeners(IPC.UPDATE_STATUS)
   },
 
+  // --- Whole-app config export / import ---
+  exportConfig: () => ipcRenderer.invoke(IPC.CONFIG_EXPORT),
+  importConfig: () => ipcRenderer.invoke(IPC.CONFIG_IMPORT),
+
+  // --- Provider connection test ---
+  testProvider: (provider: unknown) => ipcRenderer.invoke(IPC.PROVIDERS_TEST, provider),
+
   // --- Workflow ---
   listWorkflows: () => ipcRenderer.invoke(IPC.WORKFLOWS_LIST),
   saveWorkflow: (workflow: unknown) => ipcRenderer.invoke(IPC.WORKFLOWS_SAVE, workflow),

@@ -76,6 +76,13 @@ export const IPC = {
   UPDATE_INSTALL: 'update:install',
   UPDATE_STATUS: 'update:status',     // main → renderer event
 
+  // Whole-app config backup
+  CONFIG_EXPORT: 'config:export',
+  CONFIG_IMPORT: 'config:import',
+
+  // Provider connection test
+  PROVIDERS_TEST: 'providers:test',
+
   // MCP servers (Model Context Protocol)
   MCP_SERVERS_LIST: 'mcp:servers-list',
   MCP_SERVERS_SAVE: 'mcp:servers-save',

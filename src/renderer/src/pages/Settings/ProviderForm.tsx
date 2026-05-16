@@ -1,8 +1,9 @@
 import { useState } from 'react'
-import { ArrowLeft, Loader2, Plus, X } from 'lucide-react'
+import { ArrowLeft, Loader2, Plus, X, Check, AlertCircle } from 'lucide-react'
 import type { ProviderConfig } from '../../../../shared/ipc-types'
 import { randomId } from '../../lib/id'
 import { Select } from '../../components/ui/Select'
+import { cn } from '../../lib/utils'
 
 interface Props {
   initial: ProviderConfig | null
@@ -19,6 +20,27 @@ export function ProviderForm({ initial, onSave, onCancel }: Props) {
   const [newModel, setNewModel] = useState('')
   const [fetching, setFetching] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [testing, setTesting] = useState(false)
+  const [testResult, setTestResult] = useState<{ ok: boolean; modelCount?: number; error?: string } | null>(null)
+
+  async function handleTestConnection() {
+    if (!apiKey.trim()) { alert('请先填写 API 密钥'); return }
+    setTesting(true)
+    setTestResult(null)
+    try {
+      const probe: ProviderConfig = {
+        id: initial?.id || 'probe',
+        name: name || 'probe',
+        type, apiKey, baseUrl, models
+      }
+      const result = await window.api.testProvider(probe)
+      setTestResult(result)
+    } catch (e) {
+      setTestResult({ ok: false, error: (e as Error).message })
+    } finally {
+      setTesting(false)
+    }
+  }
 
   async function handleFetchModels() {
     if (!apiKey) { alert('请先填写 API 密钥'); return }
@@ -155,9 +177,36 @@ export function ProviderForm({ initial, onSave, onCancel }: Props) {
         </div>
       </Field>
 
+      {/* Test result panel */}
+      {testResult && (
+        <div className={cn(
+          'rounded-md p-2.5 text-xs flex items-start gap-2 border',
+          testResult.ok
+            ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-700 dark:text-emerald-400'
+            : 'bg-destructive/10 border-destructive/30 text-destructive'
+        )}>
+          {testResult.ok
+            ? <Check size={13} className="mt-0.5 shrink-0" />
+            : <AlertCircle size={13} className="mt-0.5 shrink-0" />}
+          <div className="flex-1">
+            {testResult.ok ? (
+              <span>
+                连接成功
+                {testResult.modelCount != null && ` · 服务器返回了 ${testResult.modelCount} 个可用模型`}
+              </span>
+            ) : (
+              <span>{testResult.error}</span>
+            )}
+          </div>
+        </div>
+      )}
+
       <div className="flex gap-2 pt-2">
         <button type="submit" disabled={saving} className="btn-primary">
           {saving ? <Loader2 size={14} className="animate-spin" /> : '保存'}
+        </button>
+        <button type="button" onClick={handleTestConnection} disabled={testing} className="btn-secondary">
+          {testing ? <Loader2 size={14} className="animate-spin" /> : '测试连接'}
         </button>
         <button type="button" onClick={onCancel} className="btn-secondary">取消</button>
       </div>

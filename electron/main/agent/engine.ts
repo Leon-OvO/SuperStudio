@@ -260,7 +260,7 @@ export async function runAgent(
           }),
           execute: async ({ prompt, referenceImagePath }) => {
             emit({ stepIndex: stepIndex++, stepName: 'Video Generation', toolName: 'video_generate', status: 'running', message: 'Generating video...' })
-            const result = await generateVideo({ prompt, referenceImagePath: referenceImagePath ?? undefined, settings, win, sessionId })
+            const result = await generateVideo({ prompt, referenceImagePath: referenceImagePath ?? undefined, settings, win, sessionId, abortSignal: abort.signal })
             if (result.path) {
               await saveGalleryItem({
                 type: 'video', filePath: result.path, prompt,
