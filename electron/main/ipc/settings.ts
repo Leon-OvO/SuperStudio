@@ -2,7 +2,6 @@ import { ipcMain, dialog, BrowserWindow } from 'electron'
 import fs from 'fs'
 import { IPC } from '../../../src/shared/ipc-types'
 import { getSettings, saveSettings, getProviders, saveProvider, deleteProvider, getMcpServers, saveMcpServer } from '../services/store'
-import { createLLMClient } from '../services/llm'
 import type { McpServerConfig, ProviderConfig } from '../../../src/shared/ipc-types'
 
 export function settingsHandlers(): void {

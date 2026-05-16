@@ -1,4 +1,4 @@
-import { ipcMain, BrowserWindow } from 'electron'
+import { ipcMain } from 'electron'
 import { IPC } from '../../../src/shared/ipc-types'
 import { dbRun, dbAll, dbGet } from '../db/sqlite'
 import { randomUUID } from 'crypto'

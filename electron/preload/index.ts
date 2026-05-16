@@ -22,6 +22,9 @@ const api = {
   deleteMessagesFrom: (messageId: string) => ipcRenderer.invoke(IPC.MESSAGES_DELETE_FROM, messageId),
   updateMessage: (messageId: string, content: string) => ipcRenderer.invoke(IPC.MESSAGES_UPDATE, messageId, content),
   searchSessions: (query: string) => ipcRenderer.invoke(IPC.SESSIONS_SEARCH, query),
+  exportAllSessions: () => ipcRenderer.invoke(IPC.SESSIONS_EXPORT_ALL),
+  importSessions: (opts?: { strategy?: 'merge' | 'replace' }) =>
+    ipcRenderer.invoke(IPC.SESSIONS_IMPORT, opts),
 
   // --- Agent ---
   runAgent: (

@@ -13,6 +13,7 @@ const groups: Array<{ title: string; items: Array<{ keys: string[]; label: strin
     title: '全局',
     items: [
       { keys: [MOD, 'N'], label: '新建对话' },
+      { keys: [MOD, 'K'], label: '打开命令面板（搜索对话 / 跳转页面）' },
       { keys: [MOD, '/'], label: '显示这个快捷键面板' },
       { keys: [MOD, ','], label: '打开设置' },
       { keys: [MOD, '1'], label: '切到对话' },

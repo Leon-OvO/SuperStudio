@@ -9,7 +9,6 @@ import { generateVideo } from '../services/video'
 import { readFile, writeFile } from '../services/fileops'
 import { searchWeb } from '../services/search'
 import { saveGalleryItem } from '../services/gallery'
-import { searchKnowledge } from '../services/knowledge'
 import { mcpManager, type McpTool } from '../services/mcp'
 import { notifyTaskComplete } from '../services/tray'
 import { dbRun, dbAll, dbGet } from '../db/sqlite'
@@ -128,7 +127,7 @@ export async function runAgent(
     // Wrap each MCP tool as an AI SDK tool whose execute callback dispatches
     // via mcpManager.callTool(). (mcpTools was fetched earlier when building
     // the system prompt so the model can be told about them explicitly.)
-    const mcpToolEntries: Record<string, ReturnType<typeof tool>> = {}
+    const mcpToolEntries: Record<string, unknown> = {}
     for (const mt of mcpTools) {
       mcpToolEntries[mt.qualifiedName] = tool({
         description: mt.description ?? `${mt.toolName} (from MCP server "${mt.serverName}")`,
@@ -215,7 +214,7 @@ export async function runAgent(
         streamErr = error as Error
       },
       tools: {
-        ...mcpToolEntries,
+        ...(mcpToolEntries as Record<string, ReturnType<typeof tool>>),
         ...(mcpHasWebSearch ? {} : {
         web_search: tool({
           description: 'Fallback generic web search (Tavily/Serper). If an MCP web_search tool is available, that one is richer and should be preferred.',
@@ -242,7 +241,7 @@ export async function runAgent(
             emit({ stepIndex: stepIndex++, stepName: 'Image Generation', toolName: 'image_generate', status: 'running', message: `Generating ${actualN} image(s)...` })
             const result = await generateImage({ prompt, n: actualN, size: actualSize, settings })
             for (const img of result.images) {
-              const galleryId = await saveGalleryItem({
+              await saveGalleryItem({
                 type: 'image', filePath: img.path, prompt,
                 source: 'chat', sessionId, modelName: settings.defaultImageModel
               })
@@ -328,7 +327,7 @@ export async function runAgent(
               emit({ stepIndex: stepIndex - 1, stepName: 'File Write', toolName: 'file_write', status: 'error', message: errMsg })
               throw new Error(errMsg)
             }
-            const result = await writeFile({ filePath, operations })
+            const result = await writeFile({ filePath, operations: operations as Parameters<typeof writeFile>[0]['operations'] })
             emit({ stepIndex: stepIndex - 1, stepName: 'File Write', toolName: 'file_write', status: 'done',
               message: result.backupPath ? `Backup: ${result.backupPath}` : undefined })
             toolCallLog.push({ toolName: 'file_write', args: { filePath, operations }, result })
@@ -452,7 +451,10 @@ async function buildMessageHistory(
     .slice(0, -1)
     .map(r => ({ role: r.role as 'user' | 'assistant', content: r.content }))
 
-  let userContent: string | Array<{ type: string; text?: string; image?: Buffer; mimeType?: string }> = currentMessage
+  type UserPart =
+    | { type: 'text'; text: string }
+    | { type: 'image'; image: Buffer; mimeType: string }
+  let userContent: string | UserPart[] = currentMessage
   if (attachments.length) {
     const fs = await import('fs')
 
@@ -469,7 +471,7 @@ async function buildMessageHistory(
       `filePath / imagePath 参数里（不要发明新路径，也不要省略盘符）。\n\n`
     const textWithManifest = manifest + currentMessage
 
-    const parts: Array<{ type: string; text?: string; image?: Buffer; mimeType?: string }> = [
+    const parts: UserPart[] = [
       { type: 'text', text: textWithManifest }
     ]
     // Inline image attachments as `image` parts so vision-capable models can
@@ -483,8 +485,10 @@ async function buildMessageHistory(
       }
       if (!fs.existsSync(att.path)) {
         console.warn(`[Agent] ⚠ image attachment file missing on disk — will be skipped:`, att.path)
-        parts[0].text = (parts[0].text ?? '') +
-          `\n\n[警告：附件 ${att.name} 的临时文件不存在 (${att.path})，AI 无法看到该图。可能原因：临时目录被清理、或粘贴时写入失败。请重新粘贴。]`
+        const first = parts[0]
+        if (first.type === 'text') {
+          first.text += `\n\n[警告：附件 ${att.name} 的临时文件不存在 (${att.path})，AI 无法看到该图。可能原因：临时目录被清理、或粘贴时写入失败。请重新粘贴。]`
+        }
         continue
       }
       try {
@@ -493,8 +497,10 @@ async function buildMessageHistory(
         console.log(`[Agent] ✓ inlined image attachment "${att.name}" (${(data.length / 1024).toFixed(1)} KB, ${mt})`)
       } catch (e) {
         console.error(`[Agent] failed to read image attachment "${att.name}":`, (e as Error).message)
-        parts[0].text = (parts[0].text ?? '') +
-          `\n\n[警告：附件 ${att.name} 读取失败：${(e as Error).message}]`
+        const first = parts[0]
+        if (first.type === 'text') {
+          first.text += `\n\n[警告：附件 ${att.name} 读取失败：${(e as Error).message}]`
+        }
       }
     }
     userContent = parts

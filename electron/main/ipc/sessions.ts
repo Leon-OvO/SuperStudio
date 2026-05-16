@@ -1,4 +1,5 @@
-import { ipcMain } from 'electron'
+import { ipcMain, dialog, BrowserWindow } from 'electron'
+import fs from 'fs'
 import { IPC } from '../../../src/shared/ipc-types'
 import { dbRun, dbAll, dbGet } from '../db/sqlite'
 import { randomUUID } from 'crypto'
@@ -111,5 +112,104 @@ export function sessionHandlers(): void {
 
     const ids = Array.from(new Set([...byTitle, ...byContent]))
     return { matchedSessionIds: ids }
+  })
+
+  /**
+   * Bulk export: dump every session + its messages to a single JSON file. This
+   * is the "back up my whole chat history" complement to config:export (which
+   * only ships providers / settings / MCP). Schema v1:
+   *   { exportedAt, version: 1, sessions: [...], messages: [...] }
+   * Attachments are referenced by absolute path only — the bytes themselves
+   * are NOT bundled (would balloon the file). If the user moves to a new
+   * machine, image / file paths in restored messages won't resolve, but the
+   * text history will.
+   */
+  ipcMain.handle(IPC.SESSIONS_EXPORT_ALL, async (e) => {
+    const win = BrowserWindow.fromWebContents(e.sender)
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+    const opts = {
+      defaultPath: `superstudio-chats-${stamp}.json`,
+      filters: [{ name: 'JSON', extensions: ['json'] }]
+    }
+    const dlg = win ? await dialog.showSaveDialog(win, opts) : await dialog.showSaveDialog(opts)
+    if (dlg.canceled || !dlg.filePath) return { canceled: true }
+
+    const sessions = dbAll(`SELECT id, title, created_at AS createdAt, updated_at AS updatedAt, COALESCE(archived, 0) AS archived FROM sessions ORDER BY created_at ASC`)
+    const messages = dbAll(
+      `SELECT id, session_id AS sessionId, role, content, tool_calls AS toolCallsJson,
+              attachments AS attachmentsJson, meta AS metaJson, created_at AS createdAt
+       FROM messages ORDER BY created_at ASC`
+    )
+    const payload = {
+      exportedAt: new Date().toISOString(),
+      version: 1,
+      sessions,
+      messages
+    }
+    fs.writeFileSync(dlg.filePath, JSON.stringify(payload, null, 2), 'utf8')
+    return { canceled: false, filePath: dlg.filePath, sessionCount: sessions.length, messageCount: messages.length }
+  })
+
+  ipcMain.handle(IPC.SESSIONS_IMPORT, async (e, opts?: { strategy?: 'merge' | 'replace' }) => {
+    const win = BrowserWindow.fromWebContents(e.sender)
+    const strategy = opts?.strategy ?? 'merge'
+    const dlgOpts = { properties: ['openFile' as const], filters: [{ name: 'JSON', extensions: ['json'] }] }
+    const dlg = win ? await dialog.showOpenDialog(win, dlgOpts) : await dialog.showOpenDialog(dlgOpts)
+    if (dlg.canceled || dlg.filePaths.length === 0) return { canceled: true }
+
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(fs.readFileSync(dlg.filePaths[0], 'utf8'))
+    } catch (err) {
+      return { canceled: false, error: '文件不是合法 JSON：' + (err as Error).message }
+    }
+    const data = parsed as {
+      version?: number
+      sessions?: Array<{ id: string; title: string; createdAt: number; updatedAt: number; archived?: number }>
+      messages?: Array<{
+        id: string; sessionId: string; role: string; content: string;
+        toolCallsJson?: string | null; attachmentsJson?: string | null; metaJson?: string | null;
+        createdAt: number
+      }>
+    }
+    if (!data || typeof data !== 'object' || data.version !== 1) {
+      return { canceled: false, error: '不是 SuperStudio 对话导出文件（缺少 version=1）' }
+    }
+
+    if (strategy === 'replace') {
+      dbRun(`DELETE FROM messages`, [])
+      dbRun(`DELETE FROM sessions`, [])
+    }
+
+    let sessionsAdded = 0, sessionsSkipped = 0, messagesAdded = 0
+    for (const s of data.sessions ?? []) {
+      const existing = dbGet(`SELECT id FROM sessions WHERE id = ?`, [s.id])
+      if (existing) {
+        if (strategy === 'merge') { sessionsSkipped++; continue }
+      }
+      dbRun(
+        `INSERT OR REPLACE INTO sessions (id, title, created_at, updated_at, archived) VALUES (?, ?, ?, ?, ?)`,
+        [s.id, s.title, s.createdAt, s.updatedAt, s.archived ?? 0]
+      )
+      sessionsAdded++
+    }
+    for (const m of data.messages ?? []) {
+      const existing = dbGet(`SELECT id FROM messages WHERE id = ?`, [m.id])
+      if (existing && strategy === 'merge') continue
+      dbRun(
+        `INSERT OR REPLACE INTO messages (id, session_id, role, content, tool_calls, attachments, meta, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          m.id, m.sessionId, m.role, m.content,
+          m.toolCallsJson ?? null, m.attachmentsJson ?? null, m.metaJson ?? null,
+          m.createdAt
+        ]
+      )
+      messagesAdded++
+    }
+    return {
+      canceled: false, strategy, filePath: dlg.filePaths[0],
+      sessionsAdded, sessionsSkipped, messagesAdded
+    }
   })
 }

@@ -16,6 +16,8 @@ export function SettingsPage() {
   const [creating, setCreating] = useState(false)
   const [exportRunning, setExportRunning] = useState(false)
   const [importRunning, setImportRunning] = useState(false)
+  const [chatExportRunning, setChatExportRunning] = useState(false)
+  const [chatImportRunning, setChatImportRunning] = useState(false)
 
   useEffect(() => { reload() }, [])
 
@@ -57,6 +59,44 @@ export function SettingsPage() {
       alert('导出失败：' + (e as Error).message)
     } finally {
       setExportRunning(false)
+    }
+  }
+
+  async function handleExportChats() {
+    setChatExportRunning(true)
+    try {
+      const result = await window.api.exportAllSessions?.()
+      if (result?.canceled) return
+      if (result?.filePath) {
+        alert(`已导出 ${result.sessionCount} 个对话 / ${result.messageCount} 条消息到：\n${result.filePath}`)
+      }
+    } catch (e) {
+      alert('导出失败：' + (e as Error).message)
+    } finally {
+      setChatExportRunning(false)
+    }
+  }
+
+  async function handleImportChats(strategy: 'merge' | 'replace' = 'merge') {
+    if (strategy === 'replace' && !confirm('确定要替换吗？本机现有的所有对话和消息都会被清空，仅保留导入文件里的内容。')) return
+    setChatImportRunning(true)
+    try {
+      const result = await window.api.importSessions?.({ strategy })
+      if (result?.canceled) return
+      if (result?.error) { alert('导入失败：' + result.error); return }
+      alert(
+        `对话已${strategy === 'replace' ? '替换式' : '合并式'}导入：\n` +
+        `· 新增 ${result.sessionsAdded ?? 0} 个对话` +
+        (result.sessionsSkipped ? `（跳过已存在的 ${result.sessionsSkipped} 个）` : '') + `\n` +
+        `· 新增 ${result.messagesAdded ?? 0} 条消息\n\n` +
+        `提示：附件文件本身没有打包到导出文件里，只保留了路径引用；如果源机器上对应文件已不存在，相关附件会无法预览。`
+      )
+      // Notify any open chat page to reload
+      window.dispatchEvent(new CustomEvent('app:chats-reloaded'))
+    } catch (e) {
+      alert('导入失败：' + (e as Error).message)
+    } finally {
+      setChatImportRunning(false)
     }
   }
 
@@ -122,6 +162,10 @@ export function SettingsPage() {
             onImportData={(strategy) => handleImportConfig(strategy)}
             exportRunning={exportRunning}
             importRunning={importRunning}
+            onExportChats={handleExportChats}
+            onImportChats={handleImportChats}
+            chatExportRunning={chatExportRunning}
+            chatImportRunning={chatImportRunning}
           />
         )}
         {(tab === 'defaults' || tab === 'search' || tab === 'kb') && settings && (

@@ -85,6 +85,11 @@ export function GlobalSettings({ tab, settings, providers, onSave }: Props) {
           {draft.dataDirectory && (
             <p className="text-xs text-muted-foreground">图片：{draft.dataDirectory}/gallery/images　视频：{draft.dataDirectory}/gallery/videos</p>
           )}
+          {draft.dataDirectory !== settings.dataDirectory && (
+            <p className="text-xs text-amber-600">
+              ⚠ 切换数据目录需要重启应用后生效。已有的数据不会自动迁移，请手动把旧目录里的 <code className="px-1 bg-muted/60 rounded">gallery/</code>、<code className="px-1 bg-muted/60 rounded">superstudio.db</code> 复制到新目录。
+            </p>
+          )}
         </div>
 
         <button onClick={save} className="btn-primary">保存</button>

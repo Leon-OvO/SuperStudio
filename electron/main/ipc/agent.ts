@@ -1,4 +1,4 @@
-import { ipcMain, BrowserWindow } from 'electron'
+import { ipcMain } from 'electron'
 import { IPC } from '../../../src/shared/ipc-types'
 import { runAgent, stopAgent } from '../agent/engine'
 import { getMainWindow } from '../index'

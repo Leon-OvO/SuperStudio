@@ -1,4 +1,4 @@
-import { getProviders, getSettings } from './store'
+import { getProviders } from './store'
 import fs from 'fs'
 import path from 'path'
 import { app } from 'electron'
@@ -56,7 +56,7 @@ export async function generateImage(params: GenerateImageParams): Promise<Genera
   const modelName = settings.defaultImageModel || ''
   const isDallE = modelName.startsWith('dall-e')
 
-  let res: Response
+  let res: Response | undefined
   let referencesIgnored = false
 
   if (referenceImagePaths?.length) {
@@ -158,6 +158,7 @@ export async function generateImage(params: GenerateImageParams): Promise<Genera
     })
   }
 
+  if (!res) throw new Error('Image generation request did not produce a response')
   if (!res.ok) {
     const err = await res.text()
     throw new Error(`Image generation failed: ${err}`)

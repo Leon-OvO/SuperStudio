@@ -61,6 +61,19 @@ export function ChatPage() {
     window.addEventListener('app:new-chat', newChatHandler)
     unsubRef.current.push(() => window.removeEventListener('app:new-chat', newChatHandler))
 
+    // Reload sessions when chat import completes in Settings
+    const reloadChatsHandler = () => { loadSessions() }
+    window.addEventListener('app:chats-reloaded', reloadChatsHandler)
+    unsubRef.current.push(() => window.removeEventListener('app:chats-reloaded', reloadChatsHandler))
+
+    // Command palette → jump to a specific session
+    const selectSessionHandler = (e: Event) => {
+      const detail = (e as CustomEvent).detail as { sessionId?: string }
+      if (detail?.sessionId) handleSelectSession(detail.sessionId)
+    }
+    window.addEventListener('app:select-session', selectSessionHandler)
+    unsubRef.current.push(() => window.removeEventListener('app:select-session', selectSessionHandler))
+
     const u1 = window.api.onAgentProgress((event) => {
       updateStep(event as AgentProgressEvent)
     })

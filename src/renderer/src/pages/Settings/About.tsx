@@ -15,9 +15,16 @@ interface Props {
   onImportData: (strategy?: 'merge' | 'replace') => void
   exportRunning?: boolean
   importRunning?: boolean
+  onExportChats?: () => void
+  onImportChats?: (strategy?: 'merge' | 'replace') => void
+  chatExportRunning?: boolean
+  chatImportRunning?: boolean
 }
 
-export function About({ onExportData, onImportData, exportRunning, importRunning }: Props) {
+export function About({
+  onExportData, onImportData, exportRunning, importRunning,
+  onExportChats, onImportChats, chatExportRunning, chatImportRunning
+}: Props) {
   const [version, setVersion] = useState<string>('')
   const [status, setStatus] = useState<UpdateStatusView>({ kind: 'idle' })
   const [checking, setChecking] = useState(false)
@@ -152,6 +159,44 @@ export function About({ onExportData, onImportData, exportRunning, importRunning
           导出文件中所有 API Key 已用机器密钥加密；移动到另一台机器后需要重新填写 Key，但其它设置都会保留。
         </p>
       </section>
+
+      {onExportChats && (
+        <section className="space-y-3 border-t border-border pt-5">
+          <h3 className="text-sm font-medium flex items-center gap-1.5"><Database size={13} /> 对话备份</h3>
+          <p className="text-sm text-muted-foreground leading-relaxed">
+            打包导出所有会话和消息内容（不含附件文件本身，只保留路径引用）。换机器或重装时可一键恢复。
+            画廊图片 / 视频文件需要另行用 <strong className="text-foreground">画廊 → 批量保存到文件夹</strong> 备份。
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <button
+              onClick={onExportChats}
+              disabled={chatExportRunning}
+              className="btn-secondary"
+            >
+              {chatExportRunning ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
+              导出全部对话
+            </button>
+            <button
+              onClick={() => onImportChats?.('merge')}
+              disabled={chatImportRunning}
+              className="btn-secondary"
+              title="保留本机现有对话，文件里同 id 的对话会被跳过"
+            >
+              {chatImportRunning ? <Loader2 size={13} className="animate-spin" /> : <Upload size={13} />}
+              合并导入
+            </button>
+            <button
+              onClick={() => onImportChats?.('replace')}
+              disabled={chatImportRunning}
+              className="btn-secondary text-destructive hover:!bg-destructive/10"
+              title="先清空本机所有对话和消息再导入"
+            >
+              <Upload size={13} />
+              替换导入
+            </button>
+          </div>
+        </section>
+      )}
 
       <ErrorLogSection />
 

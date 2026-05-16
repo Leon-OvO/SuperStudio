@@ -10,12 +10,14 @@ import { SettingsPage } from './pages/Settings'
 import { ShortcutsHelp } from './components/ui/ShortcutsHelp'
 import { UpdateToast } from './components/ui/UpdateToast'
 import { WelcomeWizard } from './components/ui/WelcomeWizard'
+import { CommandPalette } from './components/ui/CommandPalette'
 
 type PageId = 'chat' | 'workflow' | 'gallery' | 'knowledge' | 'settings'
 
 export default function App() {
   const { currentPage, setPage, theme, setPendingWorkflowId } = useUIStore()
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
+  const [paletteOpen, setPaletteOpen] = useState(false)
   const [showWelcome, setShowWelcome] = useState(false)
 
   // Show the first-run wizard when no providers exist. Dismissing it
@@ -104,6 +106,13 @@ export default function App() {
         window.dispatchEvent(new CustomEvent('app:new-chat'))
         return
       }
+
+      // Mod + K : toggle command palette (works inside text fields too)
+      if (key === 'k') {
+        e.preventDefault()
+        setPaletteOpen(o => !o)
+        return
+      }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -124,6 +133,7 @@ export default function App() {
       </div>
 
       <ShortcutsHelp open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
+      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
       <UpdateToast />
       {showWelcome && <WelcomeWizard onDismiss={dismissWelcome} />}
     </div>

@@ -20,6 +20,8 @@ export const IPC = {
   MESSAGES_DELETE_FROM: 'messages:delete-from', // delete this message + everything created after it (used for regenerate / edit)
   MESSAGES_UPDATE: 'messages:update',           // edit a message's content
   SESSIONS_SEARCH: 'sessions:search',           // full-text search across titles + message content
+  SESSIONS_EXPORT_ALL: 'sessions:export-all',    // dump every session + its messages to a JSON file
+  SESSIONS_IMPORT: 'sessions:import',            // load a previously-exported JSON back in
 
   // Agent execution
   AGENT_RUN: 'agent:run',

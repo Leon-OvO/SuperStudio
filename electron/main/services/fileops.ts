@@ -99,7 +99,7 @@ async function readPdf(filePath: string, signal?: AbortSignal): Promise<{ conten
       if (cancelled || signal?.aborted) throw new AbortedError()
       const page = await doc.getPage(i)
       const content = await page.getTextContent()
-      const text = content.items.map((item: { str?: string }) => item.str || '').join(' ')
+      const text = content.items.map(item => ('str' in item ? item.str : '') || '').join(' ')
       pages.push(`## Page ${i}\n${text}`)
     }
     return { content: pages.join('\n\n'), type: 'pdf' }
@@ -160,7 +160,7 @@ export async function writeFile(params: { filePath: string; operations: WriteOpe
       const { sourceSheet, sourceCol, targetCol, startRow, endRow } =
         op.params as { sourceSheet: string; sourceCol: string; targetCol: string; startRow: number; endRow: number }
       const srcSheet = workbook.Sheets[sourceSheet] || sheet
-      const srcData = XLSX.utils.sheet_to_json<Record<string, unknown>>(srcSheet, { header: 1 }) as unknown[][]
+      const srcData = XLSX.utils.sheet_to_json<unknown[]>(srcSheet, { header: 1 })
       for (let r = startRow - 1; r < Math.min(endRow, srcData.length); r++) {
         const srcRow = srcData[r] as unknown[]
         const colIdx = XLSX.utils.decode_col(sourceCol)
