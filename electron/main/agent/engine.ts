@@ -133,23 +133,53 @@ export async function runAgent(
         description: mt.description ?? `${mt.toolName} (from MCP server "${mt.serverName}")`,
         parameters: jsonSchema(mt.inputSchema as Parameters<typeof jsonSchema>[0]),
         execute: async (args) => {
+          const myIdx = stepIndex++
           emit({
-            stepIndex: stepIndex++,
+            stepIndex: myIdx,
             stepName: `MCP · ${mt.serverName}`,
             toolName: mt.qualifiedName,
             status: 'running',
             message: mt.toolName
           })
           try {
-            const text = await mcpManager.callTool(mt.qualifiedName, args)
-            emit({ stepIndex: stepIndex - 1, stepName: `MCP · ${mt.serverName}`, toolName: mt.qualifiedName, status: 'done' })
-            toolCallLog.push({ toolName: mt.qualifiedName, args, result: text })
+            const { text, artifacts } = await mcpManager.callTool(mt.qualifiedName, args, { sessionId })
+
+            // Emit a "done" event per image/video artifact so the chat progress
+            // panel can render a thumbnail for each. Audio doesn't fit the
+            // AgentProgressEvent.artifact union (image|video) — its path is
+            // still in `text` for the model to mention.
+            const visualArts = artifacts.filter(a => a.type === 'image' || a.type === 'video')
+            if (visualArts.length === 0) {
+              emit({
+                stepIndex: myIdx,
+                stepName: `MCP · ${mt.serverName}`,
+                toolName: mt.qualifiedName,
+                status: 'done'
+              })
+            } else {
+              // Reuse the same stepIndex so the progress row updates in place;
+              // the LAST artifact "wins" visually. All are still in toolCallLog.
+              for (const art of visualArts) {
+                emit({
+                  stepIndex: myIdx,
+                  stepName: `MCP · ${mt.serverName}`,
+                  toolName: mt.qualifiedName,
+                  status: 'done',
+                  artifact: { type: art.type as 'image' | 'video', path: art.path }
+                })
+              }
+            }
+
+            toolCallLog.push({
+              toolName: mt.qualifiedName,
+              args,
+              result: { text, artifacts }
+            })
             return text
           } catch (err) {
             const msg = (err as Error).message
-            emit({ stepIndex: stepIndex - 1, stepName: `MCP · ${mt.serverName}`, toolName: mt.qualifiedName, status: 'error', message: msg })
+            emit({ stepIndex: myIdx, stepName: `MCP · ${mt.serverName}`, toolName: mt.qualifiedName, status: 'error', message: msg })
             toolCallLog.push({ toolName: mt.qualifiedName, args, result: { error: msg } })
-            // Surface as a string error so the model can self-correct mid-loop
             return `[MCP error] ${msg}`
           }
         }
@@ -271,13 +301,16 @@ export async function runAgent(
           }
         }),
         file_write: tool({
-          description: `Write or modify an XLSX file. Auto-backs up before writing.
-operationsJson must be a JSON-encoded array of operations. Each operation:
-  { "sheet": "<sheet-name>", "action": "set_cell" | "set_range" | "copy_column", "params": { ... action-specific params ... } }
-Examples of params:
-  set_cell:   { "cell": "B2", "value": "hello" }
-  set_range:  { "range": "A1:C3", "values": [[1,2,3],[4,5,6],[7,8,9]] }
-  copy_column: { "fromSheet": "Sheet1", "fromCol": "B", "toCol": "D" }`,
+          description: `Create a new XLSX file OR modify an existing one. ` +
+            `If filePath does not exist, a new workbook is created (existing-file path is auto-backed up before writing). ` +
+            `For new files, reference any sheet name you want — it will be created on demand; otherwise use the existing sheet names from a prior file_read.\n` +
+            `operationsJson must be a JSON-encoded array of operations. Each operation:\n` +
+            `  { "sheet": "<sheet-name>", "action": "set_cell" | "set_range" | "copy_column", "params": { ... action-specific params ... } }\n` +
+            `Examples of params:\n` +
+            `  set_cell:   { "cell": "B2", "value": "hello" }\n` +
+            `  set_range:  { "startCell": "A1", "data": [["Header1","Header2"],[1,2],[3,4]] }\n` +
+            `  copy_column: { "sourceSheet": "Sheet1", "sourceCol": "B", "targetCol": "D", "startRow": 1, "endRow": 100 }\n` +
+            `Always pass a complete absolute filePath. If user didn't specify a location, default to the desktop path given in the system instructions.`,
           parameters: z.object({
             filePath: z.string().describe('Absolute path to the XLSX file'),
             operationsJson: z.string().describe('JSON string: array of operation objects. Must be valid JSON.')
@@ -299,20 +332,12 @@ Examples of params:
             toolCallLog.push({ toolName: 'file_write', args: { filePath, operations }, result })
             return result
           }
-        }),
-        gallery_save: tool({
-          description: 'Save a file (image or video) to the gallery. Pass an empty string for prompt if unknown.',
-          parameters: z.object({
-            filePath: z.string(),
-            type: z.enum(['image', 'video']),
-            prompt: z.string().describe('Prompt or caption to associate with the saved item. Empty string if unknown.')
-          }),
-          execute: async ({ filePath, type, prompt }) => {
-            const id = await saveGalleryItem({ type, filePath, prompt: prompt || '', source: 'chat', sessionId })
-            toolCallLog.push({ toolName: 'gallery_save', args: { filePath, type, prompt }, result: { id } })
-            return { id, saved: true }
-          }
         })
+        // NOTE: gallery_save is intentionally NOT exposed as a tool. Every image
+        // / video generation path (image_generate, video_generate, image_edit,
+        // MCP image/video tools, workflow nodes) already calls saveGalleryItem
+        // automatically. Exposing it as a tool only causes the model to either
+        // skip it (missing entries) or double-call it (duplicate entries).
       }
     })
 
@@ -453,9 +478,31 @@ async function buildMessageHistory(
 }
 
 function buildSystemPrompt(kbContext: string, mcpTools: McpTool[] = []): string {
+  const desktop = (() => {
+    try { return app.getPath('desktop') } catch { return '' }
+  })()
+
   const base = `You are SuperStudio, a powerful AI productivity assistant. You can generate images, create videos, search the web, analyze files, and manipulate Excel data. Always be helpful and proactive. When a task requires multiple steps, execute them all without asking for confirmation between steps.`
 
-  const sections: string[] = [base]
+  const displaySection =
+    `## Output convention — CRITICAL\n` +
+    `Whenever a tool produces an image, video or audio file, the SuperStudio UI displays it INLINE in the chat automatically (a thumbnail is rendered from the tool result; the user can click to enlarge, edit, save, etc.).\n` +
+    `Therefore in your final reply:\n` +
+    `- Do NOT embed Markdown image syntax (no \`![alt](path)\`, no \`<img>\` tags).\n` +
+    `- Do NOT paste local file paths or remote URLs of the generated media — they are noisy and the user already sees the thumbnail.\n` +
+    `- DO describe what you generated in natural language (subject, style, key params used). Tell the user it has been saved to the gallery if relevant.\n` +
+    `- For multiple generated images in one turn, describe each by index/role (e.g. "第一张是…，第二张是…").`
+
+  const filesystemSection =
+    `## File system conventions\n` +
+    (desktop
+      ? `- User desktop directory (absolute path): ${desktop}\n` +
+        `- When the user asks you to save / export / create a file and does NOT specify a directory, default to the desktop above (e.g. "${desktop.replace(/\\/g, '/')}/<filename>.xlsx"). Pick a descriptive Chinese filename matching the task.\n`
+      : `- When saving files, always use absolute paths.\n`) +
+    `- The file_write tool both CREATES new .xlsx files and modifies existing ones — passing a path that does not exist yet will create the file (sheets you reference are lazily created). No need to ask the user where to put it if they didn't specify; just default to the desktop.\n` +
+    `- For new spreadsheets, build the header row with file_write "set_range" (operation type), then fill data rows. Always include a clear header row.`
+
+  const sections: string[] = [base, displaySection, filesystemSection]
 
   if (mcpTools.length) {
     // Group MCP tools by server name for readability

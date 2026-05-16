@@ -4,6 +4,7 @@ import { cn } from '../../lib/utils'
 import { KbMountSelector } from './KbMountSelector'
 import { ModelPicker } from './ModelPicker'
 import { Select } from '../../components/ui/Select'
+import { useImageContextMenu } from '../../components/ui/ImageContextMenu'
 import { type ImageParams, IMAGE_RATIOS, computeImageSize } from './ChatHeader'
 
 interface Attachment { name: string; path: string; mimeType: string }
@@ -26,17 +27,21 @@ interface Props {
   /** Image params shown when imageMode is true. */
   imageParams: ImageParams
   onImageParamsChange: (params: ImageParams) => void
+  /** Open the global ImageEditor with the given src. */
+  onEditImage: (src: string) => void
 }
 
 export function ChatInput({
   onSend, onStop, isRunning, disabled, mountedSpaceIds, onMountedSpacesChange, imageMode,
   attachments, setAttachments,
   providerId, model, onModelChange,
-  imageParams, onImageParamsChange
+  imageParams, onImageParamsChange,
+  onEditImage
 }: Props) {
   const [text, setText] = useState('')
   const [previewSrc, setPreviewSrc] = useState<string | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const ctxMenu = useImageContextMenu()
 
   // Close preview on Escape
   useEffect(() => {
@@ -133,6 +138,12 @@ export function ChatInput({
                 name={att.name}
                 onPreview={() => setPreviewSrc(toLocalFileUrl(att.path))}
                 onRemove={() => removeAttachment(i)}
+                onContextMenu={e => ctxMenu.open(e, {
+                  filePath: att.path,
+                  src: toLocalFileUrl(att.path),
+                  onPreview: () => setPreviewSrc(toLocalFileUrl(att.path)),
+                  onEdit: () => onEditImage(toLocalFileUrl(att.path))
+                })}
               />
             ) : (
               <div key={i} className="flex items-center gap-1.5 pl-2 pr-1.5 py-1.5 rounded-xl bg-muted border border-border/60 text-xs max-w-[180px] group">
@@ -310,26 +321,29 @@ export function ChatInput({
           />
         </div>
       )}
+
+      {ctxMenu.element}
     </div>
   )
 }
 
 function ImageAttachmentThumb({
-  src, name, onPreview, onRemove
+  src, name, onPreview, onRemove, onContextMenu
 }: {
   src: string
   name: string
   onPreview: () => void
   onRemove: () => void
+  onContextMenu?: (e: React.MouseEvent) => void
 }) {
   const [failed, setFailed] = useState(false)
 
   return (
-    <div className="relative group shrink-0">
+    <div className="relative group shrink-0" onContextMenu={onContextMenu}>
       <button
         type="button"
         onClick={onPreview}
-        title={`${name}  (点击放大预览)`}
+        title={`${name}  (点击放大预览 · 右键菜单可编辑)`}
         className="block h-16 w-16 rounded-xl border border-border shadow-sm overflow-hidden hover:ring-2 hover:ring-ring/40 transition-all"
       >
         {failed ? (

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Copy, Download, FolderOpen, Maximize2, Check } from 'lucide-react'
+import { Copy, Download, FolderOpen, Maximize2, Check, Wand2 } from 'lucide-react'
 import { copyImageToClipboard } from '../../lib/clipboard'
 
 interface MenuState {
@@ -8,10 +8,11 @@ interface MenuState {
   filePath: string
   src: string
   onPreview?: () => void
+  onEdit?: () => void
 }
 
 export interface ImageContextMenuHandle {
-  open: (e: React.MouseEvent, opts: { filePath: string; src: string; onPreview?: () => void }) => void
+  open: (e: React.MouseEvent, opts: { filePath: string; src: string; onPreview?: () => void; onEdit?: () => void }) => void
 }
 
 interface Props {
@@ -52,12 +53,12 @@ export function useImageContextMenu({ hidePreview }: Props = {}) {
     return () => clearTimeout(t)
   }, [toast])
 
-  function open(e: React.MouseEvent, opts: { filePath: string; src: string; onPreview?: () => void }) {
+  function open(e: React.MouseEvent, opts: { filePath: string; src: string; onPreview?: () => void; onEdit?: () => void }) {
     e.preventDefault()
     e.stopPropagation()
-    // Clamp to viewport
+    // Clamp to viewport — taller menu now that we have up to 5 items
     const x = Math.min(e.clientX, window.innerWidth - 200)
-    const y = Math.min(e.clientY, window.innerHeight - 180)
+    const y = Math.min(e.clientY, window.innerHeight - 220)
     setMenu({ x, y, ...opts })
   }
 
@@ -105,6 +106,9 @@ export function useImageContextMenu({ hidePreview }: Props = {}) {
         >
           {!hidePreview && menu.onPreview && (
             <MenuItem icon={<Maximize2 size={13} />} label="在大图中查看" onClick={handlePreview} />
+          )}
+          {menu.onEdit && (
+            <MenuItem icon={<Wand2 size={13} />} label="编辑（局部修改 / 抠图 / 改字 / 扩图）" onClick={() => { menu.onEdit?.(); setMenu(null) }} />
           )}
           <MenuItem icon={<Copy size={13} />} label="复制图片" onClick={handleCopy} />
           <MenuItem icon={<Download size={13} />} label="另存为…" onClick={handleSaveAs} />

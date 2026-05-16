@@ -213,7 +213,8 @@ export function GalleryPage() {
                         ctxMenu.open(e, {
                           filePath: item.filePath,
                           src: toLocalUrl(item.filePath),
-                          onPreview: () => openPreview(item)
+                          onPreview: () => openPreview(item),
+                          onEdit: () => setEditorItem(item)
                         })
                       }}
                     />

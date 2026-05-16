@@ -3,9 +3,8 @@ import type { Message, ToolCallRecord } from '../../../../shared/ipc-types'
 import { cn } from '../../lib/utils'
 import { copyImageToClipboard } from '../../lib/clipboard'
 import { useImageContextMenu } from '../../components/ui/ImageContextMenu'
-import { ImageEditor } from '../../components/ui/ImageEditor'
 import { Markdown } from '../../lib/markdown'
-import { Play, X, RotateCcw, Clock, Cpu, Copy, Check, Download, Wand2, Brain, ChevronRight, ChevronDown, ChevronUp } from 'lucide-react'
+import { Play, X, RotateCcw, Clock, Cpu, Copy, Check, Download, Wand2, Brain, ChevronRight, ChevronDown, ChevronUp, Pencil, Trash2, RefreshCw } from 'lucide-react'
 
 function toFileUrl(p: string): string {
   // Three slashes: local-file:///F:/path — empty authority avoids Chromium treating "F:" as host
@@ -43,22 +42,109 @@ function splitThinking(content: string): { reasoning: string; answer: string; st
   }
 }
 
+/**
+ * Normalize an image path/URL for cross-comparison:
+ *   F:\path\img.png        →  f:/path/img.png
+ *   file:///F:/path/img.png →  f:/path/img.png
+ *   local-file:///F:/path/img.png → f:/path/img.png
+ *   https://cdn.x/img.png?v=1 → https://cdn.x/img.png (query stripped)
+ */
+function normalizeMediaRef(p: string): string {
+  return p
+    .replace(/^local-file:\/\/\/?/i, '')
+    .replace(/^file:\/\/\/?/i, '')
+    .replace(/\\/g, '/')
+    .split(/[?#]/)[0]
+    .toLowerCase()
+    .trim()
+}
+
+/**
+ * Remove any Markdown image syntax `![alt](src)` or bare image URLs whose
+ * target matches one of the already-rendered artifact paths. Keeps the rest of
+ * the prose intact. Run before Markdown parsing.
+ */
+function stripDuplicateMedia(text: string, duplicatePaths: string[]): string {
+  if (!duplicatePaths.length) return text
+  const normalized = duplicatePaths.map(normalizeMediaRef).filter(Boolean)
+  const isDup = (ref: string) => {
+    const n = normalizeMediaRef(ref)
+    return normalized.some(d => d === n || d.endsWith(n) || n.endsWith(d))
+  }
+
+  let out = text
+  // 1. Strip Markdown images
+  out = out.replace(/!\[[^\]]*\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g, (full, src) => {
+    return isDup(src) ? '' : full
+  })
+  // 2. Strip standalone lines whose only content is a duplicate URL/path
+  out = out.replace(/^[ \t]*([^\s]+)[ \t]*$/gm, (full, ref) => {
+    if (/^https?:\/\//i.test(ref) || /^(file|local-file):\/\//i.test(ref) || /^[a-zA-Z]:[\\/]/.test(ref)) {
+      return isDup(ref) ? '' : full
+    }
+    return full
+  })
+  // 3. Collapse extra blank lines created by the deletions above
+  return out.replace(/\n{3,}/g, '\n\n').trim()
+}
+
 interface Props {
   messages: Message[]
   sessionId: string | null
   onRetry?: () => void
+  /** Open the global ImageEditor with the given src. Mounted at ChatPage level. */
+  onEditImage: (src: string) => void
+  /** Total configured LLM providers — drives the first-run onboarding. null = still loading. */
+  providersCount?: number | null
+  /** Delete a single message by id (no cascade). */
+  onDeleteMessage?: (messageId: string) => void
+  /** Regenerate a specific assistant response. */
+  onRegenerate?: (assistantMessageId: string) => void
+  /** Commit an edited user message + cascade re-run. */
+  onEditUserMessage?: (messageId: string, newContent: string) => void
+  /** Disable hover actions while the agent is running. */
+  isRunning?: boolean
 }
 
-export function MessageList({ messages, sessionId, onRetry }: Props) {
+export function MessageList({
+  messages, onRetry, onEditImage, providersCount,
+  onDeleteMessage, onRegenerate, onEditUserMessage, isRunning
+}: Props) {
   const bottomRef = useRef<HTMLDivElement>(null)
   const ctxMenu = useImageContextMenu()
-  const [editorImage, setEditorImage] = useState<string | null>(null)
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages.length])
 
   if (messages.length === 0) {
+    // First-run onboarding: no providers configured → guide user to Settings.
+    if (providersCount === 0) {
+      return (
+        <div className="flex-1 flex items-center justify-center p-8">
+          <div className="max-w-md text-center space-y-4">
+            <div className="w-14 h-14 mx-auto rounded-full bg-primary/10 flex items-center justify-center">
+              <Cpu size={26} className="text-primary" />
+            </div>
+            <div className="space-y-1.5">
+              <h3 className="text-base font-semibold">先配置一个模型提供商</h3>
+              <p className="text-sm text-muted-foreground leading-relaxed">
+                SuperStudio 还不知道把请求发到哪。前往「设置 → 提供商」添加 OpenAI、Anthropic、Gemini 或任意 OpenAI 兼容的代理；填好 API Key 就能开始对话、生图、生视频。
+              </p>
+            </div>
+            <button
+              onClick={() => window.dispatchEvent(new CustomEvent('navigate', { detail: { page: 'settings' } }))}
+              className="btn-primary"
+            >
+              去设置
+            </button>
+            <p className="text-xs text-muted-foreground/70">
+              已有可访问 OpenAI 协议的代理？把 baseUrl 填成代理地址，type 选「自定义」即可。
+            </p>
+          </div>
+        </div>
+      )
+    }
     return (
       <div className="flex-1 flex items-center justify-center text-muted-foreground text-sm">
         <div className="text-center space-y-2">
@@ -81,20 +167,16 @@ export function MessageList({ messages, sessionId, onRetry }: Props) {
             message={msg}
             onRetry={showRetry ? onRetry : undefined}
             openContextMenu={ctxMenu.open}
-            onEditImage={setEditorImage}
+            onEditImage={onEditImage}
+            onDeleteMessage={onDeleteMessage}
+            onRegenerate={onRegenerate}
+            onEditUserMessage={onEditUserMessage}
+            isRunning={!!isRunning}
           />
         )
       })}
       <div ref={bottomRef} />
       {ctxMenu.element}
-
-      {editorImage && (
-        <ImageEditor
-          src={editorImage}
-          sessionId={sessionId ?? undefined}
-          onClose={() => setEditorImage(null)}
-        />
-      )}
     </div>
   )
 }
@@ -104,12 +186,21 @@ interface BubbleProps {
   onRetry?: () => void
   openContextMenu: ReturnType<typeof useImageContextMenu>['open']
   onEditImage: (src: string) => void
+  onDeleteMessage?: (messageId: string) => void
+  onRegenerate?: (assistantMessageId: string) => void
+  onEditUserMessage?: (messageId: string, newContent: string) => void
+  isRunning: boolean
 }
 
-function MessageBubble({ message, onRetry, openContextMenu, onEditImage }: BubbleProps) {
+function MessageBubble({
+  message, onRetry, openContextMenu, onEditImage,
+  onDeleteMessage, onRegenerate, onEditUserMessage, isRunning
+}: BubbleProps) {
   const isUser = message.role === 'user'
   const [lightboxSrc, setLightboxSrc] = useState<{ src: string; filePath: string } | null>(null)
   const [copied, setCopied] = useState(false)
+  const [editing, setEditing] = useState(false)
+  const [editDraft, setEditDraft] = useState('')
 
   // Split <think>/<thinking> blocks off the answer (assistant messages only)
   const { reasoning, answer, streaming } = useMemo(
@@ -135,7 +226,11 @@ function MessageBubble({ message, onRetry, openContextMenu, onEditImage }: Bubbl
     }
   }
 
-  // Extract image and video artifacts from tool calls (skip internal __retry__ marker)
+  // Extract image and video artifacts from tool calls (skip internal __retry__ marker).
+  // Sources covered:
+  //  - builtin image_generate: result.images[].path
+  //  - builtin video_generate: result.path
+  //  - any MCP tool: result.artifacts[] with type=image|video
   const imageArtifacts: string[] = []
   const videoArtifacts: string[] = []
   if (message.toolCalls) {
@@ -149,6 +244,14 @@ function MessageBubble({ message, onRetry, openContextMenu, onEditImage }: Bubbl
         const result = tc.result as { path?: string } | undefined
         if (result?.path) videoArtifacts.push(result.path)
       }
+      // MCP tools (any name) — uniform { text, artifacts } shape
+      const mcpResult = tc.result as { artifacts?: Array<{ type: string; path: string }> } | undefined
+      if (mcpResult?.artifacts) {
+        for (const a of mcpResult.artifacts) {
+          if (a.type === 'image') imageArtifacts.push(a.path)
+          else if (a.type === 'video') videoArtifacts.push(a.path)
+        }
+      }
     }
   }
 
@@ -158,9 +261,9 @@ function MessageBubble({ message, onRetry, openContextMenu, onEditImage }: Bubbl
 
   return (
     <>
-      <div className={cn('flex flex-col', isUser ? 'items-end' : 'items-start')}>
+      <div className={cn('group/msg flex flex-col', isUser ? 'items-end' : 'items-start')}>
         <div className={cn(
-          'max-w-[80%] rounded-2xl px-4 py-3 text-base leading-relaxed',
+          'max-w-[80%] rounded-2xl px-4 py-3 text-base leading-relaxed relative',
           isUser
             ? 'bg-primary text-primary-foreground rounded-br-sm'
             : isError
@@ -178,7 +281,8 @@ function MessageBubble({ message, onRetry, openContextMenu, onEditImage }: Bubbl
                     onContextMenu={e => openContextMenu(e, {
                       filePath: att.path,
                       src: toFileUrl(att.path),
-                      onPreview: () => setLightboxSrc({ src: toFileUrl(att.path), filePath: att.path })
+                      onPreview: () => setLightboxSrc({ src: toFileUrl(att.path), filePath: att.path }),
+                      onEdit: () => onEditImage(toFileUrl(att.path))
                     })}
                   >
                     <img
@@ -199,12 +303,21 @@ function MessageBubble({ message, onRetry, openContextMenu, onEditImage }: Bubbl
           {reasoning && (
             <ReasoningBlock content={reasoning} streaming={streaming} />
           )}
-          {answer ? (
+          {editing && isUser ? (
+            <InlineEditor
+              initial={editDraft}
+              onCancel={() => setEditing(false)}
+              onSave={(text) => {
+                setEditing(false)
+                onEditUserMessage?.(message.id, text)
+              }}
+            />
+          ) : answer ? (
             isUser || isError ? (
               // User text and error banners stay plain — no Markdown parsing
               <p className="whitespace-pre-wrap break-words">{answer}</p>
             ) : (
-              <AssistantAnswer content={answer} />
+              <AssistantAnswer content={answer} duplicatePaths={[...imageArtifacts, ...videoArtifacts]} />
             )
           ) : !reasoning && (
             <p className="whitespace-pre-wrap break-words">{message.content}</p>
@@ -234,9 +347,10 @@ function MessageBubble({ message, onRetry, openContextMenu, onEditImage }: Bubbl
                     onContextMenu={e => openContextMenu(e, {
                       filePath: imgPath,
                       src: toFileUrl(imgPath),
-                    onPreview: () => setLightboxSrc({ src: toFileUrl(imgPath), filePath: imgPath })
-                  })}
-                  title="点击放大 · 右键复制 / 另存为"
+                      onPreview: () => setLightboxSrc({ src: toFileUrl(imgPath), filePath: imgPath }),
+                      onEdit: () => onEditImage(toFileUrl(imgPath))
+                    })}
+                  title="点击放大 · 右键编辑 / 复制 / 另存为"
                   />
                   <button
                     onClick={(e) => { e.stopPropagation(); onEditImage(toFileUrl(imgPath)) }}
@@ -267,6 +381,37 @@ function MessageBubble({ message, onRetry, openContextMenu, onEditImage }: Bubbl
             ) : null
           ))}
         </div>
+
+        {/* Hover-revealed action toolbar — different actions per role */}
+        {!isRunning && !isError && (
+          <div className={cn(
+            'flex items-center gap-0.5 mt-1 px-1 text-[11px] text-muted-foreground/70 opacity-0 group-hover/msg:opacity-100 transition-opacity',
+            isUser ? 'flex-row-reverse' : ''
+          )}>
+            {isUser && onEditUserMessage && (
+              <ActionIcon
+                title="编辑（会从此处重跑，删除后续消息）"
+                onClick={() => { setEditDraft(message.content); setEditing(true) }}
+                icon={<Pencil size={11} />}
+              />
+            )}
+            {!isUser && onRegenerate && (
+              <ActionIcon
+                title="重新生成"
+                onClick={() => onRegenerate(message.id)}
+                icon={<RefreshCw size={11} />}
+              />
+            )}
+            {onDeleteMessage && (
+              <ActionIcon
+                title="删除此条消息"
+                onClick={() => onDeleteMessage(message.id)}
+                icon={<Trash2 size={11} />}
+                hoverClass="hover:text-destructive"
+              />
+            )}
+          </div>
+        )}
 
         {/* Meta footer for assistant messages */}
         {!isUser && meta && (
@@ -334,12 +479,99 @@ function MessageBubble({ message, onRetry, openContextMenu, onEditImage }: Bubbl
             onContextMenu={e => {
               e.preventDefault()
               e.stopPropagation()
-              openContextMenu(e, { filePath: lightboxSrc.filePath, src: lightboxSrc.src })
+              openContextMenu(e, {
+                filePath: lightboxSrc.filePath,
+                src: lightboxSrc.src,
+                onEdit: () => { onEditImage(lightboxSrc.src); setLightboxSrc(null) }
+              })
             }}
           />
         </div>
       )}
     </>
+  )
+}
+
+function ActionIcon({
+  icon, title, onClick, hoverClass
+}: {
+  icon: React.ReactNode
+  title: string
+  onClick: () => void
+  hoverClass?: string
+}) {
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      className={cn(
+        'p-1 rounded transition-colors hover:bg-muted/80 hover:text-foreground',
+        hoverClass
+      )}
+    >
+      {icon}
+    </button>
+  )
+}
+
+/**
+ * In-bubble editor for user messages. Auto-focuses, supports Enter to commit /
+ * Esc to cancel, and grows with the content. Save triggers handleEditUserMessage
+ * upstream which deletes this and every subsequent message before re-sending.
+ */
+function InlineEditor({
+  initial, onSave, onCancel
+}: {
+  initial: string
+  onSave: (text: string) => void
+  onCancel: () => void
+}) {
+  const [text, setText] = useState(initial)
+  const ref = useRef<HTMLTextAreaElement>(null)
+
+  useEffect(() => {
+    const t = setTimeout(() => {
+      ref.current?.focus()
+      ref.current?.select()
+    }, 30)
+    return () => clearTimeout(t)
+  }, [])
+
+  function handleSave() {
+    const trimmed = text.trim()
+    if (!trimmed) return
+    onSave(trimmed)
+  }
+
+  return (
+    <div className="space-y-2 min-w-[260px]">
+      <textarea
+        ref={ref}
+        value={text}
+        onChange={e => setText(e.target.value)}
+        onKeyDown={e => {
+          if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSave() }
+          else if (e.key === 'Escape') { e.preventDefault(); onCancel() }
+        }}
+        rows={Math.min(8, Math.max(2, text.split('\n').length))}
+        className="w-full bg-background/30 border border-white/30 rounded-md px-2 py-1.5 text-sm text-primary-foreground placeholder:text-primary-foreground/50 outline-none focus:ring-1 focus:ring-white/40 resize-none"
+      />
+      <div className="flex items-center justify-end gap-1.5 text-xs">
+        <button
+          onClick={onCancel}
+          className="px-2 py-0.5 rounded bg-white/10 hover:bg-white/20 text-primary-foreground"
+        >
+          取消
+        </button>
+        <button
+          onClick={handleSave}
+          className="px-2 py-0.5 rounded bg-white/90 hover:bg-white text-primary font-medium"
+        >
+          保存并重跑
+        </button>
+      </div>
+      <p className="text-[10px] text-primary-foreground/60">Enter 保存 · Shift+Enter 换行 · Esc 取消</p>
+    </div>
   )
 }
 
@@ -395,19 +627,25 @@ function VideoThumbnail({ path }: { path: string }) {
  *  - automatic collapse for long messages (> ~25 lines) with an expand toggle
  *  - per-code-block copy button comes from the Markdown component itself
  */
-function AssistantAnswer({ content }: { content: string }) {
+function AssistantAnswer({ content, duplicatePaths = [] }: { content: string; duplicatePaths?: string[] }) {
+  // Defensive: even when the system prompt forbids it, some models still
+  // embed `![alt](path)` or stray URLs referencing media we've already
+  // rendered as thumbnails above. Strip those references so the user doesn't
+  // see the same image twice.
+  const cleaned = useMemo(() => stripDuplicateMedia(content, duplicatePaths), [content, duplicatePaths])
+
   const COLLAPSE_LINE_THRESHOLD = 25
   const COLLAPSE_CHAR_THRESHOLD = 1500
-  const lines = content.split('\n').length
-  const isLong = lines > COLLAPSE_LINE_THRESHOLD || content.length > COLLAPSE_CHAR_THRESHOLD
+  const lines = cleaned.split('\n').length
+  const isLong = lines > COLLAPSE_LINE_THRESHOLD || cleaned.length > COLLAPSE_CHAR_THRESHOLD
 
   const [expanded, setExpanded] = useState(false)
   const [copied, setCopied] = useState(false)
 
   const collapsed = isLong && !expanded
   const display = collapsed
-    ? content.split('\n').slice(0, COLLAPSE_LINE_THRESHOLD).join('\n')
-    : content
+    ? cleaned.split('\n').slice(0, COLLAPSE_LINE_THRESHOLD).join('\n')
+    : cleaned
 
   async function copyAll() {
     try {

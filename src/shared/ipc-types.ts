@@ -15,6 +15,9 @@ export const IPC = {
   SESSIONS_DELETE: 'sessions:delete',
   SESSIONS_RENAME: 'sessions:rename',
   MESSAGES_LIST: 'messages:list',
+  MESSAGES_DELETE: 'messages:delete',          // delete a single message by id
+  MESSAGES_DELETE_FROM: 'messages:delete-from', // delete this message + everything created after it (used for regenerate / edit)
+  MESSAGES_UPDATE: 'messages:update',           // edit a message's content
 
   // Agent execution
   AGENT_RUN: 'agent:run',

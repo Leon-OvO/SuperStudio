@@ -44,4 +44,37 @@ export function sessionHandlers(): void {
       createdAt: r.created_at
     }))
   })
+
+  ipcMain.handle(IPC.MESSAGES_DELETE, (_e, messageId: string) => {
+    dbRun(`DELETE FROM messages WHERE id = ?`, [messageId])
+    return { ok: true }
+  })
+
+  /**
+   * Delete the target message AND every message in the same session created
+   * at-or-after it. Used by regenerate (delete last assistant msg + retry) and
+   * edit (delete user msg + everything after, then re-send the edited text).
+   */
+  ipcMain.handle(IPC.MESSAGES_DELETE_FROM, (_e, messageId: string) => {
+    const row = dbGet<{ session_id: string; created_at: number }>(
+      `SELECT session_id, created_at FROM messages WHERE id = ?`,
+      [messageId]
+    )
+    if (!row) return { ok: false, deleted: 0 }
+    // Count then delete for a useful return value
+    const before = dbAll<{ cnt: number }>(
+      `SELECT COUNT(*) AS cnt FROM messages WHERE session_id = ? AND created_at >= ?`,
+      [row.session_id, row.created_at]
+    )[0]?.cnt ?? 0
+    dbRun(
+      `DELETE FROM messages WHERE session_id = ? AND created_at >= ?`,
+      [row.session_id, row.created_at]
+    )
+    return { ok: true, deleted: before }
+  })
+
+  ipcMain.handle(IPC.MESSAGES_UPDATE, (_e, messageId: string, content: string) => {
+    dbRun(`UPDATE messages SET content = ? WHERE id = ?`, [content, messageId])
+    return { ok: true }
+  })
 }

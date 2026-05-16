@@ -86,25 +86,40 @@ interface WriteOperation {
   params: Record<string, unknown>
 }
 
-export async function writeFile(params: { filePath: string; operations: WriteOperation[] }): Promise<{ backupPath?: string; modified: string }> {
+export async function writeFile(params: { filePath: string; operations: WriteOperation[] }): Promise<{ backupPath?: string; modified: string; created?: boolean }> {
   const { filePath, operations } = params
-  if (!fs.existsSync(filePath)) {
-    throw new Error(
-      `file_write: 文件不存在 "${filePath}". ` +
-      `请确认路径正确（应为完整的绝对路径，可在用户消息的"附加文件"清单中找到）。`
-    )
+
+  // Ensure the target directory exists — the agent may target a Desktop path
+  // whose tree always exists, but be defensive for nested paths too.
+  const targetDir = path.dirname(filePath)
+  try { fs.mkdirSync(targetDir, { recursive: true }) } catch { /* may already exist */ }
+
+  // file_write supports BOTH editing an existing xlsx and creating a new one.
+  // When the file doesn't exist we synthesize an empty workbook and skip the
+  // backup step entirely (nothing to back up).
+  const existed = fs.existsSync(filePath)
+  let workbook: XLSX.WorkBook
+  let backupPath: string | undefined
+
+  if (existed) {
+    const settings = getSettings()
+    const backupBase = settings.dataDirectory || path.dirname(filePath)
+    const backupDir = path.join(backupBase, '.backup')
+    fs.mkdirSync(backupDir, { recursive: true })
+    const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+    backupPath = path.join(backupDir, `${path.basename(filePath, '.xlsx')}.${ts}.xlsx`)
+    fs.copyFileSync(filePath, backupPath)
+    workbook = XLSX.readFile(filePath)
+  } else {
+    workbook = XLSX.utils.book_new()
+    // Ensure every operation's target sheet exists; if the model only references
+    // one or two sheet names, we lazily create them with an empty grid.
+    const referenced = Array.from(new Set(operations.map(o => o.sheet).filter(Boolean)))
+    const sheets = referenced.length ? referenced : ['Sheet1']
+    for (const name of sheets) {
+      XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([[]]), name)
+    }
   }
-
-  // Auto-backup: store in dataDirectory/.backup, or next to source file if no dataDirectory
-  const settings = getSettings()
-  const backupBase = settings.dataDirectory || path.dirname(filePath)
-  const backupDir = path.join(backupBase, '.backup')
-  fs.mkdirSync(backupDir, { recursive: true })
-  const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
-  const backupPath = path.join(backupDir, `${path.basename(filePath, '.xlsx')}.${ts}.xlsx`)
-  fs.copyFileSync(filePath, backupPath)
-
-  const workbook = XLSX.readFile(filePath)
 
   for (const op of operations) {
     const sheet = workbook.Sheets[op.sheet]
@@ -139,6 +154,23 @@ export async function writeFile(params: { filePath: string; operations: WriteOpe
     }
   }
 
+  // Recompute each sheet's !ref so XLSX serializes every cell we just wrote.
+  // Without this, cells added outside the original range can silently drop.
+  for (const sheetName of Object.keys(workbook.Sheets)) {
+    const sheet = workbook.Sheets[sheetName]
+    const cellRefs = Object.keys(sheet).filter(k => !k.startsWith('!'))
+    if (cellRefs.length === 0) continue
+    let minR = Infinity, maxR = -Infinity, minC = Infinity, maxC = -Infinity
+    for (const ref of cellRefs) {
+      const { r, c } = XLSX.utils.decode_cell(ref)
+      if (r < minR) minR = r
+      if (r > maxR) maxR = r
+      if (c < minC) minC = c
+      if (c > maxC) maxC = c
+    }
+    sheet['!ref'] = XLSX.utils.encode_range({ s: { r: minR, c: minC }, e: { r: maxR, c: maxC } })
+  }
+
   XLSX.writeFile(workbook, filePath)
-  return { backupPath, modified: filePath }
+  return { backupPath, modified: filePath, created: !existed }
 }

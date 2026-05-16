@@ -9,6 +9,7 @@ import { ChatHeader, computeImageSize, DEFAULT_IMAGE_PARAMS } from './ChatHeader
 import type { ImageParams } from './ChatHeader'
 import type { AgentProgressEvent, Message } from '../../../../shared/ipc-types'
 import { randomId } from '../../lib/id'
+import { ImageEditor } from '../../components/ui/ImageEditor'
 
 interface Attachment { name: string; path: string; mimeType: string }
 
@@ -16,7 +17,8 @@ export function ChatPage() {
   const {
     sessions, activeSessionId, messages, isRunning, sessionModel, mountedSpaceIds,
     setSessions, setActiveSession, addSession, removeSession, updateSessionTitle,
-    setMessages, addMessage, setRunning, updateStep, clearSteps,
+    setMessages, addMessage, removeMessage, removeMessagesFrom, updateMessageContent,
+    setRunning, updateStep, clearSteps,
     setSessionModel, setMountedSpaces
   } = useChatStore()
 
@@ -32,6 +34,9 @@ export function ChatPage() {
   const [imageParamsMap, setImageParamsMap] = React.useState<Record<string, ImageParams>>({})
   const [defaultImageModel, setDefaultImageModel] = React.useState<string>('')
   const [attachments, setAttachments] = React.useState<Attachment[]>([])
+  // Top-level ImageEditor — any image in the chat surface can open it.
+  const [editorSrc, setEditorSrc] = React.useState<string | null>(null)
+  const [providersCount, setProvidersCount] = React.useState<number | null>(null)
 
   useEffect(() => {
     loadSessions()
@@ -42,6 +47,13 @@ export function ChatPage() {
         defaultImageModelRef.current = { providerId: s.defaultImageProviderId, model: s.defaultImageModel }
       }
     })
+    // Track provider count for the empty-state onboarding
+    const refreshProviders = () => window.api.listProviders().then((p: unknown[]) => setProvidersCount(p.length))
+    refreshProviders()
+    const focusHandler = () => refreshProviders()
+    window.addEventListener('focus', focusHandler)
+    const detach = () => window.removeEventListener('focus', focusHandler)
+    unsubRef.current.push(detach)
 
     const u1 = window.api.onAgentProgress((event) => {
       updateStep(event as AgentProgressEvent)
@@ -199,6 +211,65 @@ export function ChatPage() {
     }
   }
 
+  /** Delete a single message (both DB + store). No cascade. */
+  async function handleDeleteMessage(messageId: string) {
+    if (!activeSessionId || isRunning) return
+    if (!confirm('确定删除这条消息？')) return
+    await window.api.deleteMessage(messageId)
+    removeMessage(activeSessionId, messageId)
+  }
+
+  /**
+   * Regenerate the last assistant response.
+   *  1. Drop the assistant message (DB + store)
+   *  2. Re-run the agent with the prior user message intact
+   */
+  async function handleRegenerate(assistantMessageId: string) {
+    if (!activeSessionId || isRunning) return
+    const list = messages[activeSessionId] ?? []
+    const idx = list.findIndex(m => m.id === assistantMessageId)
+    if (idx < 0) return
+    // Find the user message immediately before
+    let userIdx = idx - 1
+    while (userIdx >= 0 && list[userIdx].role !== 'user') userIdx--
+    if (userIdx < 0) return
+    const userMsg = list[userIdx]
+
+    await window.api.deleteMessage(assistantMessageId)
+    removeMessage(activeSessionId, assistantMessageId)
+
+    const attachments = userMsg.attachments?.filter(a => a.type === 'file').map(a => ({
+      name: a.name, path: a.path, mimeType: a.mimeType
+    }))
+    lastSentRef.current = { text: userMsg.content, attachments }
+    await doSend(activeSessionId, userMsg.content, attachments)
+  }
+
+  /**
+   * Edit a user message: drops the edited message and everything after it,
+   * persists the new content, then re-sends through the agent.
+   */
+  async function handleEditUserMessage(messageId: string, newContent: string) {
+    if (!activeSessionId || isRunning) return
+    const list = messages[activeSessionId] ?? []
+    const target = list.find(m => m.id === messageId)
+    if (!target || target.role !== 'user') return
+    const trimmed = newContent.trim()
+    if (!trimmed || trimmed === target.content) return
+
+    // Cascade: nuke this msg + every subsequent msg in this session
+    await window.api.deleteMessagesFrom(messageId)
+    removeMessagesFrom(activeSessionId, messageId)
+
+    // Send fresh
+    await handleSend(trimmed, target.attachments?.filter(a => a.type === 'file').map(a => ({
+      name: a.name, path: a.path, mimeType: a.mimeType
+    })))
+    // handleSend will write the new user message; updateMessageContent isn't
+    // used here because the new user msg gets a fresh id (cleaner timeline).
+    void updateMessageContent  // keep import alive
+  }
+
   async function handleSaveAsWorkflow() {
     if (!activeSessionId) return
     try {
@@ -245,7 +316,17 @@ export function ChatPage() {
             updateSessionTitle(activeSessionId, newTitle)
           } : undefined}
         />
-        <MessageList messages={currentMessages} sessionId={activeSessionId} onRetry={canRetry ? handleRetry : undefined} />
+        <MessageList
+          messages={currentMessages}
+          sessionId={activeSessionId}
+          onRetry={canRetry ? handleRetry : undefined}
+          onEditImage={setEditorSrc}
+          providersCount={providersCount}
+          onDeleteMessage={handleDeleteMessage}
+          onRegenerate={handleRegenerate}
+          onEditUserMessage={handleEditUserMessage}
+          isRunning={isRunning}
+        />
         <AgentProgress />
         <ChatInput
           onSend={handleSend}
@@ -262,8 +343,17 @@ export function ChatPage() {
           onModelChange={(p, m) => activeSessionId && setSessionModel(activeSessionId, p, m)}
           imageParams={currentImageParams}
           onImageParamsChange={params => activeSessionId && setImageParamsMap(prev => ({ ...prev, [activeSessionId]: params }))}
+          onEditImage={setEditorSrc}
         />
       </div>
+
+      {editorSrc && (
+        <ImageEditor
+          src={editorSrc}
+          sessionId={activeSessionId ?? undefined}
+          onClose={() => setEditorSrc(null)}
+        />
+      )}
     </div>
   )
 }
