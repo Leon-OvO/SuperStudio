@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Loader2, RefreshCw, Check, AlertCircle, Sparkles, ExternalLink, Database, Download, Upload } from 'lucide-react'
+import { Loader2, RefreshCw, Check, AlertCircle, Sparkles, ExternalLink, Database, Download, Upload, FileWarning, Trash2, Copy } from 'lucide-react'
 
 interface UpdateStatusView {
   kind: string
@@ -141,10 +141,116 @@ export function About({ onExportData, onImportData, exportRunning, importRunning
         </p>
       </section>
 
+      <ErrorLogSection />
+
       <section className="space-y-2 border-t border-border pt-5 text-xs text-muted-foreground/80">
         <p>开源协议：MIT</p>
       </section>
     </div>
+  )
+}
+
+interface LogEntry {
+  ts: number
+  level: 'error' | 'warn' | 'info'
+  source: 'main' | 'renderer'
+  message: string
+  stack?: string
+  context?: Record<string, unknown>
+}
+
+function ErrorLogSection() {
+  const [entries, setEntries] = useState<LogEntry[]>([])
+  const [loading, setLoading] = useState(false)
+  const [open, setOpen] = useState(false)
+
+  async function refresh() {
+    setLoading(true)
+    try {
+      const data = await window.api.listErrorLog?.() as LogEntry[]
+      setEntries(data ?? [])
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => { if (open) refresh() }, [open])
+
+  async function clearAll() {
+    if (!confirm('确定清空错误日志？已写入磁盘的旧条目也会被删除。')) return
+    await window.api.clearErrorLog?.()
+    setEntries([])
+  }
+
+  async function copyAll() {
+    const text = entries.map(e =>
+      `[${new Date(e.ts).toISOString()}] ${e.level.toUpperCase()} (${e.source}) ${e.message}` +
+      (e.stack ? '\n' + e.stack : '')
+    ).join('\n\n')
+    try { await navigator.clipboard.writeText(text || '(空)') }
+    catch (e) { console.error('clipboard write failed', e) }
+  }
+
+  const errorCount = entries.filter(e => e.level === 'error').length
+  const warnCount = entries.filter(e => e.level === 'warn').length
+
+  return (
+    <section className="space-y-3 border-t border-border pt-5">
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm font-medium flex items-center gap-1.5"><FileWarning size={13} /> 错误日志</h3>
+        <button
+          onClick={() => setOpen(o => !o)}
+          className="text-xs text-muted-foreground hover:text-foreground"
+        >
+          {open ? '收起' : '展开查看'}
+        </button>
+      </div>
+      <p className="text-xs text-muted-foreground/80 leading-relaxed">
+        记录主进程 / 渲染层最近 500 条 error / warn / info，全部存在你本机的
+        <code className="mx-1 px-1 rounded bg-muted/60 font-mono text-[11px]">userData/logs/app.log.jsonl</code>，
+        不会上传任何地方。出问题时复制日志贴给维护者最高效。
+      </p>
+      {open && (
+        <div className="space-y-2">
+          <div className="flex items-center gap-3 text-xs">
+            <span className="text-muted-foreground">
+              共 <strong className="text-foreground">{entries.length}</strong> 条
+              {errorCount > 0 && <> · <span className="text-destructive">{errorCount} 错误</span></>}
+              {warnCount > 0 && <> · <span className="text-amber-600">{warnCount} 警告</span></>}
+            </span>
+            <button onClick={refresh} disabled={loading} className="ml-auto btn-secondary">
+              {loading ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
+              刷新
+            </button>
+            <button onClick={copyAll} disabled={entries.length === 0} className="btn-secondary">
+              <Copy size={12} /> 复制
+            </button>
+            <button onClick={clearAll} disabled={entries.length === 0} className="btn-secondary">
+              <Trash2 size={12} /> 清空
+            </button>
+          </div>
+          <div className="max-h-64 overflow-y-auto rounded-md border border-border bg-muted/20 text-[11px] font-mono divide-y divide-border/60">
+            {entries.length === 0 ? (
+              <div className="px-3 py-4 text-muted-foreground/60 text-center">{loading ? '加载中…' : '日志为空'}</div>
+            ) : entries.slice().reverse().map((e, i) => (
+              <details key={i} className="px-3 py-1.5 group" open={e.level === 'error' && i < 3}>
+                <summary className={
+                  'cursor-pointer truncate ' +
+                  (e.level === 'error' ? 'text-destructive' : e.level === 'warn' ? 'text-amber-600' : 'text-foreground/80')
+                }>
+                  <span className="text-muted-foreground/60 mr-2">{new Date(e.ts).toLocaleTimeString('zh-CN')}</span>
+                  <span className="text-[10px] uppercase mr-2">[{e.source}]</span>
+                  {e.message}
+                </summary>
+                {e.stack && (
+                  <pre className="mt-1 whitespace-pre-wrap text-[10px] text-muted-foreground/80 leading-snug">{e.stack}</pre>
+                )}
+              </details>
+            ))}
+          </div>
+        </div>
+      )}
+    </section>
   )
 }
 

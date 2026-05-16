@@ -9,6 +9,9 @@ import { IPC } from '../../src/shared/ipc-types'
 
 installFetchLogger()
 
+// Capture uncaught failures in main before anything else loads
+import('./services/error-log').then(m => m.installMainProcessHooks()).catch(() => {/* ignore */})
+
 // Must be called before app.ready
 protocol.registerSchemesAsPrivileged([
   {

@@ -77,4 +77,31 @@ export function sessionHandlers(): void {
     dbRun(`UPDATE messages SET content = ? WHERE id = ?`, [content, messageId])
     return { ok: true }
   })
+
+  /**
+   * Full-text-ish session search. Matches on session title OR any message
+   * content within that session. Returns session ids — caller intersects
+   * with its in-memory session list to render.
+   *
+   * sql.js doesn't have a real FTS index, but case-insensitive LIKE on the
+   * messages.content column scales fine to tens of thousands of rows.
+   */
+  ipcMain.handle(IPC.SESSIONS_SEARCH, (_e, rawQuery: string) => {
+    const q = (rawQuery ?? '').trim()
+    if (!q) return { matchedSessionIds: [] as string[] }
+    const like = `%${q.replace(/[%_]/g, ch => '\\' + ch)}%`
+
+    const byTitle = dbAll<{ id: string }>(
+      `SELECT id FROM sessions WHERE title LIKE ? ESCAPE '\\'`,
+      [like]
+    ).map(r => r.id)
+
+    const byContent = dbAll<{ session_id: string }>(
+      `SELECT DISTINCT session_id FROM messages WHERE content LIKE ? ESCAPE '\\'`,
+      [like]
+    ).map(r => r.session_id)
+
+    const ids = Array.from(new Set([...byTitle, ...byContent]))
+    return { matchedSessionIds: ids }
+  })
 }

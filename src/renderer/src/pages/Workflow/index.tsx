@@ -7,7 +7,7 @@ import '@xyflow/react/dist/style.css'
 import { Plus, Play, Save, Trash2, FileText, Square as StopIcon } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import {
-  NODE_TYPES, type NodeKind, type WorkflowTemplate,
+  NODE_TYPES, NODE_DEFINITIONS, type NodeKind, type WorkflowTemplate,
   isCompatibleConnection, getNodeOutputType, getNodeInputType, buildDefaultData
 } from './nodes'
 import { NodePalette } from './NodePalette'
@@ -131,6 +131,22 @@ function WorkflowEditor() {
       return
     }
 
+    // Pre-flight validation — much friendlier than letting the agent crash
+    // mid-run when a required input port is empty.
+    const validation = validateWorkflow(nodes, edges)
+    if (validation.errors.length > 0) {
+      // Surface the problems by highlighting the offending nodes via status
+      const flagged: Record<string, string> = {}
+      for (const err of validation.errors) flagged[err.nodeId] = 'error'
+      setNodeStatuses(flagged)
+      alert(
+        `工作流校验失败：\n\n` +
+        validation.errors.map(e => `• ${e.message}`).join('\n') +
+        `\n\n相关节点已在画布上标红。修复后再点「运行」。`
+      )
+      return
+    }
+
     // Collect variable nodes and prompt for values
     const variableNodes = nodes.filter(n => n.type === 'variable')
     if (variableNodes.length > 0) {
@@ -145,6 +161,49 @@ function WorkflowEditor() {
     }
 
     doRunWorkflow({})
+  }
+
+  /**
+   * Pre-flight checks for a workflow. Catches issues the LLM engine would
+   * later hit but with much worse error surface — empty graphs, isolated
+   * input-having nodes, no producer for a port type, etc.
+   */
+  function validateWorkflow(
+    nodes: Node[],
+    edges: Edge[]
+  ): { errors: Array<{ nodeId: string; message: string }> } {
+    const errors: Array<{ nodeId: string; message: string }> = []
+    if (nodes.length === 0) {
+      return { errors: [{ nodeId: '', message: '画布为空，请先添加节点。' }] }
+    }
+    // Map edges by target so we can detect missing inputs quickly
+    const incoming = new Map<string, number>()
+    for (const e of edges) {
+      incoming.set(e.target, (incoming.get(e.target) ?? 0) + 1)
+    }
+    for (const n of nodes) {
+      const def = NODE_DEFINITIONS[n.type as NodeKind]
+      if (!def) continue
+      // Any node that DECLARES input ports but receives no edges is almost
+      // certainly a misconfiguration. (Defaults / variable / file_read are
+      // input-less and skip this.)
+      if (def.inputs.length > 0 && !incoming.get(n.id)) {
+        const label = (n.data as { label?: string })?.label || def.label
+        errors.push({
+          nodeId: n.id,
+          message: `节点「${label}」需要 ${def.inputs.length} 个输入，但没有任何连线进入。`
+        })
+      }
+    }
+    // Workflow needs at least one terminal — output / gallery_save / file_write
+    const hasTerminal = nodes.some(n => ['output', 'gallery_save', 'file_write'].includes(n.type as string))
+    if (!hasTerminal) {
+      errors.push({
+        nodeId: '',
+        message: '工作流没有终点节点（输出 / 保存到画廊 / 写入文件），运行后结果会丢失。'
+      })
+    }
+    return { errors }
   }
 
   async function doRunWorkflow(variables: Record<string, string>) {

@@ -20,6 +20,7 @@ const api = {
   deleteMessage: (messageId: string) => ipcRenderer.invoke(IPC.MESSAGES_DELETE, messageId),
   deleteMessagesFrom: (messageId: string) => ipcRenderer.invoke(IPC.MESSAGES_DELETE_FROM, messageId),
   updateMessage: (messageId: string, content: string) => ipcRenderer.invoke(IPC.MESSAGES_UPDATE, messageId, content),
+  searchSessions: (query: string) => ipcRenderer.invoke(IPC.SESSIONS_SEARCH, query),
 
   // --- Agent ---
   runAgent: (
@@ -125,6 +126,12 @@ const api = {
 
   // --- Provider connection test ---
   testProvider: (provider: unknown) => ipcRenderer.invoke(IPC.PROVIDERS_TEST, provider),
+
+  // --- Error log ---
+  listErrorLog: () => ipcRenderer.invoke(IPC.LOG_LIST),
+  clearErrorLog: () => ipcRenderer.invoke(IPC.LOG_CLEAR),
+  reportError: (entry: { level: 'error' | 'warn' | 'info'; message: string; stack?: string; context?: Record<string, unknown> }) =>
+    ipcRenderer.invoke(IPC.LOG_APPEND, entry),
 
   // --- Workflow ---
   listWorkflows: () => ipcRenderer.invoke(IPC.WORKFLOWS_LIST),

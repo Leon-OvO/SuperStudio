@@ -18,6 +18,7 @@ export const IPC = {
   MESSAGES_DELETE: 'messages:delete',          // delete a single message by id
   MESSAGES_DELETE_FROM: 'messages:delete-from', // delete this message + everything created after it (used for regenerate / edit)
   MESSAGES_UPDATE: 'messages:update',           // edit a message's content
+  SESSIONS_SEARCH: 'sessions:search',           // full-text search across titles + message content
 
   // Agent execution
   AGENT_RUN: 'agent:run',
@@ -75,6 +76,11 @@ export const IPC = {
   UPDATE_CHECK: 'update:check',
   UPDATE_INSTALL: 'update:install',
   UPDATE_STATUS: 'update:status',     // main → renderer event
+
+  // Error log
+  LOG_LIST: 'log:list',
+  LOG_CLEAR: 'log:clear',
+  LOG_APPEND: 'log:append',           // renderer → main: report a renderer-side error
 
   // Whole-app config backup
   CONFIG_EXPORT: 'config:export',

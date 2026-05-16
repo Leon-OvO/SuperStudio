@@ -51,6 +51,27 @@ interface ConnectedClient {
 
 const TOOL_CACHE_TTL = 60_000
 
+// Bounded waits — without these, a misconfigured MCP subprocess that never
+// writes its handshake can stall the agent loop forever.
+const CONNECT_TIMEOUT_MS = 20_000   // initial handshake
+const LIST_TOOLS_TIMEOUT_MS = 10_000
+const TOOL_CALL_TIMEOUT_MS = 120_000 // some MCP tools generate images/videos, allow real work
+
+class TimeoutError extends Error {
+  constructor(op: string, ms: number) {
+    super(`MCP ${op} 超时（${ms}ms 内未响应）`)
+  }
+}
+
+/** Race a promise against a timer. Use named operations for clear errors. */
+function withTimeout<T>(p: Promise<T>, ms: number, op: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(() => reject(new TimeoutError(op, ms)), ms)
+    p.then(v => { clearTimeout(t); resolve(v) },
+           e => { clearTimeout(t); reject(e) })
+  })
+}
+
 function slugify(name: string): string {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '') || 'server'
 }
@@ -160,7 +181,14 @@ class McpManager {
       { name: 'superstudio', version: '0.1.0' },
       { capabilities: {} }
     )
-    await client.connect(transport)
+    try {
+      await withTimeout(client.connect(transport), CONNECT_TIMEOUT_MS, `连接 "${config.name}"`)
+    } catch (e) {
+      // Best-effort cleanup so a hung subprocess gets reaped instead of
+      // lingering for the rest of the app lifetime
+      try { await client.close() } catch { /* ignore */ }
+      throw e
+    }
     this.clients.set(config.id, { client, config })
     console.log(`[mcp] connected "${config.name}"`)
     return client
@@ -188,7 +216,7 @@ class McpManager {
     }
     const client = await this.connect(config)
     const slug = slugify(config.name)
-    const res = await client.listTools()
+    const res = await withTimeout(client.listTools(), LIST_TOOLS_TIMEOUT_MS, `列出工具 "${config.name}"`)
     const tools: McpTool[] = (res.tools ?? []).map(t => ({
       serverId: config.id,
       serverName: config.name,
@@ -235,10 +263,14 @@ class McpManager {
     if (!tool) throw new Error(`MCP tool not found: ${qualifiedName}`)
     const entry = this.clients.get(tool.serverId)
     if (!entry) throw new Error(`MCP server not connected for tool: ${qualifiedName}`)
-    const result = await entry.client.callTool({
-      name: tool.toolName,
-      arguments: (args ?? {}) as Record<string, unknown>
-    })
+    const result = await withTimeout(
+      entry.client.callTool({
+        name: tool.toolName,
+        arguments: (args ?? {}) as Record<string, unknown>
+      }),
+      TOOL_CALL_TIMEOUT_MS,
+      `工具调用 ${qualifiedName}`
+    )
     return await persistAndFlatten(result, tool, ctx)
   }
 
@@ -247,7 +279,7 @@ class McpManager {
     const tempConfig: McpServerConfig = { ...config, id: tempId, enabled: true }
     try {
       const client = await this.connect(tempConfig)
-      const res = await client.listTools()
+      const res = await withTimeout(client.listTools(), LIST_TOOLS_TIMEOUT_MS, '测试列出工具')
       return { tools: (res.tools ?? []).map(t => ({ name: t.name, description: t.description })) }
     } finally {
       await this.disconnect(tempId)

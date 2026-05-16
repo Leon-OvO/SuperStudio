@@ -10,6 +10,7 @@ import { workflowHandlers } from './workflows'
 import { imageEditHandlers } from './image-edit'
 import { mcpHandlers } from './mcp'
 import { checkForUpdates, quitAndInstall, getUpdateStatus } from '../services/updater'
+import { logEntry, getEntriesFromDisk, clearEntries } from '../services/error-log'
 
 export function registerIpcHandlers(): void {
   settingsHandlers()
@@ -26,6 +27,13 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(IPC.UPDATE_CHECK, () => checkForUpdates())
   ipcMain.handle(IPC.UPDATE_INSTALL, () => { quitAndInstall(); return { ok: true } })
   ipcMain.handle(IPC.UPDATE_STATUS, () => getUpdateStatus())
+
+  ipcMain.handle(IPC.LOG_LIST, () => getEntriesFromDisk(500))
+  ipcMain.handle(IPC.LOG_CLEAR, () => { clearEntries(); return { ok: true } })
+  ipcMain.handle(IPC.LOG_APPEND, (_e, entry: { level: 'error' | 'warn' | 'info'; message: string; stack?: string; context?: Record<string, unknown> }) => {
+    logEntry({ source: 'renderer', ...entry })
+    return { ok: true }
+  })
 
   ipcMain.handle(IPC.FILE_OPEN_DIALOG, async (_e, options) => {
     const result = await dialog.showOpenDialog({

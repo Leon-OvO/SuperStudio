@@ -1,5 +1,5 @@
-import { useState, useMemo, useRef } from 'react'
-import { Plus, MessageSquare, Trash2, Search, X } from 'lucide-react'
+import { useState, useMemo, useRef, useEffect } from 'react'
+import { Plus, MessageSquare, Trash2, Search, X, Loader2 } from 'lucide-react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { cn } from '../../lib/utils'
 import type { Session } from '../../../../shared/ipc-types'
@@ -40,14 +40,41 @@ const SESSION_HEIGHT = 38
 export function SessionList({ sessions, activeId, isRunning, onSelect, onNew, onDelete }: Props) {
   const [query, setQuery] = useState('')
   const [dateFilter, setDateFilter] = useState<DateFilter>({ kind: 'all' })
+  const [contentMatchedIds, setContentMatchedIds] = useState<Set<string> | null>(null)
+  const [searching, setSearching] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
+
+  // Full-text search: when the user types a query, hit the backend for the
+  // union of (title match) + (any message content match). Debounced so we
+  // don't run a LIKE for every keystroke.
+  useEffect(() => {
+    const trimmed = query.trim()
+    if (!trimmed) { setContentMatchedIds(null); return }
+    setSearching(true)
+    const handle = setTimeout(async () => {
+      try {
+        const result = await window.api.searchSessions?.(trimmed) as { matchedSessionIds: string[] } | undefined
+        setContentMatchedIds(new Set(result?.matchedSessionIds ?? []))
+      } finally {
+        setSearching(false)
+      }
+    }, 200)
+    return () => clearTimeout(handle)
+  }, [query])
 
   const rows = useMemo<Row[]>(() => {
     const now = Date.now()
     const range = resolveDateRange(dateFilter, now)
     const q = query.trim().toLowerCase()
     const matched = sessions
-      .filter(s => !q || s.title.toLowerCase().includes(q))
+      .filter(s => {
+        if (!q) return true
+        // If FTS results are in, prefer them (covers title + message content);
+        // otherwise fall back to client-side title contains while the request
+        // is in flight so the UI doesn't blink to empty.
+        if (contentMatchedIds) return contentMatchedIds.has(s.id)
+        return s.title.toLowerCase().includes(q)
+      })
       .filter(s => {
         if (!range) return true
         const ts = s.updatedAt ?? s.createdAt
@@ -109,17 +136,20 @@ export function SessionList({ sessions, activeId, isRunning, onSelect, onNew, on
             type="text"
             value={query}
             onChange={e => setQuery(e.target.value)}
-            placeholder="搜索对话…"
+            placeholder="搜索标题或消息内容…"
             className="w-full pl-7 pr-6 py-1.5 text-xs rounded-md bg-muted/60 border border-transparent focus:border-border focus:bg-background outline-none placeholder:text-muted-foreground/40 transition-all"
           />
-          {query && (
+          {query && (searching ? (
+            <Loader2 size={11} className="absolute right-2 text-muted-foreground/60 animate-spin" />
+          ) : (
             <button
               onClick={() => setQuery('')}
               className="absolute right-2 text-muted-foreground/50 hover:text-muted-foreground"
+              title="清除搜索"
             >
               <X size={11} />
             </button>
-          )}
+          ))}
         </div>
       </div>
 

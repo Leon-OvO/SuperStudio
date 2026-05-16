@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useVirtualizer } from '@tanstack/react-virtual'
 import type { Message, ToolCallRecord } from '../../../../shared/ipc-types'
 import { cn } from '../../lib/utils'
 import { copyImageToClipboard } from '../../lib/clipboard'
@@ -110,12 +111,30 @@ export function MessageList({
   messages, onRetry, onEditImage, providersCount,
   onDeleteMessage, onRegenerate, onEditUserMessage, isRunning
 }: Props) {
-  const bottomRef = useRef<HTMLDivElement>(null)
   const ctxMenu = useImageContextMenu()
+  const scrollRef = useRef<HTMLDivElement>(null)
 
+  // Variable-height virtualizer — each message bubble can be anywhere from a
+  // single line to many paragraphs with images / code / tool cards. We seed
+  // an estimate, then let `measureElement` (the ref handed to each row in
+  // render below) report the real height as soon as it mounts.
+  const virtualizer = useVirtualizer({
+    count: messages.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => 120,
+    overscan: 4,
+    getItemKey: (i) => messages[i]?.id ?? i,
+    // Build-in measureElement reads getBoundingClientRect after layout
+  })
+
+  // Auto-stick to bottom when new messages arrive. We don't track a manual
+  // pinned state here — the virtualizer scrolls to the last item which is
+  // good enough for "new turn" updates and stop-mid-stream lands us at the
+  // current end.
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages.length])
+    if (messages.length === 0) return
+    virtualizer.scrollToIndex(messages.length - 1, { align: 'end' })
+  }, [messages.length, virtualizer])
 
   if (messages.length === 0) {
     // First-run onboarding: no providers configured → guide user to Settings.
@@ -157,25 +176,42 @@ export function MessageList({
   }
 
   return (
-    <div className="flex-1 overflow-y-auto p-4 space-y-4">
-      {messages.map((msg, idx) => {
-        const isLastMsg = idx === messages.length - 1
-        const showRetry = isLastMsg && onRetry && msg.role === 'assistant' && msg.content.startsWith('⚠️')
-        return (
-          <MessageBubble
-            key={msg.id}
-            message={msg}
-            onRetry={showRetry ? onRetry : undefined}
-            openContextMenu={ctxMenu.open}
-            onEditImage={onEditImage}
-            onDeleteMessage={onDeleteMessage}
-            onRegenerate={onRegenerate}
-            onEditUserMessage={onEditUserMessage}
-            isRunning={!!isRunning}
-          />
-        )
-      })}
-      <div ref={bottomRef} />
+    <div ref={scrollRef} className="flex-1 overflow-y-auto p-4">
+      <div style={{ height: virtualizer.getTotalSize(), position: 'relative', width: '100%' }}>
+        {virtualizer.getVirtualItems().map(vrow => {
+          const idx = vrow.index
+          const msg = messages[idx]
+          if (!msg) return null
+          const isLastMsg = idx === messages.length - 1
+          const showRetry = isLastMsg && onRetry && msg.role === 'assistant' && msg.content.startsWith('⚠️')
+          return (
+            <div
+              key={vrow.key}
+              data-index={idx}
+              ref={virtualizer.measureElement}
+              style={{
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                width: '100%',
+                transform: `translateY(${vrow.start}px)`,
+                paddingBottom: 16
+              }}
+            >
+              <MessageBubble
+                message={msg}
+                onRetry={showRetry ? onRetry : undefined}
+                openContextMenu={ctxMenu.open}
+                onEditImage={onEditImage}
+                onDeleteMessage={onDeleteMessage}
+                onRegenerate={onRegenerate}
+                onEditUserMessage={onEditUserMessage}
+                isRunning={!!isRunning}
+              />
+            </div>
+          )
+        })}
+      </div>
       {ctxMenu.element}
     </div>
   )
