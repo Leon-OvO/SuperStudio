@@ -274,24 +274,17 @@ function MessageBubble({
             <div className="mb-2 flex flex-wrap gap-2">
               {message.attachments.map((att, i) => (
                 att.mimeType?.startsWith('image/') ? (
-                  <div
+                  <AttachedImage
                     key={i}
-                    className="relative group cursor-pointer shrink-0"
-                    onClick={() => setLightboxSrc({ src: toFileUrl(att.path), filePath: att.path })}
+                    att={att}
+                    onPreview={() => setLightboxSrc({ src: toFileUrl(att.path), filePath: att.path })}
                     onContextMenu={e => openContextMenu(e, {
                       filePath: att.path,
                       src: toFileUrl(att.path),
                       onPreview: () => setLightboxSrc({ src: toFileUrl(att.path), filePath: att.path }),
                       onEdit: () => onEditImage(toFileUrl(att.path))
                     })}
-                  >
-                    <img
-                      src={toFileUrl(att.path)}
-                      alt={att.name}
-                      className="h-16 w-16 object-cover rounded-lg border border-white/20 hover:opacity-90 transition-opacity"
-                    />
-                    <div className="absolute inset-0 flex items-center justify-center rounded-lg bg-black/0 group-hover:bg-black/20 transition-colors" />
-                  </div>
+                  />
                 ) : (
                   <span key={i} className="text-xs px-2 py-0.5 rounded bg-white/20 text-primary-foreground/80">
                     📎 {att.name}
@@ -489,6 +482,52 @@ function MessageBubble({
         </div>
       )}
     </>
+  )
+}
+
+/**
+ * Renders an attached image inside the user message bubble at a real preview
+ * size (not the postage-stamp 64px from before) plus a visible fallback when
+ * the file fails to load — diagnoses paste paths that didn't reach disk.
+ */
+function AttachedImage({
+  att, onPreview, onContextMenu
+}: {
+  att: { name: string; path: string; mimeType: string }
+  onPreview: () => void
+  onContextMenu: (e: React.MouseEvent) => void
+}) {
+  const [failed, setFailed] = useState(false)
+  const src = toFileUrl(att.path)
+
+  if (failed) {
+    return (
+      <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-destructive/15 border border-destructive/40 text-xs text-destructive">
+        <X size={13} />
+        <span className="font-medium">{att.name} 加载失败</span>
+        <span className="text-destructive/70 truncate max-w-[260px]" title={att.path}>· {att.path}</span>
+      </div>
+    )
+  }
+
+  return (
+    <div
+      className="relative group/att cursor-pointer shrink-0 max-w-full"
+      onClick={onPreview}
+      onContextMenu={onContextMenu}
+      title={`${att.name} (点击放大 · 右键菜单可复制/编辑)`}
+    >
+      <img
+        src={src}
+        alt={att.name}
+        loading="lazy"
+        onError={() => setFailed(true)}
+        className="max-w-[320px] max-h-[240px] rounded-lg border border-white/15 object-contain bg-black/15 hover:opacity-95 transition-opacity"
+      />
+      <div className="absolute bottom-0 inset-x-0 px-2 py-1 rounded-b-lg bg-gradient-to-t from-black/55 to-transparent text-[10px] text-white/85 opacity-0 group-hover/att:opacity-100 transition-opacity truncate">
+        {att.name}
+      </div>
+    </div>
   )
 }
 

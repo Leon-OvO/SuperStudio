@@ -49,4 +49,18 @@ export function fileHandlers(): void {
     shell.showItemInFolder(filePath)
     return { ok: true }
   })
+
+  ipcMain.handle(IPC.FILE_SAVE_TEXT, async (e, params: { defaultName: string; content: string; filters?: Array<{ name: string; extensions: string[] }> }) => {
+    const win = BrowserWindow.fromWebContents(e.sender)
+    const opts = {
+      defaultPath: params.defaultName,
+      filters: params.filters ?? [{ name: 'Text', extensions: ['txt'] }, { name: 'All Files', extensions: ['*'] }]
+    }
+    const result = win
+      ? await dialog.showSaveDialog(win, opts)
+      : await dialog.showSaveDialog(opts)
+    if (result.canceled || !result.filePath) return { canceled: true }
+    fs.writeFileSync(result.filePath, params.content, 'utf8')
+    return { canceled: false, filePath: result.filePath }
+  })
 }

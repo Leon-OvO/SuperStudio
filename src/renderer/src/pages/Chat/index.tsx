@@ -10,6 +10,7 @@ import type { ImageParams } from './ChatHeader'
 import type { AgentProgressEvent, Message } from '../../../../shared/ipc-types'
 import { randomId } from '../../lib/id'
 import { ImageEditor } from '../../components/ui/ImageEditor'
+import { buildExportTarget } from '../../lib/session-export'
 
 interface Attachment { name: string; path: string; mimeType: string }
 
@@ -54,6 +55,11 @@ export function ChatPage() {
     window.addEventListener('focus', focusHandler)
     const detach = () => window.removeEventListener('focus', focusHandler)
     unsubRef.current.push(detach)
+
+    // Global "new chat" shortcut → trigger our local handler
+    const newChatHandler = () => { handleNewSession() }
+    window.addEventListener('app:new-chat', newChatHandler)
+    unsubRef.current.push(() => window.removeEventListener('app:new-chat', newChatHandler))
 
     const u1 = window.api.onAgentProgress((event) => {
       updateStep(event as AgentProgressEvent)
@@ -270,6 +276,23 @@ export function ChatPage() {
     void updateMessageContent  // keep import alive
   }
 
+  /** Serialize current session to MD or JSON and write to a user-picked path. */
+  async function handleExportSession(format: 'markdown' | 'json') {
+    if (!activeSessionId) return
+    const title = activeSession?.title || '未命名对话'
+    const target = buildExportTarget(format, title, currentMessages)
+    try {
+      const result = await window.api.saveTextAs({
+        defaultName: target.defaultName,
+        content: target.content,
+        filters: target.filters
+      })
+      if (!result.canceled) console.log('[export] session saved to', result.filePath)
+    } catch (e) {
+      alert('导出失败：' + (e as Error).message)
+    }
+  }
+
   async function handleSaveAsWorkflow() {
     if (!activeSessionId) return
     try {
@@ -311,6 +334,7 @@ export function ChatPage() {
           sessionId={activeSessionId}
           sessionTitle={activeSession?.title || ''}
           onSaveAsWorkflow={handleSaveAsWorkflow}
+          onExport={activeSessionId ? handleExportSession : undefined}
           onRename={activeSessionId ? async (newTitle) => {
             await window.api.renameSession(activeSessionId, newTitle)
             updateSessionTitle(activeSessionId, newTitle)

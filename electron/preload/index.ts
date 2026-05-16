@@ -72,6 +72,8 @@ const api = {
   writeTempFile: (params: { name: string; data: string }) => ipcRenderer.invoke(IPC.FILE_WRITE_TEMP, params),
   saveFileAs: (sourcePath: string, suggestedName?: string) =>
     ipcRenderer.invoke(IPC.FILE_SAVE_AS, sourcePath, suggestedName),
+  saveTextAs: (params: { defaultName: string; content: string; filters?: Array<{ name: string; extensions: string[] }> }) =>
+    ipcRenderer.invoke(IPC.FILE_SAVE_TEXT, params),
   showItemInFolder: (filePath: string) => ipcRenderer.invoke(IPC.SHELL_SHOW_ITEM, filePath),
 
   // --- Gallery ---

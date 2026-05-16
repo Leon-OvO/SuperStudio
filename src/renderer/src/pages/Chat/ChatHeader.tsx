@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import { GitBranch, MessageSquare, Pencil, Check, X } from 'lucide-react'
+import { GitBranch, MessageSquare, Pencil, Check, X, Download, ChevronDown } from 'lucide-react'
+import { cn } from '../../lib/utils'
 
 // ImageParams + helpers live here for backward compat — used by ChatPage + ChatInput
 export interface ImageParams {
@@ -33,16 +34,35 @@ interface Props {
   onSaveAsWorkflow?: () => void
   /** Persist the renamed title. Called with the trimmed new title. */
   onRename?: (newTitle: string) => void
+  /** Export the active session. Format chosen via dropdown. */
+  onExport?: (format: 'markdown' | 'json') => void
 }
 
 /**
  * Slim chat header — shows the current session title prominently and a few
  * top-right actions. Click the title (or the pencil) to rename inline.
  */
-export function ChatHeader({ sessionId, sessionTitle, onSaveAsWorkflow, onRename }: Props) {
+export function ChatHeader({ sessionId, sessionTitle, onSaveAsWorkflow, onRename, onExport }: Props) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(sessionTitle)
+  const [exportOpen, setExportOpen] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
+  const exportWrapRef = useRef<HTMLDivElement>(null)
+
+  // Close export menu on outside click
+  useEffect(() => {
+    if (!exportOpen) return
+    function onDown(e: MouseEvent) {
+      if (exportWrapRef.current && !exportWrapRef.current.contains(e.target as Node)) setExportOpen(false)
+    }
+    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') setExportOpen(false) }
+    window.addEventListener('mousedown', onDown)
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('mousedown', onDown)
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [exportOpen])
 
   // Keep draft in sync if session changes externally
   useEffect(() => {
@@ -133,6 +153,40 @@ export function ChatHeader({ sessionId, sessionTitle, onSaveAsWorkflow, onRename
               <Pencil size={11} className="opacity-0 group-hover:opacity-60 transition-opacity shrink-0 text-muted-foreground" />
             )}
           </button>
+          {onExport && (
+            <div ref={exportWrapRef} className="relative">
+              <button
+                onClick={() => setExportOpen(o => !o)}
+                title="导出当前对话"
+                className={cn(
+                  'flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors',
+                  exportOpen && 'bg-muted/60 text-foreground'
+                )}
+              >
+                <Download size={12} />
+                导出
+                <ChevronDown size={10} className={cn('transition-transform', exportOpen && 'rotate-180')} />
+              </button>
+              {exportOpen && (
+                <div className="absolute right-0 top-full mt-1 z-50 min-w-[160px] bg-popover border border-border rounded-lg shadow-xl py-1">
+                  <button
+                    onClick={() => { onExport('markdown'); setExportOpen(false) }}
+                    className="w-full text-left px-3 py-1.5 text-xs hover:bg-accent transition-colors"
+                  >
+                    Markdown (.md)
+                    <span className="block text-[10px] text-muted-foreground/70">用于阅读 / 分享</span>
+                  </button>
+                  <button
+                    onClick={() => { onExport('json'); setExportOpen(false) }}
+                    className="w-full text-left px-3 py-1.5 text-xs hover:bg-accent transition-colors"
+                  >
+                    JSON (.json)
+                    <span className="block text-[10px] text-muted-foreground/70">完整结构，可再导入</span>
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
           {onSaveAsWorkflow && (
             <button
               onClick={onSaveAsWorkflow}

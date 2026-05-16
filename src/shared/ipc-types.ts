@@ -42,6 +42,7 @@ export const IPC = {
   FILE_OPEN_DIALOG: 'file:open-dialog',
   FILE_WRITE_TEMP: 'file:write-temp',
   FILE_SAVE_AS: 'file:save-as',
+  FILE_SAVE_TEXT: 'file:save-text',
   SHELL_SHOW_ITEM: 'shell:show-item',
 
   // Gallery

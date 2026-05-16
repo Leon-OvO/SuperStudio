@@ -344,7 +344,7 @@ function ImageAttachmentThumb({
         type="button"
         onClick={onPreview}
         title={`${name}  (点击放大预览 · 右键菜单可编辑)`}
-        className="block h-16 w-16 rounded-xl border border-border shadow-sm overflow-hidden hover:ring-2 hover:ring-ring/40 transition-all"
+        className="block h-24 w-24 rounded-xl border border-border shadow-sm overflow-hidden hover:ring-2 hover:ring-ring/40 transition-all"
       >
         {failed ? (
           <span className="w-full h-full flex flex-col items-center justify-center gap-0.5 bg-muted text-muted-foreground">

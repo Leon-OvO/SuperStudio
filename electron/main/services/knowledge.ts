@@ -70,6 +70,7 @@ export async function indexContent(
   onProgress?: (current: number, total: number) => void
 ): Promise<void> {
   const chunks = chunkText(content)
+  if (chunks.length === 0) return
   const db = await getDb()
 
   const tableName = 'kb_chunks'
@@ -80,6 +81,8 @@ export async function indexContent(
     // table doesn't exist yet, will be created on first add
   }
 
+  // Snapshot the first vector's dimension so we can detect a model change
+  // before LanceDB throws a much less actionable error.
   const records: Array<{ id: string; space_id: string; source_id: string; content: string; vector: number[] }> = []
   for (let i = 0; i < chunks.length; i++) {
     onProgress?.(i + 1, chunks.length)
@@ -89,8 +92,25 @@ export async function indexContent(
 
   if (!table) {
     await db.createTable(tableName, records)
-  } else {
+    return
+  }
+
+  // If the existing table holds vectors of a different dimension, LanceDB
+  // would throw something like "expected vector of length 1536 but got 768".
+  // Re-shape that into a user-actionable error pointing at the reindex flow.
+  try {
     await table.add(records)
+  } catch (e) {
+    const msg = (e as Error).message || ''
+    const dimMatch = msg.match(/(\d+)[^\d]+(\d+)/)
+    if (/dimension|length|width|shape|expected/i.test(msg) && dimMatch) {
+      throw new Error(
+        `Embedding 模型维度与已有索引不匹配（期望 ${dimMatch[1]}，本次得到 ${dimMatch[2]}）。\n` +
+        `通常是你切换了「设置 → 默认模型 → Embedding 模型」之后旧索引还没重建。\n` +
+        `请进入「知识库」页 → 当前空间右上角 🔄 「重建索引」按钮，一键删除旧向量并按当前模型重新生成。`
+      )
+    }
+    throw e
   }
 }
 

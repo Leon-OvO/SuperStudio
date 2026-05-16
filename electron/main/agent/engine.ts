@@ -466,9 +466,29 @@ async function buildMessageHistory(
     const parts: Array<{ type: string; text?: string; image?: Buffer; mimeType?: string }> = [
       { type: 'text', text: textWithManifest }
     ]
+    // Inline image attachments as `image` parts so vision-capable models can
+    // see them directly. Log every step so when "AI can't see the image" gets
+    // reported we can pinpoint whether it's a path / read / mime issue.
     for (const att of attachments) {
-      if (att.mimeType.startsWith('image/')) {
-        parts.push({ type: 'image', image: fs.readFileSync(att.path), mimeType: att.mimeType })
+      const mt = att.mimeType ?? ''
+      if (!mt.startsWith('image/')) {
+        console.log(`[Agent] attachment "${att.name}" mime="${mt}" — not an image, will be referenced via manifest only`)
+        continue
+      }
+      if (!fs.existsSync(att.path)) {
+        console.warn(`[Agent] ⚠ image attachment file missing on disk — will be skipped:`, att.path)
+        parts[0].text = (parts[0].text ?? '') +
+          `\n\n[警告：附件 ${att.name} 的临时文件不存在 (${att.path})，AI 无法看到该图。可能原因：临时目录被清理、或粘贴时写入失败。请重新粘贴。]`
+        continue
+      }
+      try {
+        const data = fs.readFileSync(att.path)
+        parts.push({ type: 'image', image: data, mimeType: mt })
+        console.log(`[Agent] ✓ inlined image attachment "${att.name}" (${(data.length / 1024).toFixed(1)} KB, ${mt})`)
+      } catch (e) {
+        console.error(`[Agent] failed to read image attachment "${att.name}":`, (e as Error).message)
+        parts[0].text = (parts[0].text ?? '') +
+          `\n\n[警告：附件 ${att.name} 读取失败：${(e as Error).message}]`
       }
     }
     userContent = parts
