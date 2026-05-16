@@ -60,18 +60,21 @@ export function SettingsPage() {
     }
   }
 
-  async function handleImportConfig() {
+  async function handleImportConfig(strategy: 'merge' | 'replace' = 'merge') {
+    if (strategy === 'replace' && !confirm('确定要替换吗？本机现有提供商和 MCP 服务器都会被删除，导入文件里没有的条目将丢失。')) return
+
     setImportRunning(true)
     try {
-      const result = await window.api.importConfig?.()
+      const result = await window.api.importConfig?.({ strategy })
       if (result?.canceled) return
       if (result?.error) { alert('导入失败：' + result.error); return }
       if (result?.imported) {
         await reload()
         alert(
-          `配置已导入：${result.imported.providers} 个提供商，` +
-          `${result.imported.mcp} 个 MCP 服务器，` +
-          `${result.imported.settings ? '应用设置已恢复' : '无应用设置'}。\n\n` +
+          `配置已${strategy === 'replace' ? '替换式' : '合并式'}导入：\n` +
+          `· ${result.imported.providers} 个提供商\n` +
+          `· ${result.imported.mcp} 个 MCP 服务器\n` +
+          `· ${result.imported.settings ? '应用设置已恢复' : '未带应用设置'}\n\n` +
           `提示：API Key 是用源机器的密钥加密的，导入后请到「提供商」里逐个重新填写。`
         )
       }
@@ -116,7 +119,7 @@ export function SettingsPage() {
         {tab === 'about' && (
           <About
             onExportData={handleExportConfig}
-            onImportData={handleImportConfig}
+            onImportData={(strategy) => handleImportConfig(strategy)}
             exportRunning={exportRunning}
             importRunning={importRunning}
           />

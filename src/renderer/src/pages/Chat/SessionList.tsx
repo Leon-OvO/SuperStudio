@@ -1,5 +1,5 @@
 import { useState, useMemo, useRef, useEffect } from 'react'
-import { Plus, MessageSquare, Trash2, Search, X, Loader2 } from 'lucide-react'
+import { Plus, MessageSquare, Trash2, Search, X, Loader2, Archive, ArchiveRestore } from 'lucide-react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { cn } from '../../lib/utils'
 import type { Session } from '../../../../shared/ipc-types'
@@ -12,6 +12,7 @@ interface Props {
   onSelect: (id: string) => void
   onNew: () => void
   onDelete: (id: string) => void
+  onArchive: (id: string, archived: boolean) => void
 }
 
 const DAY = 86_400_000
@@ -37,11 +38,12 @@ type Row =
 const HEADER_HEIGHT = 30
 const SESSION_HEIGHT = 38
 
-export function SessionList({ sessions, activeId, isRunning, onSelect, onNew, onDelete }: Props) {
+export function SessionList({ sessions, activeId, isRunning, onSelect, onNew, onDelete, onArchive }: Props) {
   const [query, setQuery] = useState('')
   const [dateFilter, setDateFilter] = useState<DateFilter>({ kind: 'all' })
   const [contentMatchedIds, setContentMatchedIds] = useState<Set<string> | null>(null)
   const [searching, setSearching] = useState(false)
+  const [showArchived, setShowArchived] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
 
   // Full-text search: when the user types a query, hit the backend for the
@@ -62,11 +64,14 @@ export function SessionList({ sessions, activeId, isRunning, onSelect, onNew, on
     return () => clearTimeout(handle)
   }, [query])
 
+  const archivedCount = useMemo(() => sessions.filter(s => s.archived === 1).length, [sessions])
+
   const rows = useMemo<Row[]>(() => {
     const now = Date.now()
     const range = resolveDateRange(dateFilter, now)
     const q = query.trim().toLowerCase()
     const matched = sessions
+      .filter(s => showArchived || s.archived !== 1)
       .filter(s => {
         if (!q) return true
         // If FTS results are in, prefer them (covers title + message content);
@@ -104,7 +109,7 @@ export function SessionList({ sessions, activeId, isRunning, onSelect, onNew, on
       for (const s of g.items) out.push({ kind: 'session', session: s })
     }
     return out
-  }, [sessions, query, dateFilter])
+  }, [sessions, query, dateFilter, showArchived, contentMatchedIds])
 
   const virtualizer = useVirtualizer({
     count: rows.length,
@@ -154,8 +159,22 @@ export function SessionList({ sessions, activeId, isRunning, onSelect, onNew, on
       </div>
 
       {/* Date range filter: presets + custom */}
-      <div className="px-2.5 pb-2 border-b border-border/40">
+      <div className="px-2.5 pb-2 border-b border-border/40 space-y-1.5">
         <DateRangeFilter value={dateFilter} onChange={setDateFilter} />
+        {archivedCount > 0 && (
+          <button
+            onClick={() => setShowArchived(v => !v)}
+            className={cn(
+              'w-full flex items-center gap-1.5 px-2 py-1 rounded text-[11px] transition-colors',
+              showArchived
+                ? 'bg-primary/10 text-primary'
+                : 'text-muted-foreground/70 hover:text-foreground hover:bg-muted/60'
+            )}
+          >
+            <Archive size={10} />
+            {showArchived ? '隐藏归档' : `显示归档 (${archivedCount})`}
+          </button>
+        )}
       </div>
 
       {/* Virtualized grouped session list */}
@@ -195,6 +214,7 @@ export function SessionList({ sessions, activeId, isRunning, onSelect, onNew, on
                       disabled={isRunning && activeId !== row.session.id}
                       onSelect={onSelect}
                       onDelete={onDelete}
+                      onArchive={onArchive}
                     />
                   )}
                 </div>
@@ -208,14 +228,16 @@ export function SessionList({ sessions, activeId, isRunning, onSelect, onNew, on
 }
 
 function SessionItem({
-  session, active, disabled, onSelect, onDelete
+  session, active, disabled, onSelect, onDelete, onArchive
 }: {
   session: Session
   active: boolean
   disabled: boolean
   onSelect: (id: string) => void
   onDelete: (id: string) => void
+  onArchive: (id: string, archived: boolean) => void
 }) {
+  const isArchived = session.archived === 1
   return (
     <div
       className={cn(
@@ -223,17 +245,28 @@ function SessionItem({
         active
           ? 'bg-primary/10 text-foreground font-medium'
           : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground',
-        disabled && 'opacity-40 cursor-not-allowed'
+        disabled && 'opacity-40 cursor-not-allowed',
+        isArchived && !active && 'opacity-60'
       )}
       onClick={() => !disabled && onSelect(session.id)}
     >
       {active && (
         <span className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-4 bg-primary rounded-r-full" />
       )}
-      <MessageSquare size={12} className="shrink-0 opacity-60" />
+      {isArchived
+        ? <Archive size={12} className="shrink-0 opacity-50" />
+        : <MessageSquare size={12} className="shrink-0 opacity-60" />}
       <span className="flex-1 truncate leading-tight">{session.title}</span>
       <button
+        onClick={(e) => { e.stopPropagation(); onArchive(session.id, !isArchived) }}
+        title={isArchived ? '取消归档' : '归档（从列表隐藏，不删除）'}
+        className="opacity-0 group-hover:opacity-100 transition-opacity p-0.5 rounded hover:text-foreground shrink-0"
+      >
+        {isArchived ? <ArchiveRestore size={11} /> : <Archive size={11} />}
+      </button>
+      <button
         onClick={(e) => { e.stopPropagation(); onDelete(session.id) }}
+        title="永久删除"
         className="opacity-0 group-hover:opacity-100 transition-opacity p-0.5 rounded hover:text-destructive shrink-0"
       >
         <Trash2 size={11} />

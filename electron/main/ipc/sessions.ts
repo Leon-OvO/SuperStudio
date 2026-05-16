@@ -5,7 +5,7 @@ import { randomUUID } from 'crypto'
 
 export function sessionHandlers(): void {
   ipcMain.handle(IPC.SESSIONS_LIST, () =>
-    dbAll(`SELECT id, title, created_at AS createdAt, updated_at AS updatedAt FROM sessions ORDER BY updated_at DESC`)
+    dbAll(`SELECT id, title, created_at AS createdAt, updated_at AS updatedAt, COALESCE(archived, 0) AS archived FROM sessions ORDER BY updated_at DESC`)
   )
 
   ipcMain.handle(IPC.SESSIONS_CREATE, (_e, title?: string) => {
@@ -25,6 +25,11 @@ export function sessionHandlers(): void {
 
   ipcMain.handle(IPC.SESSIONS_RENAME, (_e, id: string, title: string) => {
     dbRun(`UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?`, [title, Date.now(), id])
+    return { ok: true }
+  })
+
+  ipcMain.handle(IPC.SESSIONS_ARCHIVE, (_e, id: string, archived: boolean) => {
+    dbRun(`UPDATE sessions SET archived = ? WHERE id = ?`, [archived ? 1 : 0, id])
     return { ok: true }
   })
 
@@ -86,18 +91,21 @@ export function sessionHandlers(): void {
    * sql.js doesn't have a real FTS index, but case-insensitive LIKE on the
    * messages.content column scales fine to tens of thousands of rows.
    */
-  ipcMain.handle(IPC.SESSIONS_SEARCH, (_e, rawQuery: string) => {
+  ipcMain.handle(IPC.SESSIONS_SEARCH, (_e, rawQuery: string, includeArchived = false) => {
     const q = (rawQuery ?? '').trim()
     if (!q) return { matchedSessionIds: [] as string[] }
     const like = `%${q.replace(/[%_]/g, ch => '\\' + ch)}%`
 
+    const archivedFilter = includeArchived ? '' : ' AND COALESCE(archived, 0) = 0'
     const byTitle = dbAll<{ id: string }>(
-      `SELECT id FROM sessions WHERE title LIKE ? ESCAPE '\\'`,
+      `SELECT id FROM sessions WHERE title LIKE ? ESCAPE '\\'` + archivedFilter,
       [like]
     ).map(r => r.id)
 
     const byContent = dbAll<{ session_id: string }>(
-      `SELECT DISTINCT session_id FROM messages WHERE content LIKE ? ESCAPE '\\'`,
+      `SELECT DISTINCT m.session_id FROM messages m
+       JOIN sessions s ON s.id = m.session_id
+       WHERE m.content LIKE ? ESCAPE '\\'` + (includeArchived ? '' : ' AND COALESCE(s.archived, 0) = 0'),
       [like]
     ).map(r => r.session_id)
 

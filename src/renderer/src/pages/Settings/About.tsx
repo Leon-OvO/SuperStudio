@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Loader2, RefreshCw, Check, AlertCircle, Sparkles, ExternalLink, Database, Download, Upload, FileWarning, Trash2, Copy } from 'lucide-react'
+import { useT } from '../../lib/i18n'
 
 interface UpdateStatusView {
   kind: string
@@ -11,7 +12,7 @@ interface UpdateStatusView {
 
 interface Props {
   onExportData: () => void
-  onImportData: () => void
+  onImportData: (strategy?: 'merge' | 'replace') => void
   exportRunning?: boolean
   importRunning?: boolean
 }
@@ -20,6 +21,7 @@ export function About({ onExportData, onImportData, exportRunning, importRunning
   const [version, setVersion] = useState<string>('')
   const [status, setStatus] = useState<UpdateStatusView>({ kind: 'idle' })
   const [checking, setChecking] = useState(false)
+  const t = useT()
 
   useEffect(() => {
     window.api.appVersion?.().then((v: string) => setVersion(v)).catch(() => {})
@@ -61,18 +63,18 @@ export function About({ onExportData, onImportData, exportRunning, importRunning
           <Sparkles size={18} className="text-primary-foreground" />
         </div>
         <div>
-          <h2 className="text-lg font-semibold">SuperStudio</h2>
-          <p className="text-xs text-muted-foreground">本地优先的 AI 桌面工作台</p>
+          <h2 className="text-lg font-semibold">{t('about.title')}</h2>
+          <p className="text-xs text-muted-foreground">{t('about.tagline')}</p>
         </div>
       </header>
 
       <section className="space-y-1.5">
         <div className="grid grid-cols-[120px_1fr] gap-y-2 text-sm">
-          <span className="text-muted-foreground">版本</span>
-          <span className="font-mono">{version || '加载中…'}</span>
-          <span className="text-muted-foreground">平台</span>
+          <span className="text-muted-foreground">{t('about.version')}</span>
+          <span className="font-mono">{version || t('about.loading')}</span>
+          <span className="text-muted-foreground">{t('about.platform')}</span>
           <span className="font-mono text-xs">{window.api.platform ?? 'unknown'}</span>
-          <span className="text-muted-foreground">仓库</span>
+          <span className="text-muted-foreground">{t('about.repo')}</span>
           <a
             href="https://gitee.com/leonops/SuperStudio"
             target="_blank"
@@ -86,7 +88,7 @@ export function About({ onExportData, onImportData, exportRunning, importRunning
       </section>
 
       <section className="space-y-3 border-t border-border pt-5">
-        <h3 className="text-sm font-medium flex items-center gap-1.5"><RefreshCw size={13} /> 自动更新</h3>
+        <h3 className="text-sm font-medium flex items-center gap-1.5"><RefreshCw size={13} /> {t('about.autoUpdate')}</h3>
         <div className="flex items-center gap-3 text-sm">
           <StatusIcon tone={label.tone} />
           <span className={label.tone === 'bad' ? 'text-destructive' : 'text-foreground/85'}>{label.text}</span>
@@ -98,7 +100,7 @@ export function About({ onExportData, onImportData, exportRunning, importRunning
             className="btn-secondary"
           >
             {checking || status.kind === 'checking' ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />}
-            立即检查
+            {t('about.checkNow')}
           </button>
           {status.kind === 'ready' && (
             <button onClick={() => window.api.installUpdate?.()} className="btn-primary">
@@ -112,28 +114,38 @@ export function About({ onExportData, onImportData, exportRunning, importRunning
       </section>
 
       <section className="space-y-3 border-t border-border pt-5">
-        <h3 className="text-sm font-medium flex items-center gap-1.5"><Database size={13} /> 数据备份</h3>
+        <h3 className="text-sm font-medium flex items-center gap-1.5"><Database size={13} /> {t('about.dataBackup')}</h3>
         <p className="text-sm text-muted-foreground leading-relaxed">
           一键打包导出所有本地配置（提供商、默认模型、MCP 服务器、应用设置）。
           换电脑或重装时导入这个文件即可恢复，无需逐项重填 API Key。
           <strong className="text-foreground"> 不</strong>包含对话记录、画廊文件、知识库向量等大体积数据。
         </p>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <button
             onClick={onExportData}
             disabled={exportRunning}
             className="btn-secondary"
           >
             {exportRunning ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
-            导出配置
+            {t('about.exportConfig')}
           </button>
           <button
-            onClick={onImportData}
+            onClick={() => onImportData('merge')}
             disabled={importRunning}
             className="btn-secondary"
+            title="保留本机现有提供商和 MCP 服务器，相同 id 的会被文件里的覆盖"
           >
             {importRunning ? <Loader2 size={13} className="animate-spin" /> : <Upload size={13} />}
-            导入配置
+            {t('about.importMerge')}
+          </button>
+          <button
+            onClick={() => onImportData('replace')}
+            disabled={importRunning}
+            className="btn-secondary text-destructive hover:!bg-destructive/10"
+            title="先清空本机配置再导入。本机有但文件没有的条目会被删除"
+          >
+            <Upload size={13} />
+            {t('about.importReplace')}
           </button>
         </div>
         <p className="text-[11px] text-muted-foreground/70 leading-relaxed">

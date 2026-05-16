@@ -11,6 +11,7 @@ import { searchWeb } from '../services/search'
 import { saveGalleryItem } from '../services/gallery'
 import { searchKnowledge } from '../services/knowledge'
 import { mcpManager, type McpTool } from '../services/mcp'
+import { notifyTaskComplete } from '../services/tray'
 import { dbRun, dbAll, dbGet } from '../db/sqlite'
 import { randomUUID } from 'crypto'
 import path from 'path'
@@ -411,6 +412,10 @@ export async function runAgent(
       meta: metaParsed,
       ...(sessionTitle ? { sessionTitle } : {})
     })
+    notifyTaskComplete(() => win, {
+      title: 'SuperStudio：回复已完成',
+      body: fullText.slice(0, 120) || '助手已生成回复。'
+    })
   } catch (err: unknown) {
     console.error('[Agent] error', err)
     if ((err as Error)?.name === 'AbortError') {
@@ -656,6 +661,10 @@ async function runDirectImageGeneration(opts: {
       toolCallLog,
       meta: metaParsed,
       ...(sessionTitle ? { sessionTitle } : {})
+    })
+    notifyTaskComplete(() => win, {
+      title: 'SuperStudio：图片已生成',
+      body: replyText.slice(0, 120) || '图片生成完成。'
     })
   } catch (err) {
     const msg = (err as Error)?.message || String(err)

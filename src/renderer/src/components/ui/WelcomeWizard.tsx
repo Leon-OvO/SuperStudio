@@ -4,6 +4,7 @@ import type { ProviderConfig, AppSettings } from '../../../../shared/ipc-types'
 import { Select } from './Select'
 import { cn } from '../../lib/utils'
 import { randomId } from '../../lib/id'
+import { useT } from '../../lib/i18n'
 
 interface Props {
   onDismiss: () => void
@@ -29,6 +30,7 @@ const PROVIDER_PRESETS: Array<{ key: ProviderConfig['type']; label: string; plac
  * configured (so it doesn't pester returning users).
  */
 export function WelcomeWizard({ onDismiss }: Props) {
+  const t = useT()
   const [step, setStep] = useState<Step>('welcome')
   const [provider, setProvider] = useState<ProviderConfig>({
     id: '',
@@ -127,7 +129,7 @@ export function WelcomeWizard({ onDismiss }: Props) {
             <div className="w-7 h-7 rounded-lg bg-primary flex items-center justify-center">
               <Sparkles size={14} className="text-primary-foreground" />
             </div>
-            <h2 className="font-semibold">欢迎使用 SuperStudio</h2>
+            <h2 className="font-semibold">{t('welcome.title')}</h2>
           </div>
           <button
             onClick={onDismiss}
@@ -140,13 +142,13 @@ export function WelcomeWizard({ onDismiss }: Props) {
 
         {/* Step indicator */}
         <div className="px-6 pt-4 pb-2 flex items-center gap-1.5">
-          <StepDot active={step === 'welcome'} done={step !== 'welcome'} label="开始" />
+          <StepDot active={step === 'welcome'} done={step !== 'welcome'} label={t('welcome.stepStart')} />
           <StepConnector done={step !== 'welcome'} />
-          <StepDot active={step === 'provider'} done={step === 'model' || step === 'done'} label="提供商" />
+          <StepDot active={step === 'provider'} done={step === 'model' || step === 'done'} label={t('welcome.stepProvider')} />
           <StepConnector done={step === 'model' || step === 'done'} />
-          <StepDot active={step === 'model'} done={step === 'done'} label="默认模型" />
+          <StepDot active={step === 'model'} done={step === 'done'} label={t('welcome.stepModel')} />
           <StepConnector done={step === 'done'} />
-          <StepDot active={step === 'done'} done={step === 'done'} label="完成" />
+          <StepDot active={step === 'done'} done={step === 'done'} label={t('welcome.stepDone')} />
         </div>
 
         {/* Step content */}
@@ -282,7 +284,7 @@ export function WelcomeWizard({ onDismiss }: Props) {
             onClick={onDismiss}
             className="text-xs text-muted-foreground hover:text-foreground"
           >
-            稍后再配
+            {t('welcome.dismiss')}
           </button>
 
           <div className="flex gap-2">
@@ -291,38 +293,38 @@ export function WelcomeWizard({ onDismiss }: Props) {
                 onClick={() => setStep('provider')}
                 className="btn-primary"
               >
-                开始 <ArrowRight size={13} />
+                {t('welcome.start')} <ArrowRight size={13} />
               </button>
             )}
             {step === 'provider' && (
               <>
-                <button onClick={() => setStep('welcome')} className="btn-secondary">上一步</button>
+                <button onClick={() => setStep('welcome')} className="btn-secondary">{t('welcome.prev')}</button>
                 <button
                   onClick={async () => { if (await saveAndFetchModels()) setStep('model') }}
                   disabled={fetching}
                   className="btn-primary"
                 >
                   {fetching ? <Loader2 size={13} className="animate-spin" /> : <ArrowRight size={13} />}
-                  下一步
+                  {t('welcome.next')}
                 </button>
               </>
             )}
             {step === 'model' && (
               <>
-                <button onClick={() => setStep('provider')} className="btn-secondary">上一步</button>
+                <button onClick={() => setStep('provider')} className="btn-secondary">{t('welcome.prev')}</button>
                 <button
                   onClick={saveDefaultsAndFinish}
                   disabled={fetching || (provider.models.length > 0 && !chatModel)}
                   className={cn('btn-primary', !chatModel && provider.models.length > 0 && 'opacity-50 cursor-not-allowed')}
                 >
                   {fetching ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}
-                  完成
+                  {t('welcome.finish')}
                 </button>
               </>
             )}
             {step === 'done' && (
               <button onClick={onDismiss} className="btn-primary">
-                开始使用 <ArrowRight size={13} />
+                {t('welcome.beginUsing')} <ArrowRight size={13} />
               </button>
             )}
           </div>

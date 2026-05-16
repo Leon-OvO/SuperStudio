@@ -1,7 +1,8 @@
 import { useEffect, useState, useMemo, useCallback, useRef } from 'react'
 import {
   Trash2, Image as ImageIcon, Video as VideoIcon, X, CheckSquare, Square, Search,
-  ChevronLeft, ChevronRight, Copy, Download, FolderOpen, Check, ImagePlus, Wand2
+  ChevronLeft, ChevronRight, Copy, Download, FolderOpen, Check, ImagePlus, Wand2,
+  FolderDown
 } from 'lucide-react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import type { GalleryItem } from '../../../../shared/ipc-types'
@@ -87,6 +88,39 @@ export function GalleryPage() {
     await reload()
   }
 
+  async function handleBatchSave() {
+    if (selected.size === 0) return
+    const result = await window.api.batchSaveGallery(Array.from(selected))
+    if (result.canceled) return
+    const failed = result.failures?.length ?? 0
+    if (failed > 0) {
+      alert(`已保存 ${result.saved} 项到 ${result.targetDir}\n${failed} 项保存失败（源文件可能已被删除）`)
+    } else {
+      alert(`已保存 ${result.saved} 项到 ${result.targetDir}`)
+    }
+  }
+
+  function handleBatchUseAsReference() {
+    if (selected.size === 0) return
+    const imageItems = items.filter(i => selected.has(i.id) && i.type === 'image')
+    if (imageItems.length === 0) {
+      alert('选中的项目中没有图片')
+      return
+    }
+    const attachments = imageItems.map(item => {
+      const filename = item.filePath.split(/[\\/]/).pop() || 'reference.png'
+      const ext = filename.split('.').pop()?.toLowerCase() || 'png'
+      const mime = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg'
+                 : ext === 'webp' ? 'image/webp'
+                 : ext === 'gif' ? 'image/gif'
+                 : 'image/png'
+      return { name: filename, path: item.filePath, mimeType: mime }
+    })
+    setPendingChatAttachments(attachments)
+    setPendingChatImageMode(true)
+    setUIPage('chat')
+  }
+
   function toggleSelect(id: number) {
     const next = new Set(selected)
     if (next.has(id)) next.delete(id); else next.add(id)
@@ -170,18 +204,36 @@ export function GalleryPage() {
             {allSelected ? <CheckSquare size={13} /> : <Square size={13} />}
             {allSelected ? '取消全选' : '全选'}
           </button>
-          {selected.size > 0 && (
+          {selected.size > 0 ? (
             <>
               <span className="text-foreground/60">已选 {selected.size} 项</span>
-              <button
-                onClick={handleBatchDelete}
-                className="ml-auto flex items-center gap-1.5 text-destructive hover:opacity-80 transition-opacity"
-              >
-                <Trash2 size={12} /> 删除选中
-              </button>
+              <div className="ml-auto flex items-center gap-3">
+                <button
+                  onClick={handleBatchUseAsReference}
+                  className="flex items-center gap-1.5 hover:text-foreground transition-colors"
+                  title="将选中的图片用作下次对话的参考图"
+                >
+                  <ImagePlus size={12} /> 用作参考图
+                </button>
+                <button
+                  onClick={handleBatchSave}
+                  className="flex items-center gap-1.5 hover:text-foreground transition-colors"
+                  title="将选中项导出到本地文件夹"
+                >
+                  <FolderDown size={12} /> 保存到文件夹
+                </button>
+                <button
+                  onClick={handleBatchDelete}
+                  className="flex items-center gap-1.5 text-destructive hover:opacity-80 transition-opacity"
+                >
+                  <Trash2 size={12} /> 删除选中
+                </button>
+                <span className="text-muted-foreground/50">{filtered.length} 项</span>
+              </div>
             </>
+          ) : (
+            <span className="ml-auto text-muted-foreground/50">{filtered.length} 项</span>
           )}
-          <span className="ml-auto text-muted-foreground/50">{filtered.length} 项</span>
         </div>
       )}
 

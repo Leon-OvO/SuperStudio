@@ -148,6 +148,10 @@ app.whenReady().then(async () => {
     initAutoUpdater(mainWindow)
   }
 
+  // System tray — quick window-restore + quit. Notifications also live in this module.
+  const { initTray } = await import('./services/tray')
+  initTray(() => mainWindow)
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
@@ -161,6 +165,8 @@ app.on('before-quit', async () => {
   // Shut down any spawned MCP subprocesses cleanly
   const { mcpManager } = await import('./services/mcp')
   await mcpManager.disconnectAll().catch(() => {})
+  const { destroyTray } = await import('./services/tray')
+  destroyTray()
 })
 
 export function getMainWindow(): BrowserWindow | null {

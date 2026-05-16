@@ -116,6 +116,9 @@ function createTables(): void {
 function applyMigrations(): void {
   // v1: message metadata column
   try { db.run(`ALTER TABLE messages ADD COLUMN meta TEXT`) } catch { /* already exists */ }
+  // v2: session archive flag — soft-delete style. Lets users hide noisy
+  // sessions without losing history, and provides a recoverable trash bucket.
+  try { db.run(`ALTER TABLE sessions ADD COLUMN archived INTEGER NOT NULL DEFAULT 0`) } catch { /* already exists */ }
 }
 
 // Helper: run a query and save

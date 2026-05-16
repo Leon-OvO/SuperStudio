@@ -1,16 +1,21 @@
-import { MessageSquare, Zap, Image, BookOpen, Settings, Sun, Moon } from 'lucide-react'
+import { MessageSquare, Zap, Image, BookOpen, Settings, Sun, Moon, Languages } from 'lucide-react'
 import { useUIStore } from '../../stores/ui'
 import { cn } from '../../lib/utils'
-
-const navItems = [
-  { id: 'chat' as const, icon: MessageSquare, label: '对话' },
-  { id: 'workflow' as const, icon: Zap, label: '工作流' },
-  { id: 'gallery' as const, icon: Image, label: '画廊' },
-  { id: 'knowledge' as const, icon: BookOpen, label: '知识库' },
-]
+import { useT, setLanguage, useLanguage } from '../../lib/i18n'
 
 export function Sidebar() {
   const { currentPage, setPage, theme, toggleTheme } = useUIStore()
+  const t = useT()
+  const lang = useLanguage()
+
+  const navItems = [
+    { id: 'chat' as const, icon: MessageSquare, label: t('nav.chat') },
+    { id: 'workflow' as const, icon: Zap, label: t('nav.workflow') },
+    { id: 'gallery' as const, icon: Image, label: t('nav.gallery') },
+    { id: 'knowledge' as const, icon: BookOpen, label: t('nav.knowledge') },
+  ]
+
+  const themeLabel = theme === 'dark' ? t('nav.themeLight') : t('nav.themeDark')
 
   return (
     <aside className="w-[52px] flex flex-col items-center py-3 gap-0.5 bg-sidebar border-r border-sidebar-border shrink-0">
@@ -47,10 +52,23 @@ export function Sidebar() {
       <div className="flex-1" />
 
       <div className="w-full px-2 flex flex-col gap-0.5">
+        {/* Language toggle */}
+        <button
+          onClick={() => setLanguage(lang === 'zh' ? 'en' : 'zh')}
+          title={t('nav.languageSwitch')}
+          className="w-full h-9 rounded-lg flex items-center justify-center transition-all relative group text-muted-foreground hover:bg-accent hover:text-foreground"
+        >
+          <Languages size={16} strokeWidth={1.75} />
+          <span className="absolute right-1 bottom-1 text-[8px] font-bold leading-none">{lang.toUpperCase()}</span>
+          <span className="pointer-events-none absolute left-full ml-2 px-2 py-1 rounded-md bg-foreground/90 text-background text-[11px] whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity z-50 shadow-lg">
+            {t('nav.languageSwitch')}
+          </span>
+        </button>
+
         {/* Theme toggle */}
         <button
           onClick={toggleTheme}
-          title={theme === 'dark' ? '切换亮色' : '切换暗色'}
+          title={themeLabel}
           className="w-full h-9 rounded-lg flex items-center justify-center transition-all relative group text-muted-foreground hover:bg-accent hover:text-foreground"
         >
           {theme === 'dark'
@@ -58,14 +76,14 @@ export function Sidebar() {
             : <Moon size={16} strokeWidth={1.75} />
           }
           <span className="pointer-events-none absolute left-full ml-2 px-2 py-1 rounded-md bg-foreground/90 text-background text-[11px] whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity z-50 shadow-lg">
-            {theme === 'dark' ? '切换亮色' : '切换暗色'}
+            {themeLabel}
           </span>
         </button>
 
         {/* Settings */}
         <button
           onClick={() => setPage('settings')}
-          title="设置"
+          title={t('nav.settings')}
           className={cn(
             'w-full h-9 rounded-lg flex items-center justify-center transition-all relative group',
             currentPage === 'settings'
@@ -75,7 +93,7 @@ export function Sidebar() {
         >
           <Settings size={17} strokeWidth={currentPage === 'settings' ? 2 : 1.75} />
           <span className="pointer-events-none absolute left-full ml-2 px-2 py-1 rounded-md bg-foreground/90 text-background text-[11px] whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity z-50 shadow-lg">
-            设置
+            {t('nav.settings')}
           </span>
         </button>
       </div>

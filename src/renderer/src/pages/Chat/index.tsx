@@ -169,6 +169,12 @@ export function ChatPage() {
     removeSession(id)
   }
 
+  async function handleArchiveSession(id: string, archived: boolean) {
+    await window.api.archiveSession(id, archived)
+    const data = await window.api.listSessions()
+    setSessions(data)
+  }
+
   async function doSend(sessionId: string, text: string, attachments?: Array<{ name: string; path: string; mimeType: string }>) {
     clearSteps()
     setRunning(true)
@@ -327,6 +333,7 @@ export function ChatPage() {
         onSelect={handleSelectSession}
         onNew={handleNewSession}
         onDelete={handleDeleteSession}
+        onArchive={handleArchiveSession}
         isRunning={isRunning}
       />
       <div className="flex-1 flex flex-col min-w-0">

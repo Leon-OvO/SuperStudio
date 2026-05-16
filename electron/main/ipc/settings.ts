@@ -123,13 +123,14 @@ export function settingsHandlers(): void {
     return { canceled: false, filePath: dlg.filePath }
   })
 
-  ipcMain.handle(IPC.CONFIG_IMPORT, async (e) => {
+  ipcMain.handle(IPC.CONFIG_IMPORT, async (e, opts?: { strategy?: 'merge' | 'replace' }) => {
     const win = BrowserWindow.fromWebContents(e.sender)
-    const opts = {
+    const strategy = opts?.strategy ?? 'merge'  // safe default
+    const dlgOpts = {
       properties: ['openFile' as const],
       filters: [{ name: 'JSON', extensions: ['json'] }]
     }
-    const dlg = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts)
+    const dlg = win ? await dialog.showOpenDialog(win, dlgOpts) : await dialog.showOpenDialog(dlgOpts)
     if (dlg.canceled || dlg.filePaths.length === 0) return { canceled: true }
 
     let parsed: unknown
@@ -148,6 +149,16 @@ export function settingsHandlers(): void {
       return { canceled: false, error: '不是 SuperStudio 配置导出文件（缺少 version=1）' }
     }
 
+    // 'replace' = nuke local list first; 'merge' = keep existing IDs and only
+    // overwrite when the imported file has the same id (saveProvider/saveMcpServer
+    // already handle that idempotently because they update by id).
+    if (strategy === 'replace') {
+      for (const p of getProviders()) deleteProvider(p.id)
+      const existingMcp = getMcpServers()
+      const { deleteMcpServer } = await import('../services/store')
+      for (const s of existingMcp) deleteMcpServer(s.id)
+    }
+
     let imported = { providers: 0, mcp: 0, settings: 0 }
     for (const p of data.providers ?? []) {
       // Save through public helper so safeStorage re-encrypts the key for THIS machine
@@ -162,6 +173,6 @@ export function settingsHandlers(): void {
       saveSettings(data.settings as Parameters<typeof saveSettings>[0])
       imported.settings = 1
     }
-    return { canceled: false, imported, filePath: dlg.filePaths[0] }
+    return { canceled: false, imported, strategy, filePath: dlg.filePaths[0] }
   })
 }

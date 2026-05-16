@@ -16,6 +16,7 @@ const api = {
   createSession: (title?: string) => ipcRenderer.invoke(IPC.SESSIONS_CREATE, title),
   deleteSession: (id: string) => ipcRenderer.invoke(IPC.SESSIONS_DELETE, id),
   renameSession: (id: string, title: string) => ipcRenderer.invoke(IPC.SESSIONS_RENAME, id, title),
+  archiveSession: (id: string, archived: boolean) => ipcRenderer.invoke(IPC.SESSIONS_ARCHIVE, id, archived),
   listMessages: (sessionId: string) => ipcRenderer.invoke(IPC.MESSAGES_LIST, sessionId),
   deleteMessage: (messageId: string) => ipcRenderer.invoke(IPC.MESSAGES_DELETE, messageId),
   deleteMessagesFrom: (messageId: string) => ipcRenderer.invoke(IPC.MESSAGES_DELETE_FROM, messageId),
@@ -81,6 +82,7 @@ const api = {
   listGallery: (filters?: unknown) => ipcRenderer.invoke(IPC.GALLERY_LIST, filters),
   deleteGalleryItem: (id: number) => ipcRenderer.invoke(IPC.GALLERY_DELETE, id),
   batchDeleteGallery: (ids: number[]) => ipcRenderer.invoke(IPC.GALLERY_BATCH_DELETE, ids),
+  batchSaveGallery: (ids: number[]) => ipcRenderer.invoke(IPC.GALLERY_BATCH_SAVE, ids),
 
   // --- Knowledge Base ---
   listSpaces: () => ipcRenderer.invoke(IPC.KB_SPACES_LIST),
@@ -122,7 +124,8 @@ const api = {
 
   // --- Whole-app config export / import ---
   exportConfig: () => ipcRenderer.invoke(IPC.CONFIG_EXPORT),
-  importConfig: () => ipcRenderer.invoke(IPC.CONFIG_IMPORT),
+  importConfig: (opts?: { strategy?: 'merge' | 'replace' }) =>
+    ipcRenderer.invoke(IPC.CONFIG_IMPORT, opts),
 
   // --- Provider connection test ---
   testProvider: (provider: unknown) => ipcRenderer.invoke(IPC.PROVIDERS_TEST, provider),

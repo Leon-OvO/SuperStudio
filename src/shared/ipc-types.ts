@@ -14,6 +14,7 @@ export const IPC = {
   SESSIONS_CREATE: 'sessions:create',
   SESSIONS_DELETE: 'sessions:delete',
   SESSIONS_RENAME: 'sessions:rename',
+  SESSIONS_ARCHIVE: 'sessions:archive',
   MESSAGES_LIST: 'messages:list',
   MESSAGES_DELETE: 'messages:delete',          // delete a single message by id
   MESSAGES_DELETE_FROM: 'messages:delete-from', // delete this message + everything created after it (used for regenerate / edit)
@@ -50,6 +51,7 @@ export const IPC = {
   GALLERY_LIST: 'gallery:list',
   GALLERY_DELETE: 'gallery:delete',
   GALLERY_BATCH_DELETE: 'gallery:batch-delete',
+  GALLERY_BATCH_SAVE: 'gallery:batch-save',
 
   // Knowledge base
   KB_SPACES_LIST: 'kb:spaces-list',
@@ -192,6 +194,8 @@ export interface Session {
   title: string
   createdAt: number
   updatedAt: number
+  /** 1 = archived (hidden from default list); 0 / undefined = active */
+  archived?: number
 }
 
 export interface MessageMeta {
