@@ -1,6 +1,7 @@
 import { ipcMain, app, dialog, shell, BrowserWindow } from 'electron'
 import { IPC } from '../../../src/shared/ipc-types'
 import { readFile, writeFile } from '../services/fileops'
+import { registerApproved } from '../services/path-allow'
 import fs from 'fs'
 import path from 'path'
 
@@ -24,6 +25,7 @@ export function fileHandlers(): void {
     fs.mkdirSync(tempDir, { recursive: true })
     const filePath = path.join(tempDir, name)
     fs.writeFileSync(filePath, Buffer.from(data, 'base64'))
+    registerApproved(filePath)  // user-pasted → trusted for this session
     return { path: filePath, name }
   })
 

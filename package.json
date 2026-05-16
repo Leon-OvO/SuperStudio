@@ -24,6 +24,7 @@
     "ai": "^4.0.0",
     "clsx": "^2.1.1",
     "electron-store": "^8.2.0",
+    "electron-updater": "^6.8.3",
     "lucide-react": "^1.14.0",
     "mammoth": "^1.8.0",
     "pdfjs-dist": "^4.0.0",
@@ -61,6 +62,13 @@
     "appId": "com.superstudio.app",
     "productName": "SuperStudio",
     "copyright": "Copyright © 2025 SuperStudio",
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "xizim",
+        "repo": "SuperStudio"
+      }
+    ],
     "directories": {
       "buildResources": "build"
     },

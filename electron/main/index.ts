@@ -74,7 +74,7 @@ app.whenReady().then(async () => {
     png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
     gif: 'image/gif', webp: 'image/webp', mp4: 'video/mp4', webm: 'video/webm'
   }
-  protocol.handle('local-file', (req) => {
+  protocol.handle('local-file', async (req) => {
     // Chromium with standard:true normalizes local-file:///F:/path → local-file://f/path
     // where drive letter becomes lowercase hostname and the rest is pathname.
     const url = new URL(req.url)
@@ -85,6 +85,16 @@ app.whenReady().then(async () => {
     } else {
       filePath = decodeURIComponent(url.pathname)
     }
+
+    // Path allowlist — refuse to serve anything that isn't under userData OR
+    // hasn't been explicitly opened/attached by the user. Blocks prompt-injection
+    // attempts to exfiltrate arbitrary disk files through <img src="local-file:///...">.
+    const { isApproved } = await import('./services/path-allow')
+    if (!isApproved(filePath)) {
+      console.warn('[local-file] BLOCKED (not in allowlist):', filePath)
+      return new Response('forbidden', { status: 403 })
+    }
+
     const ext = filePath.split('.').pop()?.toLowerCase() ?? ''
     console.log('[local-file]', filePath)
     try {
@@ -127,6 +137,13 @@ app.whenReady().then(async () => {
   }
 
   createWindow()
+
+  // Hook autoUpdater after window exists (it needs a webContents to emit
+  // status events to). Skips silently in dev.
+  if (mainWindow) {
+    const { initAutoUpdater } = await import('./services/updater')
+    initAutoUpdater(mainWindow)
+  }
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()

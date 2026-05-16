@@ -8,12 +8,31 @@ import { GalleryPage } from './pages/Gallery'
 import { KnowledgePage } from './pages/Knowledge'
 import { SettingsPage } from './pages/Settings'
 import { ShortcutsHelp } from './components/ui/ShortcutsHelp'
+import { UpdateToast } from './components/ui/UpdateToast'
+import { WelcomeWizard } from './components/ui/WelcomeWizard'
 
 type PageId = 'chat' | 'workflow' | 'gallery' | 'knowledge' | 'settings'
 
 export default function App() {
   const { currentPage, setPage, theme, setPendingWorkflowId } = useUIStore()
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
+  const [showWelcome, setShowWelcome] = useState(false)
+
+  // Show the first-run wizard when no providers exist. Dismissing it
+  // (or completing it) marks the localStorage flag so returning users
+  // don't see it again even before they finish a full setup.
+  useEffect(() => {
+    const dismissed = localStorage.getItem('ss-welcome-dismissed') === '1'
+    if (dismissed) return
+    window.api.listProviders().then((providers: unknown[]) => {
+      if (providers.length === 0) setShowWelcome(true)
+    }).catch(() => {/* ignore — store may not be ready */})
+  }, [])
+
+  function dismissWelcome() {
+    localStorage.setItem('ss-welcome-dismissed', '1')
+    setShowWelcome(false)
+  }
 
   // Apply dark class before first paint to avoid flash
   useLayoutEffect(() => {
@@ -105,6 +124,8 @@ export default function App() {
       </div>
 
       <ShortcutsHelp open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
+      <UpdateToast />
+      {showWelcome && <WelcomeWizard onDismiss={dismissWelcome} />}
     </div>
   )
 }

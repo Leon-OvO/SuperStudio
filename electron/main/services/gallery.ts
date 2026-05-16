@@ -1,6 +1,7 @@
 import { dbRun, dbAll, dbGet } from '../db/sqlite'
 import fs from 'fs'
 import type { GalleryItem } from '../../../src/shared/ipc-types'
+import { invalidateDbCache, registerApproved } from './path-allow'
 
 interface SaveParams {
   type: 'image' | 'video'
@@ -29,6 +30,12 @@ export async function saveGalleryItem(params: SaveParams): Promise<number> {
       Date.now()
     ]
   )
+  // Gallery items live under userData so they'd already be allowed by the root
+  // prefix check, but invalidate the cache + explicitly register so deleted
+  // items don't linger and the search is O(1).
+  invalidateDbCache()
+  registerApproved(params.filePath)
+  if (params.thumbnailPath) registerApproved(params.thumbnailPath)
   const row = dbGet<{ id: number }>(`SELECT last_insert_rowid() as id`)
   return row?.id ?? 0
 }

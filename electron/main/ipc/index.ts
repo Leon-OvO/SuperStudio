@@ -9,6 +9,7 @@ import { kbHandlers } from './knowledge'
 import { workflowHandlers } from './workflows'
 import { imageEditHandlers } from './image-edit'
 import { mcpHandlers } from './mcp'
+import { checkForUpdates, quitAndInstall, getUpdateStatus } from '../services/updater'
 
 export function registerIpcHandlers(): void {
   settingsHandlers()
@@ -20,6 +21,11 @@ export function registerIpcHandlers(): void {
   workflowHandlers()
   imageEditHandlers()
   mcpHandlers()
+
+  ipcMain.handle(IPC.APP_VERSION, () => app.getVersion())
+  ipcMain.handle(IPC.UPDATE_CHECK, () => checkForUpdates())
+  ipcMain.handle(IPC.UPDATE_INSTALL, () => { quitAndInstall(); return { ok: true } })
+  ipcMain.handle(IPC.UPDATE_STATUS, () => getUpdateStatus())
 
   ipcMain.handle(IPC.FILE_OPEN_DIALOG, async (_e, options) => {
     const result = await dialog.showOpenDialog({
@@ -34,6 +40,9 @@ export function registerIpcHandlers(): void {
       ],
       ...options
     })
+    // User explicitly handed us these paths → trust them for this session.
+    const { registerApproved } = await import('../services/path-allow')
+    for (const p of result.filePaths) registerApproved(p)
     return result.filePaths
   })
 }
