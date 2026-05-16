@@ -1,8 +1,9 @@
-import { useEffect, useState, useMemo, useCallback } from 'react'
+import { useEffect, useState, useMemo, useCallback, useRef } from 'react'
 import {
   Trash2, Image as ImageIcon, Video as VideoIcon, X, CheckSquare, Square, Search,
   ChevronLeft, ChevronRight, Copy, Download, FolderOpen, Check, ImagePlus, Wand2
 } from 'lucide-react'
+import { useVirtualizer } from '@tanstack/react-virtual'
 import type { GalleryItem } from '../../../../shared/ipc-types'
 import { cn, formatDate } from '../../lib/utils'
 import { copyImageToClipboard } from '../../lib/clipboard'
@@ -184,47 +185,27 @@ export function GalleryPage() {
         </div>
       )}
 
-      <div className="flex-1 overflow-y-auto p-6">
-        {loading ? (
-          <p className="text-center text-muted-foreground text-sm py-20">加载中…</p>
-        ) : filtered.length === 0 ? (
-          <div className="text-center text-muted-foreground text-sm mt-20">
+      {loading ? (
+        <p className="text-center text-muted-foreground text-sm py-20">加载中…</p>
+      ) : filtered.length === 0 ? (
+        <div className="flex-1 flex items-center justify-center">
+          <div className="text-center text-muted-foreground text-sm">
             <p className="text-3xl mb-3">🖼️</p>
             <p>{query ? '未找到匹配的内容' : '暂无内容，去「对话」或「工作流」生成一些试试。'}</p>
           </div>
-        ) : (
-          <div className="space-y-8">
-            {grouped.map(group => (
-              <section key={group.label}>
-                <h3 className="text-xs font-semibold text-muted-foreground/60 uppercase tracking-widest mb-3">{group.label}</h3>
-                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
-                  {group.items.map(item => (
-                    <GalleryCard
-                      key={item.id}
-                      item={item}
-                      selected={selected.has(item.id)}
-                      onToggle={() => toggleSelect(item.id)}
-                      onPreview={() => openPreview(item)}
-                      onDelete={() => handleDelete(item.id)}
-                      onUseAsReference={item.type === 'image' ? () => useAsReference(item) : undefined}
-                      onEdit={item.type === 'image' ? () => setEditorItem(item) : undefined}
-                      onContextMenu={(e) => {
-                        if (item.type !== 'image') return
-                        ctxMenu.open(e, {
-                          filePath: item.filePath,
-                          src: toLocalUrl(item.filePath),
-                          onPreview: () => openPreview(item),
-                          onEdit: () => setEditorItem(item)
-                        })
-                      }}
-                    />
-                  ))}
-                </div>
-              </section>
-            ))}
-          </div>
-        )}
-      </div>
+        </div>
+      ) : (
+        <VirtualGalleryGrid
+          grouped={grouped}
+          selectedIds={selected}
+          onToggleSelect={toggleSelect}
+          onPreviewItem={openPreview}
+          onDeleteItem={handleDelete}
+          onUseAsReference={useAsReference}
+          onEditItem={setEditorItem}
+          ctxMenu={ctxMenu}
+        />
+      )}
 
       {previewIndex !== null && filtered[previewIndex] && (
         <PreviewModal
@@ -277,6 +258,159 @@ interface CardProps {
   onUseAsReference?: () => void
   onEdit?: () => void
   onContextMenu: (e: React.MouseEvent) => void
+}
+
+/** Detect Tailwind breakpoint columns from container width. Matches the
+ *  original `grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5` recipe. */
+function columnsForWidth(w: number): number {
+  if (w >= 1280) return 5
+  if (w >= 1024) return 4
+  if (w >= 768) return 3
+  return 2
+}
+
+type GridRow =
+  | { kind: 'header'; label: string; itemCount: number }
+  | { kind: 'items'; items: GalleryItem[] }
+
+interface VirtualGridProps {
+  grouped: Array<{ label: string; items: GalleryItem[] }>
+  selectedIds: Set<number>
+  onToggleSelect: (id: number) => void
+  onPreviewItem: (item: GalleryItem) => void
+  onDeleteItem: (id: number) => void
+  onUseAsReference: (item: GalleryItem) => void
+  onEditItem: (item: GalleryItem) => void
+  ctxMenu: ReturnType<typeof useImageContextMenu>
+}
+
+/**
+ * Virtualized gallery grid. Packs each group into a header row plus N item
+ * rows of `cols` cells each. Column count + cell size react to the scroll
+ * container width via ResizeObserver, matching the responsive Tailwind grid
+ * the page used before virtualization.
+ */
+function VirtualGalleryGrid({
+  grouped, selectedIds, onToggleSelect, onPreviewItem, onDeleteItem,
+  onUseAsReference, onEditItem, ctxMenu
+}: VirtualGridProps) {
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const [containerWidth, setContainerWidth] = useState(0)
+
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    setContainerWidth(el.clientWidth)
+    const ro = new ResizeObserver(entries => {
+      for (const entry of entries) setContainerWidth(entry.contentRect.width)
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+
+  const PADDING_X = 24       // p-6 horizontal
+  const GAP = 12             // gap-3
+  const HEADER_H = 36        // section header row height including spacing
+  const ROW_GAP = 12         // vertical gap between rows
+
+  const cols = Math.max(1, columnsForWidth(containerWidth))
+  const usable = Math.max(0, containerWidth - PADDING_X * 2 - GAP * (cols - 1))
+  const cellSize = containerWidth > 0 ? Math.floor(usable / cols) : 200  // aspect-square: width === height
+
+  // Build flat rows
+  const rows = useMemo<GridRow[]>(() => {
+    const out: GridRow[] = []
+    for (const g of grouped) {
+      out.push({ kind: 'header', label: g.label, itemCount: g.items.length })
+      for (let i = 0; i < g.items.length; i += cols) {
+        out.push({ kind: 'items', items: g.items.slice(i, i + cols) })
+      }
+    }
+    return out
+  }, [grouped, cols])
+
+  const virtualizer = useVirtualizer({
+    count: rows.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: (index) => {
+      const row = rows[index]
+      if (!row) return HEADER_H
+      return row.kind === 'header' ? HEADER_H : cellSize + ROW_GAP
+    },
+    overscan: 4,
+    getItemKey: (index) => {
+      const r = rows[index]
+      if (!r) return index
+      if (r.kind === 'header') return `h:${r.label}`
+      return `i:${r.items.map(it => it.id).join(',')}`
+    }
+  })
+
+  // Recompute estimateSize results when column geometry changes
+  useEffect(() => {
+    virtualizer.measure()
+  }, [cols, cellSize, virtualizer])
+
+  return (
+    <div ref={scrollRef} className="flex-1 overflow-y-auto p-6">
+      <div style={{ height: virtualizer.getTotalSize(), position: 'relative', width: '100%' }}>
+        {virtualizer.getVirtualItems().map(v => {
+          const row = rows[v.index]
+          if (!row) return null
+          return (
+            <div
+              key={v.key}
+              style={{
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                width: '100%',
+                transform: `translateY(${v.start}px)`,
+                height: v.size
+              }}
+            >
+              {row.kind === 'header' ? (
+                <h3 className="text-xs font-semibold text-muted-foreground/60 uppercase tracking-widest mb-3 pt-2">
+                  {row.label}
+                  <span className="ml-2 text-muted-foreground/40 font-normal normal-case tracking-normal">{row.itemCount}</span>
+                </h3>
+              ) : (
+                <div
+                  className="grid"
+                  style={{
+                    gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
+                    gap: `${GAP}px`
+                  }}
+                >
+                  {row.items.map(item => (
+                    <GalleryCard
+                      key={item.id}
+                      item={item}
+                      selected={selectedIds.has(item.id)}
+                      onToggle={() => onToggleSelect(item.id)}
+                      onPreview={() => onPreviewItem(item)}
+                      onDelete={() => onDeleteItem(item.id)}
+                      onUseAsReference={item.type === 'image' ? () => onUseAsReference(item) : undefined}
+                      onEdit={item.type === 'image' ? () => onEditItem(item) : undefined}
+                      onContextMenu={(e) => {
+                        if (item.type !== 'image') return
+                        ctxMenu.open(e, {
+                          filePath: item.filePath,
+                          src: toLocalUrl(item.filePath),
+                          onPreview: () => onPreviewItem(item),
+                          onEdit: () => onEditItem(item)
+                        })
+                      }}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
 }
 
 function GalleryCard({ item, selected, onToggle, onPreview, onDelete, onUseAsReference, onEdit, onContextMenu }: CardProps) {

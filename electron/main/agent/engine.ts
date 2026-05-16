@@ -294,7 +294,8 @@ export async function runAgent(
           parameters: z.object({ filePath: z.string().describe('Absolute path to the file') }),
           execute: async ({ filePath }) => {
             emit({ stepIndex: stepIndex++, stepName: 'File Read', toolName: 'file_read', status: 'running', message: path.basename(filePath) })
-            const result = await readFile(filePath)
+            // abort.signal lets Stop interrupt a long PDF/PPTX parse
+            const result = await readFile(filePath, abort.signal)
             emit({ stepIndex: stepIndex - 1, stepName: 'File Read', toolName: 'file_read', status: 'done' })
             toolCallLog.push({ toolName: 'file_read', args: { filePath }, result })
             return result

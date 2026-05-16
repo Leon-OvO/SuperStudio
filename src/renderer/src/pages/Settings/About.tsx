@@ -142,7 +142,6 @@ export function About({ onExportData, onImportData, exportRunning, importRunning
       </section>
 
       <section className="space-y-2 border-t border-border pt-5 text-xs text-muted-foreground/80">
-        <p>使用 <a href="https://github.com/anthropics/claude-code" target="_blank" rel="noreferrer" className="text-primary hover:underline">Claude Code</a> 协同开发。</p>
         <p>开源协议：MIT</p>
       </section>
     </div>

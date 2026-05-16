@@ -4,13 +4,22 @@ import * as XLSX from 'xlsx'
 import mammoth from 'mammoth'
 import { getSettings } from './store'
 
-export async function readFile(filePath: string): Promise<{ content: string; type: string }> {
+class AbortedError extends Error {
+  constructor() { super('file_read: 已被用户中断') }
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new AbortedError()
+}
+
+export async function readFile(filePath: string, signal?: AbortSignal): Promise<{ content: string; type: string }> {
   if (!fs.existsSync(filePath)) {
     throw new Error(
       `file_read: 文件不存在 "${filePath}". ` +
       `请确认路径正确（应为完整的绝对路径，可在用户消息的"附加文件"清单中找到）。`
     )
   }
+  throwIfAborted(signal)
   const ext = path.extname(filePath).toLowerCase()
   switch (ext) {
     case '.xlsx':
@@ -21,9 +30,9 @@ export async function readFile(filePath: string): Promise<{ content: string; typ
       return readDocx(filePath)
     case '.pptx':
     case '.ppt':
-      return readPptx(filePath)
+      return readPptx(filePath, signal)
     case '.pdf':
-      return readPdf(filePath)
+      return readPdf(filePath, signal)
     case '.txt':
     case '.md':
       return { content: fs.readFileSync(filePath, 'utf-8'), type: 'text' }
@@ -49,7 +58,7 @@ async function readDocx(filePath: string): Promise<{ content: string; type: stri
   return { content: result.value, type: 'docx' }
 }
 
-function readPptx(filePath: string): { content: string; type: string } {
+function readPptx(filePath: string, signal?: AbortSignal): { content: string; type: string } {
   const AdmZip = require('adm-zip')
   const zip = new AdmZip(filePath)
   const entries = zip.getEntries()
@@ -58,6 +67,8 @@ function readPptx(filePath: string): { content: string; type: string } {
 
   const parts: string[] = []
   for (let i = 0; i < entries.length; i++) {
+    // Decks with hundreds of slides — bail out promptly on cancel
+    throwIfAborted(signal)
     const xml = entries[i].getData().toString('utf-8')
     const text = xml.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
     if (text) parts.push(`## Slide ${i + 1}\n${text}`)
@@ -65,19 +76,36 @@ function readPptx(filePath: string): { content: string; type: string } {
   return { content: parts.join('\n\n'), type: 'pptx' }
 }
 
-async function readPdf(filePath: string): Promise<{ content: string; type: string }> {
+async function readPdf(filePath: string, signal?: AbortSignal): Promise<{ content: string; type: string }> {
   const { getDocument, GlobalWorkerOptions } = await import('pdfjs-dist')
   GlobalWorkerOptions.workerSrc = ''
   const buffer = fs.readFileSync(filePath)
-  const doc = await getDocument({ data: buffer, useSystemFonts: true }).promise
-  const pages: string[] = []
-  for (let i = 1; i <= doc.numPages; i++) {
-    const page = await doc.getPage(i)
-    const content = await page.getTextContent()
-    const text = content.items.map((item: { str?: string }) => item.str || '').join(' ')
-    pages.push(`## Page ${i}\n${text}`)
+  // PDFs are the slowest parse path — check the abort signal between every
+  // page so a 500-page PDF doesn't hold the agent loop hostage when the
+  // user clicks Stop. pdfjs's loadingTask.destroy() also lets us cancel
+  // the in-flight Page reads cleanly.
+  const loadingTask = getDocument({ data: buffer, useSystemFonts: true })
+  let cancelled = false
+  const onAbort = () => {
+    cancelled = true
+    loadingTask.destroy().catch(() => {/* ignore */})
   }
-  return { content: pages.join('\n\n'), type: 'pdf' }
+  signal?.addEventListener('abort', onAbort, { once: true })
+
+  try {
+    const doc = await loadingTask.promise
+    const pages: string[] = []
+    for (let i = 1; i <= doc.numPages; i++) {
+      if (cancelled || signal?.aborted) throw new AbortedError()
+      const page = await doc.getPage(i)
+      const content = await page.getTextContent()
+      const text = content.items.map((item: { str?: string }) => item.str || '').join(' ')
+      pages.push(`## Page ${i}\n${text}`)
+    }
+    return { content: pages.join('\n\n'), type: 'pdf' }
+  } finally {
+    signal?.removeEventListener('abort', onAbort)
+  }
 }
 
 interface WriteOperation {
