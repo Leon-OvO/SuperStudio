@@ -99,8 +99,7 @@
           ]
         }
       ],
-      "icon": "build/icon.ico",
-      "artifactName": "${productName}-${version}-Setup.${ext}"
+      "icon": "build/icon.ico"
     },
     "nsis": {
       "oneClick": false,
@@ -108,7 +107,11 @@
       "installerIcon": "build/icon.ico",
       "uninstallerIcon": "build/icon.ico",
       "createDesktopShortcut": true,
-      "createStartMenuShortcut": true
+      "createStartMenuShortcut": true,
+      "artifactName": "${productName}-${version}-Setup.${ext}"
+    },
+    "portable": {
+      "artifactName": "${productName}-${version}-Portable.${ext}"
     },
     "mac": {
       "target": [
