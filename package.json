@@ -1,16 +1,16 @@
 {
   "name": "superstudio",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "AI Productivity Suite - One tool for all your AI work",
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "node scripts/dev.js",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
-    "pack": "electron-builder --dir",
-    "dist": "electron-builder",
-    "dist:win": "electron-builder --win",
-    "dist:mac": "electron-builder --mac",
+    "pack": "npm run build && electron-builder --dir",
+    "dist": "npm run build && electron-builder",
+    "dist:win": "npm run build && electron-builder --win",
+    "dist:mac": "npm run build && electron-builder --mac",
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json",
     "typecheck:web": "tsc --noEmit -p tsconfig.web.json"
   },
@@ -75,8 +75,14 @@
       "buildResources": "build"
     },
     "files": [
+      "out/**",
+      "package.json",
       "!**/.eslintrc.{js,cjs}",
-      "!{.env,.env.*,.npmrc,pnpm-lock.yaml}"
+      "!**/{.DS_Store,.git,.hg,.svn,CVS,RCS,SCCS,.gitignore,.gitattributes}",
+      "!{.env,.env.*,.npmrc,pnpm-lock.yaml}",
+      "!**/*.{ts,tsx,map}",
+      "!**/{tsconfig.json,tsconfig.*.json,*.tsbuildinfo}",
+      "!**/{.claude,openspec,scripts,build,dist}/**"
     ],
     "asarUnpack": [
       "resources/**",
