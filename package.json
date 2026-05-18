@@ -1,6 +1,6 @@
 {
   "name": "superstudio",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "AI Productivity Suite - One tool for all your AI work",
   "main": "./out/main/index.js",
   "scripts": {
@@ -80,9 +80,11 @@
       "!**/.eslintrc.{js,cjs}",
       "!**/{.DS_Store,.git,.hg,.svn,CVS,RCS,SCCS,.gitignore,.gitattributes}",
       "!{.env,.env.*,.npmrc,pnpm-lock.yaml}",
-      "!**/*.{ts,tsx,map}",
-      "!**/{tsconfig.json,tsconfig.*.json,*.tsbuildinfo}",
-      "!**/{.claude,openspec,scripts,build,dist}/**"
+      "!.claude/**",
+      "!openspec/**",
+      "!scripts/**",
+      "!build/**",
+      "!dist/**"
     ],
     "asarUnpack": [
       "resources/**",
