@@ -42,14 +42,14 @@ export function About({
           <span className="font-mono">{version || t('about.loading')}</span>
           <span className="text-muted-foreground">{t('about.platform')}</span>
           <span className="font-mono text-xs">{window.api.platform ?? 'unknown'}</span>
-          <span className="text-muted-foreground">{t('about.repo')}</span>
+          <span className="text-muted-foreground">{t('about.website')}</span>
           <a
-            href="https://gitee.com/leonops/SuperStudio"
+            href="https://www.supercode.help"
             target="_blank"
             rel="noreferrer"
             className="text-primary hover:underline inline-flex items-center gap-1"
           >
-            gitee.com/leonops/SuperStudio
+            www.supercode.help
             <ExternalLink size={11} />
           </a>
         </div>

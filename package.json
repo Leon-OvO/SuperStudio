@@ -1,6 +1,6 @@
 {
   "name": "superstudio",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "AI Productivity Suite - One tool for all your AI work",
   "main": "./out/main/index.js",
   "scripts": {
