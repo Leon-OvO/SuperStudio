@@ -141,13 +141,6 @@ app.whenReady().then(async () => {
 
   createWindow()
 
-  // Hook autoUpdater after window exists (it needs a webContents to emit
-  // status events to). Skips silently in dev.
-  if (mainWindow) {
-    const { initAutoUpdater } = await import('./services/updater')
-    initAutoUpdater(mainWindow)
-  }
-
   // System tray — quick window-restore + quit. Notifications also live in this module.
   const { initTray } = await import('./services/tray')
   initTray(() => mainWindow)

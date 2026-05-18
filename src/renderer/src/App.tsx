@@ -8,7 +8,6 @@ import { GalleryPage } from './pages/Gallery'
 import { KnowledgePage } from './pages/Knowledge'
 import { SettingsPage } from './pages/Settings'
 import { ShortcutsHelp } from './components/ui/ShortcutsHelp'
-import { UpdateToast } from './components/ui/UpdateToast'
 import { WelcomeWizard } from './components/ui/WelcomeWizard'
 import { CommandPalette } from './components/ui/CommandPalette'
 
@@ -134,7 +133,6 @@ export default function App() {
 
       <ShortcutsHelp open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
       <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
-      <UpdateToast />
       {showWelcome && <WelcomeWizard onDismiss={dismissWelcome} />}
     </div>
   )

@@ -9,7 +9,6 @@ import { kbHandlers } from './knowledge'
 import { workflowHandlers } from './workflows'
 import { imageEditHandlers } from './image-edit'
 import { mcpHandlers } from './mcp'
-import { checkForUpdates, quitAndInstall, getUpdateStatus } from '../services/updater'
 import { logEntry, getEntriesFromDisk, clearEntries } from '../services/error-log'
 
 export function registerIpcHandlers(): void {
@@ -24,9 +23,6 @@ export function registerIpcHandlers(): void {
   mcpHandlers()
 
   ipcMain.handle(IPC.APP_VERSION, () => app.getVersion())
-  ipcMain.handle(IPC.UPDATE_CHECK, () => checkForUpdates())
-  ipcMain.handle(IPC.UPDATE_INSTALL, () => { quitAndInstall(); return { ok: true } })
-  ipcMain.handle(IPC.UPDATE_STATUS, () => getUpdateStatus())
 
   ipcMain.handle(IPC.LOG_LIST, () => getEntriesFromDisk(500))
   ipcMain.handle(IPC.LOG_CLEAR, () => { clearEntries(); return { ok: true } })

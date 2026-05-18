@@ -75,11 +75,8 @@ export const IPC = {
   WIN_CLOSE: 'win:close',
   WIN_MAXIMIZE_CHANGED: 'win:maximize-changed',
 
-  // App-level (version, updates)
+  // App-level (version)
   APP_VERSION: 'app:version',
-  UPDATE_CHECK: 'update:check',
-  UPDATE_INSTALL: 'update:install',
-  UPDATE_STATUS: 'update:status',     // main → renderer event
 
   // Error log
   LOG_LIST: 'log:list',

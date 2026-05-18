@@ -1,14 +1,6 @@
 import { useEffect, useState } from 'react'
-import { Loader2, RefreshCw, Check, AlertCircle, Sparkles, ExternalLink, Database, Download, Upload, FileWarning, Trash2, Copy } from 'lucide-react'
+import { Loader2, RefreshCw, Sparkles, ExternalLink, Database, Download, Upload, FileWarning, Trash2, Copy } from 'lucide-react'
 import { useT } from '../../lib/i18n'
-
-interface UpdateStatusView {
-  kind: string
-  version?: string
-  percent?: number
-  message?: string
-  reason?: string
-}
 
 interface Props {
   onExportData: () => void
@@ -26,42 +18,11 @@ export function About({
   onExportChats, onImportChats, chatExportRunning, chatImportRunning
 }: Props) {
   const [version, setVersion] = useState<string>('')
-  const [status, setStatus] = useState<UpdateStatusView>({ kind: 'idle' })
-  const [checking, setChecking] = useState(false)
   const t = useT()
 
   useEffect(() => {
     window.api.appVersion?.().then((v: string) => setVersion(v)).catch(() => {})
-    window.api.getUpdateStatus?.().then((s: UpdateStatusView) => s && setStatus(s)).catch(() => {})
-    const unsub = window.api.onUpdateStatus?.((s: unknown) => setStatus(s as UpdateStatusView))
-    return () => { unsub?.() }
   }, [])
-
-  async function manualCheck() {
-    setChecking(true)
-    try {
-      await window.api.checkForUpdates?.()
-    } finally {
-      // The actual state will arrive via onUpdateStatus; clear the spinner soon after
-      setTimeout(() => setChecking(false), 1500)
-    }
-  }
-
-  function statusLabel(): { tone: 'idle' | 'good' | 'work' | 'bad' | 'mute'; text: string } {
-    switch (status.kind) {
-      case 'idle':           return { tone: 'idle', text: '尚未检查' }
-      case 'checking':       return { tone: 'work', text: '正在检查更新…' }
-      case 'available':      return { tone: 'work', text: `发现新版本 v${status.version}，正在后台下载` }
-      case 'not-available':  return { tone: 'good', text: '当前已是最新版本' }
-      case 'downloading':    return { tone: 'work', text: `下载中 ${status.percent ?? 0}%` }
-      case 'ready':          return { tone: 'good', text: `v${status.version} 已就绪，重启即安装` }
-      case 'error':          return { tone: 'bad',  text: `检查失败：${status.message ?? '未知错误'}` }
-      case 'disabled':       return { tone: 'mute', text: status.reason ?? '已禁用' }
-      default:               return { tone: 'idle', text: status.kind }
-    }
-  }
-
-  const label = statusLabel()
 
   return (
     <div className="space-y-6 max-w-2xl">
@@ -92,32 +53,6 @@ export function About({
             <ExternalLink size={11} />
           </a>
         </div>
-      </section>
-
-      <section className="space-y-3 border-t border-border pt-5">
-        <h3 className="text-sm font-medium flex items-center gap-1.5"><RefreshCw size={13} /> {t('about.autoUpdate')}</h3>
-        <div className="flex items-center gap-3 text-sm">
-          <StatusIcon tone={label.tone} />
-          <span className={label.tone === 'bad' ? 'text-destructive' : 'text-foreground/85'}>{label.text}</span>
-        </div>
-        <div className="flex gap-2">
-          <button
-            onClick={manualCheck}
-            disabled={checking || status.kind === 'checking' || status.kind === 'disabled'}
-            className="btn-secondary"
-          >
-            {checking || status.kind === 'checking' ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />}
-            {t('about.checkNow')}
-          </button>
-          {status.kind === 'ready' && (
-            <button onClick={() => window.api.installUpdate?.()} className="btn-primary">
-              重启并安装 v{status.version}
-            </button>
-          )}
-        </div>
-        <p className="text-[11px] text-muted-foreground/70 leading-relaxed">
-          更新来自 GitHub Releases，应用启动后会自动检查，运行中每小时复查一次。开发模式下不检查。
-        </p>
       </section>
 
       <section className="space-y-3 border-t border-border pt-5">
@@ -311,12 +246,3 @@ function ErrorLogSection() {
   )
 }
 
-function StatusIcon({ tone }: { tone: 'idle' | 'good' | 'work' | 'bad' | 'mute' }) {
-  const cls = 'shrink-0'
-  switch (tone) {
-    case 'good': return <Check size={14} className={cls + ' text-emerald-600'} />
-    case 'bad':  return <AlertCircle size={14} className={cls + ' text-destructive'} />
-    case 'work': return <Loader2 size={14} className={cls + ' animate-spin text-primary'} />
-    default:     return <span className={cls + ' w-3.5 h-3.5 rounded-full bg-muted-foreground/30'} />
-  }
-}

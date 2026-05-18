@@ -115,15 +115,8 @@ const api = {
     return () => ipcRenderer.removeAllListeners(IPC.WIN_MAXIMIZE_CHANGED)
   },
 
-  // --- App version + auto-update ---
+  // --- App version ---
   appVersion: () => ipcRenderer.invoke(IPC.APP_VERSION),
-  checkForUpdates: () => ipcRenderer.invoke(IPC.UPDATE_CHECK),
-  installUpdate: () => ipcRenderer.invoke(IPC.UPDATE_INSTALL),
-  getUpdateStatus: () => ipcRenderer.invoke(IPC.UPDATE_STATUS),
-  onUpdateStatus: (cb: (status: unknown) => void) => {
-    ipcRenderer.on(IPC.UPDATE_STATUS, (_e, status) => cb(status))
-    return () => ipcRenderer.removeAllListeners(IPC.UPDATE_STATUS)
-  },
 
   // --- Whole-app config export / import ---
   exportConfig: () => ipcRenderer.invoke(IPC.CONFIG_EXPORT),
