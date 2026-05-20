@@ -153,7 +153,7 @@
       "category": "public.app-category.productivity",
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
-      "artifactName": "${productName}-${version}-mac.${ext}"
+      "artifactName": "${productName}-${version}-mac-${arch}.${ext}"
     },
     "dmg": {
       "contents": [
