@@ -45,6 +45,10 @@ jobs:
         run: npm run dist:win
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Same OOM as the macOS runner — monaco + all language modes blow
+          # past the default ~2GB V8 heap during Vite bundling. Earlier runs
+          # passed by luck.
+          NODE_OPTIONS: --max-old-space-size=8192
 
       - name: Build artifacts (macOS)
         if: matrix.os == 'macos-latest'
