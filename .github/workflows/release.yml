@@ -51,6 +51,10 @@ jobs:
         run: npm run dist:mac
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # macOS runner's default Node heap (~2GB) OOMs while bundling the
+          # monaco editor + all language modes during electron-vite build.
+          # Bump it so the Vite bundle step has enough headroom.
+          NODE_OPTIONS: --max-old-space-size=8192
           # CSC_LINK / CSC_KEY_PASSWORD would go here for proper code signing
           # APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD for notarization
           # Both optional — unsigned builds still install but show Gatekeeper warnings.
