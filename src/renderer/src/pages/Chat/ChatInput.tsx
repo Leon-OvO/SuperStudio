@@ -5,6 +5,7 @@ import { KbMountSelector } from './KbMountSelector'
 import { ModelPicker } from './ModelPicker'
 import { Select } from '../../components/ui/Select'
 import { useImageContextMenu } from '../../components/ui/ImageContextMenu'
+import { toast } from '../../components/ui/Toast'
 import { type ImageParams, IMAGE_RATIOS, computeImageSize } from './ChatHeader'
 
 interface Attachment { name: string; path: string; mimeType: string }
@@ -92,7 +93,7 @@ export function ChatInput({
         setAttachments(prev => [...prev, { name: displayName, path: result.path, mimeType: item.type }])
       } catch (err) {
         console.error('[paste]', err)
-        alert('粘贴图片失败：' + (err as Error).message)
+        toast.error('粘贴图片失败：' + (err as Error).message)
       }
     }
   }

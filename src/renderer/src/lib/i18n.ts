@@ -7,9 +7,11 @@ type Dict = Record<string, string>
 const ZH: Dict = {
   // Sidebar
   'nav.chat': '对话',
+  'nav.vibe': '构建',
   'nav.workflow': '工作流',
   'nav.gallery': '画廊',
   'nav.knowledge': '知识库',
+  'nav.skills': '技能',
   'nav.settings': '设置',
   'nav.themeLight': '切换亮色',
   'nav.themeDark': '切换暗色',
@@ -49,9 +51,11 @@ const ZH: Dict = {
 
 const EN: Dict = {
   'nav.chat': 'Chat',
+  'nav.vibe': 'Build',
   'nav.workflow': 'Workflow',
   'nav.gallery': 'Gallery',
   'nav.knowledge': 'Knowledge',
+  'nav.skills': 'Skills',
   'nav.settings': 'Settings',
   'nav.themeLight': 'Switch to light',
   'nav.themeDark': 'Switch to dark',

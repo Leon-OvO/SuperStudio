@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Sparkles, ChevronDown, Image as ImageIcon, Film, Hash } from 'lucide-react'
+import { Sparkles, ChevronDown, Image as ImageIcon, Film, Hash, Zap } from 'lucide-react'
 import type { ProviderConfig, AppSettings } from '../../../../shared/ipc-types'
 import { Select, type SelectOption } from '../../components/ui/Select'
 
@@ -39,7 +39,12 @@ const ROLE_HINT: Record<ModelRole, string> = {
  *
  * Value encoding: "providerId::model". Empty string = use global default.
  */
-export function ModelPicker({ providerId, model, onChange }: Props) {
+interface AutoRouteState {
+  pending: boolean
+  intent?: string
+}
+
+export function ModelPicker({ providerId, model, onChange, autoRoute }: Props & { autoRoute?: AutoRouteState }) {
   const [providers, setProviders] = useState<ProviderConfig[]>([])
   const [settings, setSettings] = useState<AppSettings | null>(null)
 
@@ -66,6 +71,16 @@ export function ModelPicker({ providerId, model, onChange }: Props) {
 
   const selectedRole = getModelRole(model, settings)
   const displayLabel = model || '使用全局默认'
+  const autoEnabled = settings?.autoModelEnabled
+
+  if (autoRoute?.pending) {
+    return (
+      <span className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs bg-muted/40 text-muted-foreground animate-pulse">
+        <Zap size={11} className="text-amber-500" />
+        路由中…
+      </span>
+    )
+  }
 
   return (
     <Select
@@ -86,6 +101,7 @@ export function ModelPicker({ providerId, model, onChange }: Props) {
               ? 'bg-muted text-foreground ring-1 ring-ring/40'
               : 'bg-muted/40 text-foreground/80 hover:bg-muted/70 hover:text-foreground'}`}
         >
+          {autoEnabled && <Zap size={11} className="shrink-0 text-amber-500" title="自动切换模型已启用" />}
           <span className="shrink-0 text-muted-foreground">{ROLE_ICON[selectedRole]}</span>
           <span className="max-w-[140px] truncate">{displayLabel}</span>
           <ChevronDown size={11} className={`shrink-0 text-muted-foreground transition-transform ${open ? 'rotate-180' : ''}`} />

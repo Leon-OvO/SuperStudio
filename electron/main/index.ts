@@ -9,6 +9,16 @@ import { IPC } from '../../src/shared/ipc-types'
 
 installFetchLogger()
 
+// Force Chromium to use the OS's high-quality font subpixel rendering on Windows
+// (ClearType). Without these flags Electron defaults to grayscale antialiasing
+// which makes Chinese characters look fuzzy at small sizes (12-14px).
+if (process.platform === 'win32') {
+  app.commandLine.appendSwitch('font-render-hinting', 'normal')
+  app.commandLine.appendSwitch('enable-font-antialiasing')
+  // Enable LCD subpixel rendering even when window is composited
+  app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion')
+}
+
 // Capture uncaught failures in main before anything else loads
 import('./services/error-log').then(m => m.installMainProcessHooks()).catch(() => {/* ignore */})
 
@@ -32,7 +42,9 @@ function createWindow(): void {
     autoHideMenuBar: true,
     frame: process.platform === 'darwin',
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'hidden',
-    ...(process.platform === 'linux' ? { icon: path.join(__dirname, '../../build/icon.png') } : {}),
+    // Windows + Linux: explicitly set the window/taskbar icon so dev mode also
+    // shows it. macOS reads the icon from the .app bundle's Info.plist instead.
+    ...(process.platform !== 'darwin' ? { icon: path.join(__dirname, '../../build/icon.png') } : {}),
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.js'),
       sandbox: false,
@@ -43,6 +55,15 @@ function createWindow(): void {
 
   mainWindow.on('ready-to-show', () => {
     mainWindow!.show()
+  })
+
+  const wcRef = mainWindow.webContents
+  mainWindow.on('closed', async () => {
+    // Kill any PTY sessions spawned by this window — prevents zombie shells.
+    try {
+      const { disposeAllForWebContents } = await import('./services/terminals')
+      disposeAllForWebContents(wcRef)
+    } catch { /* terminals module may not be loaded */ }
   })
 
   mainWindow.on('maximize', () => {
@@ -72,10 +93,28 @@ app.whenReady().then(async () => {
     optimizer.watchWindowShortcuts(window)
   })
 
-  // Serve local gallery files with a custom protocol that works cross-origin (dev + prod)
+  // Serve local files with a custom protocol that works cross-origin (dev + prod)
+  // Covers gallery (images/videos), Vibe project previews (web assets), and KB.
   const MIME: Record<string, string> = {
+    // Images
     png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
-    gif: 'image/gif', webp: 'image/webp', mp4: 'video/mp4', webm: 'video/webm'
+    gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml', ico: 'image/x-icon',
+    // Video / audio
+    mp4: 'video/mp4', webm: 'video/webm', mp3: 'audio/mpeg', wav: 'audio/wav', ogg: 'audio/ogg',
+    // Web assets (Vibe iframe preview)
+    html: 'text/html; charset=utf-8',
+    htm: 'text/html; charset=utf-8',
+    css: 'text/css; charset=utf-8',
+    js: 'application/javascript; charset=utf-8',
+    mjs: 'application/javascript; charset=utf-8',
+    json: 'application/json; charset=utf-8',
+    map: 'application/json; charset=utf-8',
+    txt: 'text/plain; charset=utf-8',
+    md: 'text/plain; charset=utf-8',
+    // Fonts
+    woff: 'font/woff', woff2: 'font/woff2', ttf: 'font/ttf', otf: 'font/otf', eot: 'application/vnd.ms-fontobject',
+    // Wasm
+    wasm: 'application/wasm'
   }
   protocol.handle('local-file', async (req) => {
     // Chromium with standard:true normalizes local-file:///F:/path → local-file://f/path
@@ -115,6 +154,32 @@ app.whenReady().then(async () => {
   await initDb(startupSettings.dataDirectory || undefined)
   registerIpcHandlers()
 
+  // Re-register Vibe recent projects as approved roots — they live in settings
+  // (persisted) but path-allow's approvedRoots is in-memory only, so we have to
+  // restore the trust list on every startup. Without this, the iframe preview
+  // and code_read tools throw "Project path not allowed" on first use after
+  // restart for any externally-opened folder.
+  try {
+    const { getRecentProjects } = await import('./services/vibe-projects')
+    const { registerApprovedRoot } = await import('./services/path-allow')
+    const recents = getRecentProjects()
+    for (const r of recents) {
+      registerApprovedRoot(r.path)
+    }
+    console.log(`[startup] vibe approved-roots registered: ${recents.length}`,
+      JSON.stringify(recents.map(r => r.path)))
+  } catch (e) {
+    console.warn('[startup] vibe approved-root bootstrap failed:', (e as Error).message)
+  }
+
+  // Attempt to restore existing auth session silently
+  try {
+    const { tryRestoreSession } = await import('./ipc/auth')
+    await tryRestoreSession()
+  } catch (e) {
+    console.warn('[startup] session restore failed:', (e as Error).message)
+  }
+
   // Window control handlers (renderer → main)
   ipcMain.on(IPC.WIN_MINIMIZE, () => mainWindow?.minimize())
   ipcMain.on(IPC.WIN_MAXIMIZE, () => {
@@ -128,7 +193,7 @@ app.whenReady().then(async () => {
     const { getSettings, getProviders, maskApiKey } = await import('./services/store')
     const providers = getProviders()
     const settings = getSettings()
-    console.log('[startup] providers:', providers.map(p => ({ id: p.id, name: p.name, type: p.type, baseUrl: p.baseUrl, models: p.models.length, key: maskApiKey(p.apiKey) })))
+    console.log('[startup] providers:', providers.map(p => ({ id: p.id, name: p.name, type: p.type, baseUrl: p.baseUrl, modelCount: p.models.length, models: p.models, key: maskApiKey(p.apiKey) })))
     console.log('[startup] settings:', {
       chatProvider: settings.defaultChatProviderId,
       chatModel: settings.defaultChatModel,

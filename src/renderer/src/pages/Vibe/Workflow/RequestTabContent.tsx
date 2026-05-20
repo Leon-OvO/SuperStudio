@@ -1,0 +1,372 @@
+import { useEffect, useRef, useState } from 'react'
+import { Loader2, Square, Play, ListChecks, Brain, Zap, MessageSquare, Search, Bug, Wrench, Send } from 'lucide-react'
+import { cn } from '../../../lib/utils'
+import { TaskRow } from './TaskRow'
+import { MessageBubble } from './MessageBubble'
+import { MessagesMinimap } from './MessagesMinimap'
+import type { VibeRequestInfo, VibeTaskInfo, VibeMessageInfo, VibeIntent } from '../../../../../shared/ipc-types'
+
+interface Props {
+  request: VibeRequestInfo | null
+  tasks: VibeTaskInfo[]
+  messages: VibeMessageInfo[]
+  streamingTaskId: string | null
+  running: 'propose' | 'apply' | 'explore' | 'chat' | 'bugfix' | null
+  onChat: (prompt: string, requestId?: string) => void
+  onExplore: (prompt: string, requestId?: string) => void
+  onBugfix: (prompt: string, requestId?: string) => void
+  onPropose: (prompt: string, requestId?: string) => void
+  onApply: () => void
+  onStop: () => void
+  onToggleTaskStatus: (taskId: string, status: 'pending' | 'done' | 'skipped') => void
+}
+
+const INTENT_META: Record<VibeIntent, { label: string; Icon: typeof MessageSquare; color: string; bg: string }> = {
+  chat:    { label: '对话',     Icon: MessageSquare, color: 'text-slate-700 dark:text-slate-200', bg: 'bg-slate-500/15 border-slate-500/40' },
+  explore: { label: '探索',     Icon: Search,        color: 'text-sky-700 dark:text-sky-300',     bg: 'bg-sky-500/15 border-sky-500/40' },
+  bugfix:  { label: '修复 BUG', Icon: Bug,           color: 'text-rose-700 dark:text-rose-300',   bg: 'bg-rose-500/15 border-rose-500/40' },
+  change:  { label: '新需求',   Icon: Wrench,        color: 'text-primary',                       bg: 'bg-primary/15 border-primary/40' }
+}
+
+export function RequestTabContent({
+  request, tasks, messages, streamingTaskId, running,
+  onChat, onExplore, onBugfix, onPropose, onApply, onStop, onToggleTaskStatus
+}: Props) {
+  const [input, setInput] = useState('')
+  // Default intent: continue the request's existing kind, or 'change' for new
+  const [intent, setIntent] = useState<VibeIntent>(() => {
+    if (!request) return 'change'
+    return request.kind as VibeIntent
+  })
+  const messagesRef = useRef<HTMLDivElement>(null)
+  const taRef = useRef<HTMLTextAreaElement>(null)
+
+  // When switching requests, default intent to that request's kind
+  useEffect(() => {
+    if (request) setIntent(request.kind as VibeIntent)
+  }, [request?.id])
+
+  useEffect(() => {
+    const ta = taRef.current
+    if (!ta) return
+    ta.style.height = 'auto'
+    ta.style.height = Math.min(ta.scrollHeight, 200) + 'px'
+  }, [input])
+
+  useEffect(() => {
+    const el = messagesRef.current
+    if (el) el.scrollTop = el.scrollHeight
+  }, [messages.length, tasks.map(t => t.status).join(','), running])
+
+  const hasTasks = tasks.length > 0
+  const doneCount = tasks.filter(t => t.status === 'done').length
+  const pendingCount = tasks.filter(t => t.status === 'pending').length
+  const hasPending = pendingCount > 0
+  const stage: 'explore' | 'planned' | 'done' =
+    !hasTasks ? 'explore' :
+    pendingCount === 0 ? 'done' : 'planned'
+  const currentRunningTask = tasks.find(t => t.id === streamingTaskId)
+
+  function submit() {
+    const t = input.trim()
+    if (!t || running || !request) return
+    if (intent === 'chat')    onChat(t, request.id)
+    if (intent === 'explore') onExplore(t, request.id)
+    if (intent === 'bugfix')  onBugfix(t, request.id)
+    if (intent === 'change')  onPropose(t, request.id)
+    setInput('')
+  }
+
+  if (!request) {
+    return (
+      <div className="flex-1 flex items-center justify-center text-xs text-muted-foreground">
+        请求不存在或已删除
+      </div>
+    )
+  }
+
+  const requestKind = request.kind as VibeIntent
+  const kindMeta = INTENT_META[requestKind] ?? INTENT_META.change
+  const KindIcon = kindMeta.Icon
+  const isChat = requestKind === 'chat'
+  const isExploreKind = requestKind === 'explore'
+  const isBugfix = requestKind === 'bugfix'
+  const isChange = requestKind === 'change'
+
+  return (
+    <div className="flex flex-col h-full bg-background">
+      {/* Header — title + kind badge + stage breadcrumb (only for change) */}
+      <div className="flex items-start gap-3 px-5 py-3 border-b border-border bg-card/60 shrink-0">
+        <div className={cn(
+          'w-8 h-8 rounded-lg flex items-center justify-center shrink-0 border',
+          kindMeta.bg
+        )}>
+          <KindIcon size={14} className={kindMeta.color} />
+        </div>
+        <div className="flex-1 min-w-0 space-y-0.5">
+          <div className="text-sm font-semibold truncate">{request.title}</div>
+          {request.summary && (
+            <div className="text-[11px] text-muted-foreground leading-relaxed line-clamp-2">{request.summary}</div>
+          )}
+          <div className="flex items-center gap-2 text-[10px] text-muted-foreground/70 mt-1">
+            <span className={cn('px-1.5 py-px rounded text-[9px] uppercase font-semibold border', kindMeta.bg, kindMeta.color)}>
+              {kindMeta.label}
+            </span>
+            {isChange && (
+              <>
+                <StageBreadcrumb stage={stage} hasTasks={hasTasks} doneCount={doneCount} totalTasks={tasks.length} />
+              </>
+            )}
+            <span>·</span>
+            <span className="font-mono">{request.slug}</span>
+          </div>
+        </div>
+        {hasPending && (
+          <button
+            onClick={running === 'apply' ? onStop : onApply}
+            disabled={running === 'propose'}
+            className={cn(
+              'flex items-center gap-1.5 h-8 px-3 rounded-md text-xs font-medium transition-colors disabled:opacity-50 shrink-0',
+              running === 'apply'
+                ? 'bg-destructive text-destructive-foreground hover:bg-destructive/90'
+                : 'bg-primary text-primary-foreground hover:opacity-90'
+            )}
+          >
+            {running === 'apply'
+              ? <><Square size={11} /> 停止</>
+              : <><Play size={11} /> 执行剩余任务</>
+            }
+          </button>
+        )}
+      </div>
+
+      {/* Running banner */}
+      {running && (
+        <div className="px-5 py-2.5 bg-primary/5 border-b border-primary/20 flex items-center gap-2.5 shrink-0">
+          {running === 'chat' ? (
+            <>
+              <MessageSquare size={14} className="text-slate-500 animate-pulse shrink-0" />
+              <div className="flex-1">
+                <div className="text-xs font-medium text-slate-700 dark:text-slate-300">AI 正在回复…</div>
+              </div>
+            </>
+          ) : running === 'explore' ? (
+            <>
+              <Search size={14} className="text-sky-500 animate-pulse shrink-0" />
+              <div className="flex-1">
+                <div className="text-xs font-medium text-sky-700 dark:text-sky-300">AI 正在探索项目…</div>
+                <div className="text-[10px] text-muted-foreground/70 mt-0.5">只读模式（不会修改任何文件）</div>
+              </div>
+            </>
+          ) : running === 'bugfix' ? (
+            <>
+              <Bug size={14} className="text-rose-500 animate-pulse shrink-0" />
+              <div className="flex-1">
+                <div className="text-xs font-medium text-rose-700 dark:text-rose-300">AI 正在定位并修复 BUG…</div>
+                <div className="text-[10px] text-muted-foreground/70 mt-0.5">自动模式，无需手动确认</div>
+              </div>
+            </>
+          ) : running === 'propose' ? (
+            <>
+              <Brain size={14} className="text-primary animate-pulse shrink-0" />
+              <div className="flex-1">
+                <div className="text-xs font-medium text-primary">AI 正在拆解需求…</div>
+                <div className="text-[10px] text-muted-foreground/70 mt-0.5">分析中，通常需要 10-30 秒</div>
+              </div>
+            </>
+          ) : (
+            <>
+              <Zap size={14} className="text-amber-500 animate-pulse shrink-0" />
+              <div className="flex-1 min-w-0">
+                <div className="text-xs font-medium">
+                  {currentRunningTask
+                    ? <>执行中: <span className="text-amber-600">任务 {currentRunningTask.ord} · {currentRunningTask.title}</span></>
+                    : '准备执行任务…'
+                  }
+                </div>
+                <div className="text-[10px] text-muted-foreground/70 mt-0.5">
+                  {doneCount}/{tasks.length} 已完成 · 实时查看下方工具调用
+                </div>
+              </div>
+            </>
+          )}
+          <button onClick={onStop} className="text-xs px-2 py-1 rounded text-destructive hover:bg-destructive/10">
+            <Square size={10} className="inline mr-1" />停止
+          </button>
+        </div>
+      )}
+
+      {/* Body — tasks panel auto-appears when tasks exist (change kind only) */}
+      <div className="flex-1 min-h-0 flex overflow-hidden">
+        {hasTasks && (
+          <div className="w-[320px] shrink-0 border-r border-border/60 overflow-y-auto py-2 bg-card/30">
+            <div className="px-3 py-1 text-[10px] uppercase text-muted-foreground/60 font-semibold">
+              任务列表
+            </div>
+            <div className="px-1">
+              {tasks.map(t => (
+                <TaskRow
+                  key={t.id}
+                  task={t}
+                  isStreaming={streamingTaskId === t.id}
+                  onToggleStatus={running === 'apply' ? undefined : (st) => onToggleTaskStatus(t.id, st)}
+                />
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Messages column + VS Code-style minimap on the right.
+            Native scrollbar is replaced by the minimap (it does both the
+            "where am I" indicator AND the click-to-jump affordance). */}
+        <div className="flex-1 min-w-0 flex">
+          <div
+            ref={messagesRef}
+            className="flex-1 min-w-0 overflow-y-auto py-3 px-5 space-y-1 scrollbar-prominent"
+          >
+            <div className="text-[10px] uppercase text-muted-foreground/60 font-semibold mb-1">
+              {hasTasks ? '对话与工作过程' : '对话'}
+            </div>
+            {messages.length === 0 ? (
+              <div className="text-[11px] text-muted-foreground/60 text-center py-6">
+                {running ? '等待 AI 响应…' : '问问题开始对话'}
+              </div>
+            ) : (
+              messages.map(m => (
+                <div
+                  key={m.id}
+                  data-msg-id={m.id}
+                  data-msg-role={m.role}
+                  data-msg-error={m.isError ? '1' : '0'}
+                >
+                  <MessageBubble msg={m} />
+                </div>
+              ))
+            )}
+          </div>
+          <MessagesMinimap scrollRef={messagesRef} messages={messages} />
+        </div>
+      </div>
+
+      {/* Input — pinned to bottom, with intent picker */}
+      <div className="border-t border-border p-3 shrink-0 bg-card/30 space-y-2">
+        {/* Intent chips — let user switch modes per turn */}
+        <div className="flex items-center gap-1.5">
+          {(['chat', 'explore', 'bugfix', 'change'] as VibeIntent[]).map(k => {
+            const m = INTENT_META[k]
+            const Icon = m.Icon
+            const active = intent === k
+            return (
+              <button
+                key={k}
+                onClick={() => setIntent(k)}
+                disabled={running !== null}
+                className={cn(
+                  'flex items-center gap-1 px-2 py-1 rounded-md border text-[11px] transition-colors',
+                  active
+                    ? cn(m.bg, m.color, 'font-semibold')
+                    : 'bg-card border-border text-muted-foreground hover:text-foreground hover:bg-accent',
+                  running !== null && 'opacity-40 cursor-not-allowed'
+                )}
+                title={
+                  k === 'chat'    ? '随便聊聊，不读项目' :
+                  k === 'explore' ? '让 AI 读代码回答问题（只读）' :
+                  k === 'bugfix'  ? '描述 BUG，AI 自动定位修复' :
+                                    '把需求拆成任务列表'
+                }
+              >
+                <Icon size={11} /> {m.label}
+              </button>
+            )
+          })}
+          {/* Hint about what current intent will do to this request */}
+          <span className="text-[10px] text-muted-foreground/60 ml-auto">
+            {intent === requestKind
+              ? '继续当前模式'
+              : intent === 'change'
+                ? '→ 把对话内容拆成任务'
+                : `→ 切换为${INTENT_META[intent].label}模式`}
+          </span>
+        </div>
+
+        <div className="flex items-end gap-2">
+          <textarea
+            ref={taRef}
+            value={input}
+            onChange={e => setInput(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault()
+                submit()
+              }
+            }}
+            rows={3}
+            disabled={running !== null}
+            placeholder={
+              running
+                ? '运行中… 等完成再说'
+                : intent === 'chat'    ? '随便聊点什么…'
+                : intent === 'explore' ? '问 AI 关于这个项目的问题…'
+                : intent === 'bugfix'  ? '描述 BUG：症状、复现步骤、报错…'
+                                       : '描述要做的改动…'
+            }
+            className="flex-1 resize-none rounded-lg bg-background border border-border px-3 py-2 text-[13px] leading-[18px] outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary/40 disabled:opacity-50 min-h-[70px]"
+            style={{ maxHeight: '200px' }}
+          />
+          {running ? (
+            <button
+              onClick={onStop}
+              className="h-10 px-3 rounded-lg bg-destructive text-destructive-foreground text-xs font-medium hover:bg-destructive/90 flex items-center gap-1.5 shrink-0"
+            >
+              <Square size={12} /> 停止
+            </button>
+          ) : (
+            <button
+              onClick={submit}
+              disabled={!input.trim()}
+              className="h-[70px] w-[60px] rounded-lg bg-primary text-primary-foreground text-xs font-medium hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed flex flex-col items-center justify-center gap-1 shrink-0"
+              title={`Enter — ${INTENT_META[intent].label}`}
+            >
+              <Send size={14} />
+              <span className="text-[10px]">{INTENT_META[intent].label}</span>
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ============================================================================
+// Stage breadcrumb (only shown for 'change' kind)
+// ============================================================================
+
+function StageBreadcrumb({
+  stage, hasTasks, doneCount, totalTasks
+}: {
+  stage: 'explore' | 'planned' | 'done'
+  hasTasks: boolean
+  doneCount: number
+  totalTasks: number
+}) {
+  const Step = ({ label, active, complete }: { label: string; active: boolean; complete: boolean }) => (
+    <span className={cn(
+      'px-1.5 py-px rounded text-[9px] uppercase font-semibold',
+      complete ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300' :
+      active ? 'bg-primary/15 text-primary' : 'bg-muted/40 text-muted-foreground/50'
+    )}>
+      {label}
+    </span>
+  )
+  return (
+    <div className="flex items-center gap-1">
+      <Step label="拆解" active={stage === 'planned' && doneCount === 0} complete={hasTasks} />
+      <span className="text-muted-foreground/40">→</span>
+      <Step
+        label={totalTasks > 0 ? `${doneCount}/${totalTasks}` : '执行'}
+        active={stage === 'planned' && doneCount > 0}
+        complete={stage === 'done'}
+      />
+    </div>
+  )
+}

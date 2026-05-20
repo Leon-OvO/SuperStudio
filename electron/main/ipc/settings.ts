@@ -1,12 +1,107 @@
 import { ipcMain, dialog, BrowserWindow } from 'electron'
 import fs from 'fs'
 import { IPC } from '../../../src/shared/ipc-types'
-import { getSettings, saveSettings, getProviders, saveProvider, deleteProvider, getMcpServers, saveMcpServer } from '../services/store'
+import { getSettings, saveSettings, getProviders, saveProvider, deleteProvider, getMcpServers, saveMcpServer, deleteMcpServer } from '../services/store'
 import type { McpServerConfig, ProviderConfig } from '../../../src/shared/ipc-types'
+import { getAllKeys, storeAllKeys } from '../auth-store'
+import { apiGetKeyPlaintext, apiListKeys, apiListSubscriptionKeys } from '../supercode-api'
+
+/** Detect masked / placeholder key values returned by list endpoints. */
+function looksLikeRealKey(k: string | undefined | null): boolean {
+  if (!k || typeof k !== 'string') return false
+  if (k.length < 20) return false
+  if (k.includes('*') || k.includes('...')) return false
+  return true
+}
+
+/**
+ * For a supercode provider whose persisted `apiKey` looks masked (left over
+ * from an earlier sync that couldn't recover plaintext), try to restore the
+ * real value via /api/v1/keys/{id} and update the saved provider in place.
+ * Returns the plaintext to use, or null if recovery failed.
+ *
+ * The provider id is of the form `supercode-{groupId}` — we map back to a
+ * key id via the cached allKeys, falling back to a live list scan if needed.
+ */
+async function recoverSupercodeProviderKey(provider: ProviderConfig): Promise<string | null> {
+  if (provider.source !== 'supercode') return null
+  const m = /^supercode-(\d+)$/.exec(provider.id)
+  if (!m) return null
+  const groupId = Number(m[1])
+
+  // 1) Cached key id
+  let keyId = getAllKeys().find(k => k.groupId === groupId)?.id ?? 0
+  // 2) Live scan across both pools if not cached
+  if (!keyId) {
+    try {
+      const [fresh, freshSub] = await Promise.all([
+        apiListKeys().catch(() => []),
+        apiListSubscriptionKeys().catch(() => [])
+      ])
+      keyId = fresh.find(k => k.group_id === groupId)?.id
+        ?? freshSub.find(k => (k.group?.id ?? k.group_id) === groupId)?.id
+        ?? 0
+    } catch { /* fall through */ }
+  }
+  if (!keyId) {
+    console.warn(`[settings] recoverSupercodeProviderKey: no key id found for groupId=${groupId}`)
+    return null
+  }
+
+  try {
+    const plain = await apiGetKeyPlaintext(keyId)
+    if (!looksLikeRealKey(plain)) return null
+    // Update the saved provider so subsequent calls hit the fast path
+    saveProvider({ ...provider, apiKey: plain })
+    // Warm the auth-store cache too
+    const allKeys = getAllKeys()
+    const idx = allKeys.findIndex(k => k.id === keyId)
+    if (idx >= 0) {
+      allKeys[idx] = { ...allKeys[idx], key: plain }
+      storeAllKeys(allKeys)
+    }
+    console.log(`[settings] recovered plaintext for ${provider.id} via /keys/${keyId}`)
+    return plain
+  } catch (e) {
+    console.warn(`[settings] recoverSupercodeProviderKey failed for ${provider.id}:`, (e as Error).message)
+    return null
+  }
+}
 
 export function settingsHandlers(): void {
   ipcMain.handle(IPC.SETTINGS_GET, () => getSettings())
   ipcMain.handle(IPC.SETTINGS_SET, (_e, data) => saveSettings(data))
+
+  ipcMain.handle(IPC.SETTINGS_RESET, async () => {
+    // Reset AppSettings to defaults
+    const defaults = {
+      defaultChatModel: '',
+      defaultChatProviderId: '',
+      defaultImageModel: 'dall-e-3',
+      defaultImageProviderId: '',
+      defaultVideoModel: 'doubao-seedance-2-0',
+      defaultVideoProviderId: '',
+      defaultEmbeddingModel: 'text-embedding-3-small',
+      defaultEmbeddingProviderId: '',
+      searchApiKey: '',
+      searchProvider: 'tavily' as const,
+      kbGlobalEnabled: false,
+      kbGlobalSpaceIds: [],
+      dataDirectory: '',
+      autoModelEnabled: false,
+      autoModelMode: 'standard' as const,
+      autoModelRoutes: {},
+      autoModelSmartModel: '',
+      buildRecentProjectDirs: [],
+      vibeAutoApply: false,
+    }
+    saveSettings(defaults)
+    // Delete all providers
+    for (const p of getProviders()) deleteProvider(p.id)
+    // Delete all MCP servers
+    for (const s of getMcpServers()) deleteMcpServer(s.id)
+    return { ok: true }
+  })
 
   ipcMain.handle(IPC.PROVIDERS_LIST, () => getProviders())
   ipcMain.handle(IPC.PROVIDERS_SAVE, (_e, provider) => {
@@ -25,13 +120,73 @@ export function settingsHandlers(): void {
     if (provider.type !== 'openai' && provider.type !== 'custom') {
       throw new Error('Auto-fetch only supported for OpenAI-compatible providers')
     }
+
+    // For supercode providers, the saved apiKey may be masked (e.g.
+    // "sk-d8d66...3b43") if an earlier sync stored what the list endpoint
+    // returned. Recover plaintext via /keys/{id} before calling /v1/models
+    // — otherwise the upstream will 401 and the user has to manually click
+    // 重置全部 for no obvious reason.
+    let apiKey = provider.apiKey
+    if (provider.source === 'supercode' && !looksLikeRealKey(apiKey)) {
+      const plain = await recoverSupercodeProviderKey(provider)
+      if (plain) apiKey = plain
+    }
+
+    if (!apiKey || apiKey.length < 8) {
+      if (provider.source === 'supercode') {
+        throw new Error('此 Key 已失效或未正确保存，请到「账号」中点击「重置全部」重新拉取')
+      }
+      throw new Error('API Key 为空')
+    }
     const baseUrl = (provider.baseUrl || 'https://api.openai.com').replace(/\/v1\/?$/, '')
-    const res = await fetch(`${baseUrl}/v1/models`, {
-      headers: { Authorization: `Bearer ${provider.apiKey}` }
+    console.log(`[settings] fetch-models for ${providerId}: ${baseUrl}/v1/models (key length=${apiKey.length})`)
+    let res = await fetch(`${baseUrl}/v1/models`, {
+      headers: { Authorization: `Bearer ${apiKey}` }
     })
-    if (!res.ok) throw new Error(`Failed to fetch models: ${res.statusText}`)
-    const json = await res.json() as { data: { id: string }[] }
-    return json.data.map(m => m.id)
+    // One retry: if a supercode provider 401s, the stored key may be stale.
+    // Refresh from /keys/{id} and try again.
+    if (res.status === 401 && provider.source === 'supercode' && looksLikeRealKey(apiKey)) {
+      const refreshed = await recoverSupercodeProviderKey(provider)
+      if (refreshed && refreshed !== apiKey) {
+        console.log(`[settings] retrying /v1/models with refreshed key for ${providerId}`)
+        apiKey = refreshed
+        res = await fetch(`${baseUrl}/v1/models`, {
+          headers: { Authorization: `Bearer ${apiKey}` }
+        })
+      }
+    }
+    if (!res.ok) {
+      const body = await res.text().catch(() => '')
+      console.warn(`[settings] fetch-models ${res.status}: ${body.slice(0, 300)}`)
+      if (res.status === 401 && provider.source === 'supercode') {
+        throw new Error('此 Key 已失效（服务端返回 401）。请到「账号」中点击 Token Plan 的「重置」重新生成。')
+      }
+      throw new Error(`获取模型列表失败 (${res.status}) ${body.slice(0, 200)}`)
+    }
+    const raw = await res.json()
+    // Unwrap multiple possible response shapes
+    let list: unknown[] = []
+    if (Array.isArray(raw)) list = raw
+    else if (raw && typeof raw === 'object') {
+      for (const key of ['data', 'items', 'models', 'list', 'results']) {
+        const v = (raw as Record<string, unknown>)[key]
+        if (Array.isArray(v)) { list = v; break }
+      }
+    }
+    const ids = list.map(item => {
+      if (typeof item === 'string') return item
+      if (item && typeof item === 'object') {
+        const obj = item as Record<string, unknown>
+        const id = obj.id ?? obj.model ?? obj.name
+        return typeof id === 'string' ? id : ''
+      }
+      return ''
+    }).filter(Boolean)
+    console.log(`[settings] fetch-models for provider=${providerId} (key.first8=${apiKey.slice(0,8)}): ${ids.length} models →`, JSON.stringify(ids))
+
+    // Persist the fetched models AND any refreshed plaintext on the provider
+    saveProvider({ ...provider, apiKey, models: ids })
+    return ids
   })
 
   /**
@@ -154,7 +309,6 @@ export function settingsHandlers(): void {
     if (strategy === 'replace') {
       for (const p of getProviders()) deleteProvider(p.id)
       const existingMcp = getMcpServers()
-      const { deleteMcpServer } = await import('../services/store')
       for (const s of existingMcp) deleteMcpServer(s.id)
     }
 

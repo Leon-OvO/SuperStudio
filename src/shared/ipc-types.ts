@@ -97,6 +97,89 @@ export const IPC = {
   MCP_SERVERS_TEST: 'mcp:servers-test',
   MCP_TOOLS_LIST: 'mcp:tools-list',
 
+  // Settings reset
+  SETTINGS_RESET: 'settings:reset',
+
+  // Auth (SuperCode account)
+  AUTH_LOGIN: 'auth:login',
+  AUTH_LOGOUT: 'auth:logout',
+  AUTH_GET_STATE: 'auth:get-state',
+  AUTH_REFRESH: 'auth:refresh',
+  AUTH_STATE_CHANGED: 'auth:state-changed',   // main → renderer (event)
+  AUTH_GET_SAVED_CREDS: 'auth:get-saved-creds',  // pre-fill login form after logout
+  SUPERCODE_INIT_ACCOUNT: 'supercode:init-account',
+
+  // Account key management
+  ACCOUNT_LIST_KEY_OPTIONS: 'account:list-key-options',
+  ACCOUNT_SELECT_KEY: 'account:select-key',
+  ACCOUNT_REVEAL_KEY: 'account:reveal-key',
+  ACCOUNT_CREATE_KEY: 'account:create-key',
+  ACCOUNT_DELETE_KEY: 'account:delete-key',
+  ACCOUNT_LIST_GROUPS: 'account:list-groups',
+  ACCOUNT_GET_STATUS: 'account:get-status',     // current subscription/token plan status
+
+  // Token Plan (subscription) key management — single key per user, lives
+  // alongside the plan info rather than mixed with standalone API keys
+  SUBSCRIPTION_KEY_LIST: 'subscription-key:list',
+  SUBSCRIPTION_KEY_ENSURE: 'subscription-key:ensure',  // idempotent: create or recover
+  SUBSCRIPTION_KEY_DELETE: 'subscription-key:delete',
+  SUBSCRIPTION_KEY_RESET: 'subscription-key:reset',    // delete + recreate
+
+  // Dashboard (usage analytics)
+  DASHBOARD_STATS: 'dashboard:stats',
+  DASHBOARD_TREND: 'dashboard:trend',
+  DASHBOARD_MODELS: 'dashboard:models',
+  DASHBOARD_KEYS_USAGE: 'dashboard:keys-usage',
+
+  // Vibe / Build page (OpenSpec-style propose → apply workflow)
+  // ---- Lifecycle: streamed events ----
+  VIBE_PROGRESS: 'vibe:progress',
+  VIBE_DONE: 'vibe:done',
+  VIBE_ERROR: 'vibe:error',
+  VIBE_STOP: 'vibe:stop',
+  // ---- Projects ----
+  VIBE_LIST_TREE: 'vibe:list-tree',
+  VIBE_READ_FILE: 'vibe:read-file',
+  VIBE_FILE_SAVE: 'vibe:file-save',
+  VIBE_NEW_PROJECT: 'vibe:new-project',
+  VIBE_LIST_RECENT: 'vibe:list-recent',
+  VIBE_REMOVE_RECENT: 'vibe:remove-recent',
+  VIBE_OPEN_EXISTING: 'vibe:open-existing',
+  VIBE_PROJECT_GET: 'vibe:project-get',
+  VIBE_PROJECT_SET_MODEL: 'vibe:project-set-model',
+  // ---- OpenSpec-style workflow ----
+  VIBE_CHAT: 'vibe:chat',           // pure chat, no project tools
+  VIBE_EXPLORE: 'vibe:explore',     // read-only investigation (read/glob/grep)
+  VIBE_BUGFIX: 'vibe:bugfix',       // autonomous fix agent (full tools, no propose step)
+  VIBE_PROPOSE: 'vibe:propose',     // decompose clear requirement into structured tasks
+  VIBE_APPLY: 'vibe:apply',         // execute tasks
+  // ---- Requests / tasks / messages ----
+  VIBE_REQUEST_LIST: 'vibe:request-list',
+  VIBE_REQUEST_DELETE: 'vibe:request-delete',
+  VIBE_TASK_LIST: 'vibe:task-list',
+  VIBE_TASK_TOGGLE: 'vibe:task-toggle',
+  VIBE_MESSAGE_LIST: 'vibe:message-list',
+
+  // Skills (reusable prompt + tool-whitelist bundles)
+  SKILLS_LIST: 'skills:list',
+  SKILLS_INSTALL: 'skills:install',
+  SKILLS_UNINSTALL: 'skills:uninstall',
+  SKILLS_SET_ENABLED: 'skills:set-enabled',
+  SKILLS_SET_SCENARIOS: 'skills:set-scenarios',
+  SKILLS_SOURCES_LIST: 'skills:sources-list',
+  SKILLS_SOURCES_ADD: 'skills:sources-add',
+  SKILLS_SOURCES_DELETE: 'skills:sources-delete',
+  SKILLS_SOURCES_SET_ENABLED: 'skills:sources-set-enabled',
+  SKILLS_BROWSE: 'skills:browse',
+
+  // Terminal (PTY-backed shell in Vibe page)
+  TERMINAL_CREATE: 'terminal:create',
+  TERMINAL_WRITE: 'terminal:write',
+  TERMINAL_RESIZE: 'terminal:resize',
+  TERMINAL_DISPOSE: 'terminal:dispose',
+  TERMINAL_DATA: 'terminal:data',    // main → renderer (event)
+  TERMINAL_EXIT: 'terminal:exit',    // main → renderer (event)
+
   // Workflow
   WORKFLOWS_LIST: 'workflows:list',
   WORKFLOWS_SAVE: 'workflows:save',
@@ -168,7 +251,28 @@ export interface ProviderConfig {
   apiKey: string
   baseUrl?: string
   models: string[]
+  source?: 'supercode' | 'manual'
+  /** Upstream platform (e.g. "Anthropic", "OpenAI") for grouping/labeling
+   *  in pickers. Only set for supercode-managed providers. */
+  platform?: string
 }
+
+/** Current subscription / token plan status, as surfaced to the renderer */
+export interface TokenPlanInfo {
+  planType: string                                    // 'lite' | 'pro' | 'max' | ...
+  periodStart: number | null                          // unix ms
+  periodEnd: number | null                            // unix ms
+  quotaOpusEquivalent: number                         // total allowance (0 = unset)
+  usedOpusEquivalent: number                          // used so far
+  usedRawTotal: number                                // raw token count
+  breakdownByModel: { model: string; used: number }[]
+  autoRenew: boolean
+  status: string                                      // 'active' | 'expired' | ...
+}
+
+// Auto model routing
+export type AutoModelIntent = 'vision' | 'code' | 'math' | 'creative' | 'quick' | 'default'
+export type AutoModelRoutes = Record<AutoModelIntent, string>  // intent → "providerId::modelId"
 
 // Global app settings
 export interface AppSettings {
@@ -185,6 +289,217 @@ export interface AppSettings {
   kbGlobalEnabled: boolean
   kbGlobalSpaceIds: string[]
   dataDirectory: string
+  // Auto model routing
+  autoModelEnabled: boolean
+  autoModelMode: 'standard' | 'smart'
+  autoModelRoutes: Partial<AutoModelRoutes>
+  autoModelSmartModel: string  // "providerId::modelId" for the classifier
+
+  // Vibecoding "Build" page — recent project directories (newest first, capped at 10)
+  buildRecentProjectDirs: string[]
+
+  /** When true, the Build page auto-triggers `apply` right after `propose` finishes
+   *  decomposing a 新需求 — no need to manually click 执行剩余任务. */
+  vibeAutoApply: boolean
+}
+
+// Vibe / Build page types
+export interface VibeProgressEvent {
+  projectPath: string
+  requestId?: string
+  taskId?: string
+  /** Logical message kind streamed to the renderer */
+  type: 'text' | 'tool_use' | 'tool_result' | 'system' | 'task_status' | 'request_ready'
+  /** assistant text chunk */
+  text?: string
+  /** tool name when type === 'tool_use' / 'tool_result' */
+  toolName?: string
+  /** short, human-readable preview of tool args (e.g. file path) */
+  toolArgsPreview?: string
+  /** truncated tool result excerpt */
+  toolResultPreview?: string
+  /** true when tool_result represents an error */
+  isError?: boolean
+  /** task status updates (type === 'task_status') */
+  taskStatus?: 'pending' | 'running' | 'done' | 'error' | 'skipped'
+}
+
+export type VibeRequestStatus = 'draft' | 'proposed' | 'applying' | 'done' | 'archived'
+export type VibeRequestKind = 'explore' | 'change' | 'bugfix' | 'chat'
+/** Mode the user picked in the input bar — 1:1 mapping to the IPC channel called */
+export type VibeIntent = 'chat' | 'explore' | 'bugfix' | 'change'
+export type VibeTaskStatus = 'pending' | 'running' | 'done' | 'error' | 'skipped'
+
+export interface VibeRequestInfo {
+  id: string
+  projectPath: string
+  slug: string
+  title: string
+  summary: string
+  status: VibeRequestStatus
+  kind: VibeRequestKind
+  createdAt: number
+}
+
+export interface VibeTaskInfo {
+  id: string
+  requestId: string
+  ord: number
+  title: string
+  description: string
+  status: VibeTaskStatus
+  errorText: string | null
+  startedAt: number | null
+  finishedAt: number | null
+}
+
+export interface VibeMessageInfo {
+  id: string
+  requestId: string
+  role: 'user' | 'assistant' | 'tool' | 'system'
+  content: string
+  toolName: string | null
+  toolArgs: string | null
+  isError: boolean
+  taskId: string | null
+  createdAt: number
+}
+
+export interface VibeProjectInfo {
+  path: string
+  name: string
+  providerId: string | null
+  modelId: string | null
+  createdAt: number
+  lastOpenedAt: number
+}
+
+export interface FileTreeNode {
+  name: string
+  /** absolute path */
+  path: string
+  isDir: boolean
+  /** populated for directories only */
+  children?: FileTreeNode[]
+}
+
+export interface RecentProject {
+  path: string
+  name: string
+  lastOpenedAt: number
+}
+
+// Skills — reusable prompt + tool-whitelist bundles
+export type SkillScenario = 'chat' | 'vibe' | 'video'
+
+export interface SkillStarterPrompt {
+  label: string
+  prompt: string
+}
+
+export interface SkillManifestInfo {
+  id: string
+  name: string
+  description: string
+  icon: string
+  version: string
+  author: string
+  systemPrompt: string
+  /** null = all tools allowed; [] = no tools; specific names = whitelist */
+  toolWhitelist: string[] | null
+  starterPrompts: SkillStarterPrompt[]
+  homepage?: string
+  suggestedScenarios: SkillScenario[]
+}
+
+export interface InstalledSkillInfo extends SkillManifestInfo {
+  enabled: boolean
+  enabledScenarios: SkillScenario[]
+  sourceUrl: string | null
+  installedAt: number
+  /** True for skills that ship with the app — UI hides the uninstall action. */
+  builtin: boolean
+}
+
+export interface SkillSourceInfo {
+  url: string
+  name: string
+  enabled: boolean
+  builtin: boolean
+  addedAt: number
+}
+
+export interface SkillRegistryEntryInfo {
+  id: string
+  name: string
+  description: string
+  icon?: string
+  version?: string
+  author?: string
+  homepage?: string
+  suggestedScenarios?: SkillScenario[]
+  manifestUrl?: string
+  manifest?: SkillManifestInfo
+}
+
+export interface FetchedRegistryInfo {
+  sourceUrl: string
+  entries: SkillRegistryEntryInfo[]
+  /** Server-reported total across all pages; null if the registry doesn't paginate. */
+  total: number | null
+  error?: string
+}
+
+// SuperCode auth
+export interface SuperCodeUser {
+  id: number
+  email: string
+  username?: string
+  balance?: number
+}
+
+/** One API key entry as returned to the renderer (key value already masked) */
+export interface StoredKeyInfo {
+  id: number
+  groupId: number
+  platform: string
+  groupName: string
+  keyMasked: string
+}
+
+/** Active group available for creating a key */
+export interface AvailableGroupInfo {
+  id: number
+  name: string
+  platform: string
+  status: string
+}
+
+/** All available keys for one platform/group, with current selection */
+export interface GroupKeyOptions {
+  groupId: number
+  groupName: string
+  platform: string
+  keys: { id: number; name: string; keyMasked: string; status: string }[]
+  selectedKeyId: number | null
+}
+
+/** Token-Plan key state for the AccountTab's 当前套餐 section.
+ *  At most one key per subscription — `key` is null until created. */
+export interface SubscriptionKeyView {
+  /** The group the user's plan is bound to (anthropic / openai / ...).
+   *  Null if no subscription yet. */
+  group: { id: number; name: string; platform: string } | null
+  /** The user's single Token Plan key (masked). Null if not yet created. */
+  key: { id: number; name: string; keyMasked: string; status: string } | null
+}
+
+export interface AuthState {
+  isLoggedIn: boolean
+  user: SuperCodeUser | null
+  keyId: number | null
+  keyValue: string       // masked — first key, kept for backward compat
+  allKeys?: StoredKeyInfo[]
 }
 
 // Session
@@ -202,6 +517,8 @@ export interface MessageMeta {
   providerId?: string
   providerName?: string
   durationMs?: number
+  autoRoutedModel?: boolean
+  autoRoutedIntent?: string
 }
 
 // Message

@@ -1,34 +1,66 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
+import { RefreshCw, Loader2, Info, Check } from 'lucide-react'
 import type { AppSettings, ProviderConfig } from '../../../../shared/ipc-types'
 import { Select } from '../../components/ui/Select'
 
 interface Props {
-  tab: 'defaults' | 'search' | 'kb'
+  tab: 'defaults' | 'search' | 'kb' | 'build'
   settings: AppSettings
   providers: ProviderConfig[]
   onSave: (s: AppSettings) => void | Promise<void>
+  onProvidersRefresh?: () => Promise<void> | void
 }
 
-export function GlobalSettings({ tab, settings, providers, onSave }: Props) {
+export function GlobalSettings({ tab, settings, providers, onSave, onProvidersRefresh }: Props) {
   const [draft, setDraft] = useState(settings)
-  useEffect(() => { setDraft(settings) }, [settings])
+  // Auto-save state — only relevant for the 模型 (defaults) tab, but kept at
+  // component scope so the indicator stays consistent across tab switches.
+  const dirty = useRef(false)
+  const [savedTick, setSavedTick] = useState(0)  // bumps after each successful auto-save (for the ✓ chip)
 
-  const update = <K extends keyof AppSettings>(k: K, v: AppSettings[K]) =>
+  useEffect(() => { setDraft(settings); dirty.current = false }, [settings])
+
+  const update = <K extends keyof AppSettings>(k: K, v: AppSettings[K]) => {
+    dirty.current = true
     setDraft(prev => ({ ...prev, [k]: v }))
+  }
 
   const updatePair = <K1 extends keyof AppSettings, K2 extends keyof AppSettings>(
     k1: K1, v1: AppSettings[K1], k2: K2, v2: AppSettings[K2]
-  ) => setDraft(prev => ({ ...prev, [k1]: v1, [k2]: v2 }))
+  ) => {
+    dirty.current = true
+    setDraft(prev => ({ ...prev, [k1]: v1, [k2]: v2 }))
+  }
+
+  // Debounced auto-save for the 模型 tab. Keeps other tabs on manual save
+  // (their fields are sensitive — API keys, etc. — so the explicit
+  // "保存" button stays intentional there).
+  useEffect(() => {
+    if (tab !== 'defaults') return
+    if (!dirty.current) return
+    const t = setTimeout(() => {
+      Promise.resolve(onSave(draft)).then(() => {
+        dirty.current = false
+        setSavedTick(n => n + 1)
+      })
+    }, 400)
+    return () => clearTimeout(t)
+  }, [draft, tab, onSave])
 
   async function save() {
     await onSave(draft)
   }
 
+  const handleRefreshModels = useCallback(async (providerId: string) => {
+    await window.api.fetchModels(providerId)
+    await onProvidersRefresh?.()
+  }, [onProvidersRefresh])
+
   if (tab === 'defaults') {
     return (
       <div className="space-y-4 max-w-2xl">
-        <h2 className="text-lg font-semibold">默认模型</h2>
-        <p className="text-sm text-muted-foreground">为每种任务类型选择默认使用的提供商和模型。</p>
+        <h2 className="text-lg font-semibold">模型</h2>
+        <p className="text-sm text-muted-foreground">为每种任务类型选择 Key 和模型。点击 <RefreshCw size={11} className="inline -mt-0.5 mx-0.5" /> 重新拉取该 Key 可用的模型。</p>
 
         <ModelPicker
           label="对话 / Agent 模型"
@@ -36,6 +68,7 @@ export function GlobalSettings({ tab, settings, providers, onSave }: Props) {
           providerId={draft.defaultChatProviderId}
           modelId={draft.defaultChatModel}
           onChange={(p, m) => updatePair('defaultChatProviderId', p, 'defaultChatModel', m)}
+          onRefresh={handleRefreshModels}
         />
         <ModelPicker
           label="图片生成"
@@ -43,6 +76,7 @@ export function GlobalSettings({ tab, settings, providers, onSave }: Props) {
           providerId={draft.defaultImageProviderId}
           modelId={draft.defaultImageModel}
           onChange={(p, m) => updatePair('defaultImageProviderId', p, 'defaultImageModel', m)}
+          onRefresh={handleRefreshModels}
         />
         <ModelPicker
           label="视频生成"
@@ -50,6 +84,7 @@ export function GlobalSettings({ tab, settings, providers, onSave }: Props) {
           providerId={draft.defaultVideoProviderId}
           modelId={draft.defaultVideoModel}
           onChange={(p, m) => updatePair('defaultVideoProviderId', p, 'defaultVideoModel', m)}
+          onRefresh={handleRefreshModels}
         />
         <ModelPicker
           label="向量嵌入（知识库）"
@@ -57,10 +92,36 @@ export function GlobalSettings({ tab, settings, providers, onSave }: Props) {
           providerId={draft.defaultEmbeddingProviderId}
           modelId={draft.defaultEmbeddingModel}
           onChange={(p, m) => updatePair('defaultEmbeddingProviderId', p, 'defaultEmbeddingModel', m)}
+          onRefresh={handleRefreshModels}
         />
 
         <hr className="border-border" />
         <h3 className="text-sm font-semibold">数据存储</h3>
+        {!draft.dataDirectory && (
+          <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 space-y-2">
+            <div className="flex items-start gap-2">
+              <Info size={14} className="text-amber-500 shrink-0 mt-0.5" />
+              <div className="text-xs text-foreground/80 space-y-1">
+                <p className="font-medium text-foreground">尚未设置数据目录</p>
+                <p>所有图片、视频、知识库和数据库会保存到系统默认目录（AppData），不便于备份和迁移。建议指定一个独立目录。</p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={async () => {
+                const paths = await window.api.openFileDialog({ properties: ['openDirectory'] })
+                if (paths?.[0]) {
+                  const next = { ...draft, dataDirectory: paths[0] }
+                  setDraft(next)
+                  await onSave(next)
+                }
+              }}
+              className="text-xs px-2.5 py-1 rounded border border-amber-500/40 hover:bg-amber-500/10 text-amber-600 transition-colors"
+            >
+              立即选择目录…
+            </button>
+          </div>
+        )}
         <div className="space-y-1.5">
           <label className="text-sm font-medium block">数据目录</label>
           <p className="text-xs text-muted-foreground">图片、视频等生成内容的存储位置。留空使用系统默认（AppData）。</p>
@@ -92,7 +153,21 @@ export function GlobalSettings({ tab, settings, providers, onSave }: Props) {
           )}
         </div>
 
-        <button onClick={save} className="btn-primary">保存</button>
+        <div className="text-xs text-muted-foreground flex items-center gap-1.5 pt-1">
+          {dirty.current ? (
+            <>
+              <Loader2 size={11} className="animate-spin" />
+              <span>正在保存…</span>
+            </>
+          ) : savedTick > 0 ? (
+            <>
+              <Check size={11} className="text-emerald-500" />
+              <span>已自动保存</span>
+            </>
+          ) : (
+            <span className="opacity-60">修改后会自动保存</span>
+          )}
+        </div>
       </div>
     )
   }
@@ -129,20 +204,40 @@ export function GlobalSettings({ tab, settings, providers, onSave }: Props) {
     )
   }
 
-  // kb tab
+  if (tab === 'kb') {
+    return (
+      <div className="space-y-4 max-w-2xl">
+        <h2 className="text-lg font-semibold">知识库</h2>
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={draft.kbGlobalEnabled}
+            onChange={e => update('kbGlobalEnabled', e.target.checked)}
+          />
+          为所有对话启用全局知识库上下文
+        </label>
+        <p className="text-xs text-muted-foreground">
+          启用后会在每次对话中自动检索配置为全局的知识空间作为上下文。会话内手动挂载的知识空间仍优先于全局空间。
+        </p>
+        <button onClick={save} className="btn-primary">保存</button>
+      </div>
+    )
+  }
+
+  // build tab
   return (
     <div className="space-y-4 max-w-2xl">
-      <h2 className="text-lg font-semibold">知识库</h2>
+      <h2 className="text-lg font-semibold">构建</h2>
       <label className="flex items-center gap-2 text-sm">
         <input
           type="checkbox"
-          checked={draft.kbGlobalEnabled}
-          onChange={e => update('kbGlobalEnabled', e.target.checked)}
+          checked={draft.vibeAutoApply}
+          onChange={e => update('vibeAutoApply', e.target.checked)}
         />
-        为所有对话启用全局知识库上下文
+        新需求拆解完毕后自动开始执行
       </label>
       <p className="text-xs text-muted-foreground">
-        启用后会在每次对话中自动检索配置为全局的知识空间作为上下文。会话内手动挂载的知识空间仍优先于全局空间。
+        开启后，在「构建」页里用「新需求」模式提交后，AI 把需求拆解成任务列表的同时会立刻开始逐个实施，不用再手动点「执行剩余任务」。适合相信 AI 拆解结果、希望一键到位的场景；如果想先 review 任务列表再决定，请关闭。
       </p>
       <button onClick={save} className="btn-primary">保存</button>
     </div>
@@ -155,38 +250,101 @@ interface PickerProps {
   providerId: string
   modelId: string
   onChange: (providerId: string, modelId: string) => void
+  onRefresh?: (providerId: string) => Promise<void>
 }
 
-function ModelPicker({ label, providers, providerId, modelId, onChange }: PickerProps) {
-  const provider = providers.find(p => p.id === providerId)
+function ModelPicker({ label, providers, providerId, modelId, onChange, onRefresh }: PickerProps) {
+  const [refreshing, setRefreshing] = useState(false)
+  const [refreshError, setRefreshError] = useState<string | null>(null)
+
+  // Auto-select first provider if none is selected yet
+  useEffect(() => {
+    if (!providerId && providers.length > 0) {
+      onChange(providers[0].id, '')
+    }
+  }, [providerId, providers, onChange])
+
+  const provider = providers.find(p => p.id === providerId) ?? providers[0]
+  const effectiveProviderId = provider?.id ?? ''
   const models = provider?.models || []
+
+  async function handleRefresh() {
+    if (!effectiveProviderId || !onRefresh) return
+    setRefreshing(true)
+    setRefreshError(null)
+    try {
+      await onRefresh(effectiveProviderId)
+    } catch (e) {
+      setRefreshError((e as Error).message)
+    } finally {
+      setRefreshing(false)
+    }
+  }
+
+  if (providers.length === 0) {
+    return (
+      <div className="space-y-1.5">
+        <label className="text-sm font-medium block">{label}</label>
+        <p className="text-xs text-muted-foreground">暂无可用的 Key，请先在「账号」中初始化或新建。</p>
+      </div>
+    )
+  }
+
+  // Display label: "<platform> · <plan name>" for supercode-managed providers
+  // so the picker reads as Token Plans; manual providers fall back to bare name.
+  const planLabel = (p: ProviderConfig) =>
+    p.source === 'supercode' && p.platform ? `${p.platform} · ${p.name}` : p.name
 
   return (
     <div className="space-y-1.5">
       <label className="text-sm font-medium block">{label}</label>
-      <div className="flex gap-2">
-        <Select
-          value={providerId}
-          onChange={v => onChange(v, '')}
-          options={[
-            { value: '', label: '— 选择提供商 —' },
-            ...providers.map(p => ({ value: p.id, label: p.name }))
-          ]}
-          size="md"
-          className="flex-1 [&>span]:w-full"
-        />
-        <Select
-          value={modelId}
-          onChange={v => onChange(providerId, v)}
-          disabled={!provider}
-          options={[
-            { value: '', label: '— 选择模型 —' },
-            ...models.map(m => ({ value: m, label: m }))
-          ]}
-          size="md"
-          className="flex-1 [&>span]:w-full"
-        />
+      <div className="flex gap-2 items-start">
+        <div className="flex-1 space-y-0.5">
+          <div className="text-[10px] uppercase text-muted-foreground/70 font-medium pl-0.5">Token Plan</div>
+          <Select
+            value={effectiveProviderId}
+            onChange={v => onChange(v, '')}
+            options={providers.map(p => ({ value: p.id, label: planLabel(p) }))}
+            size="md"
+            className="w-full [&>span]:w-full"
+          />
+        </div>
+        <div className="flex-1 space-y-0.5">
+          <div className="text-[10px] uppercase text-muted-foreground/70 font-medium pl-0.5">模型</div>
+          <Select
+            value={modelId}
+            onChange={v => onChange(effectiveProviderId, v)}
+            disabled={models.length === 0}
+            options={
+              models.length === 0
+                ? [{ value: '', label: '— 暂无模型 —' }]
+                : [{ value: '', label: '— 选择模型 —' }, ...models.map(m => ({ value: m, label: m }))]
+            }
+            size="md"
+            className="w-full [&>span]:w-full"
+          />
+        </div>
+        {onRefresh && (
+          <button
+            type="button"
+            onClick={handleRefresh}
+            disabled={refreshing || !effectiveProviderId}
+            className="px-2.5 mt-[18px] py-1.5 rounded border border-border text-sm hover:bg-accent transition-colors disabled:opacity-50 flex items-center gap-1 shrink-0 self-stretch"
+            title="重新拉取此 Token Plan 可用的模型列表"
+          >
+            {refreshing
+              ? <Loader2 size={13} className="animate-spin" />
+              : <RefreshCw size={13} />
+            }
+          </button>
+        )}
       </div>
+      {refreshError && (
+        <p className="text-xs text-destructive">{refreshError}</p>
+      )}
+      {models.length === 0 && !refreshError && (
+        <p className="text-xs text-muted-foreground/70">此套餐暂无模型列表，点击右侧 <RefreshCw size={10} className="inline -mt-0.5" /> 重新拉取。</p>
+      )}
     </div>
   )
 }

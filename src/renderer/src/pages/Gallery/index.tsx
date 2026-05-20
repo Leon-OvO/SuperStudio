@@ -12,6 +12,8 @@ import { useImageContextMenu } from '../../components/ui/ImageContextMenu'
 import { useUIStore } from '../../stores/ui'
 import { Select } from '../../components/ui/Select'
 import { ImageEditor } from '../../components/ui/ImageEditor'
+import { useConfirmDialog } from '../../components/ui/ConfirmDialog'
+import { toast } from '../../components/ui/Toast'
 
 function toLocalUrl(p: string): string {
   const fwd = p.replace(/\\/g, '/').replace(/^\//, '')
@@ -44,6 +46,7 @@ export function GalleryPage() {
   const [loading, setLoading] = useState(false)
   const [editorItem, setEditorItem] = useState<GalleryItem | null>(null)
   const ctxMenu = useImageContextMenu()
+  const dlg = useConfirmDialog()
   const { setPendingChatAttachments, setPendingChatImageMode, setPage: setUIPage } = useUIStore()
 
   const useAsReference = useCallback((item: GalleryItem) => {
@@ -76,14 +79,14 @@ export function GalleryPage() {
   }
 
   async function handleDelete(id: number) {
-    if (!confirm('确定删除该项？')) return
+    if (!(await dlg.confirm({ message: '确定删除该项？', tone: 'danger', confirmLabel: '删除' }))) return
     await window.api.deleteGalleryItem(id)
     await reload()
   }
 
   async function handleBatchDelete() {
     if (selected.size === 0) return
-    if (!confirm(`确定删除选中的 ${selected.size} 项？`)) return
+    if (!(await dlg.confirm({ message: `确定删除选中的 ${selected.size} 项？`, tone: 'danger', confirmLabel: '删除' }))) return
     await window.api.batchDeleteGallery(Array.from(selected))
     await reload()
   }
@@ -94,9 +97,9 @@ export function GalleryPage() {
     if (result.canceled) return
     const failed = result.failures?.length ?? 0
     if (failed > 0) {
-      alert(`已保存 ${result.saved} 项到 ${result.targetDir}\n${failed} 项保存失败（源文件可能已被删除）`)
+      toast.error(`已保存 ${result.saved} 项到 ${result.targetDir}\n${failed} 项保存失败（源文件可能已被删除）`, { duration: 5000 })
     } else {
-      alert(`已保存 ${result.saved} 项到 ${result.targetDir}`)
+      toast.success(`已保存 ${result.saved} 项到 ${result.targetDir}`)
     }
   }
 
@@ -104,7 +107,7 @@ export function GalleryPage() {
     if (selected.size === 0) return
     const imageItems = items.filter(i => selected.has(i.id) && i.type === 'image')
     if (imageItems.length === 0) {
-      alert('选中的项目中没有图片')
+      toast.info('选中的项目中没有图片')
       return
     }
     const attachments = imageItems.map(item => {
@@ -283,6 +286,8 @@ export function GalleryPage() {
           onApplied={() => reload()}
         />
       )}
+
+      {dlg.element}
     </div>
   )
 }
@@ -556,6 +561,7 @@ interface PreviewProps {
 function PreviewModal({ items, index, onIndexChange, onClose, onDelete, onUseAsReference, onEdit }: PreviewProps) {
   const item = items[index]
   const [toast, setToast] = useState<string | null>(null)
+  const dlg = useConfirmDialog()
 
   const hasPrev = index > 0
   const hasNext = index < items.length - 1
@@ -594,8 +600,8 @@ function PreviewModal({ items, index, onIndexChange, onClose, onDelete, onUseAsR
     }
   }
 
-  function handleDeleteCurrent() {
-    if (!confirm('确定删除当前项？')) return
+  async function handleDeleteCurrent() {
+    if (!(await dlg.confirm({ message: '确定删除当前项？', tone: 'danger', confirmLabel: '删除' }))) return
     onDelete(item.id)
   }
 
@@ -714,6 +720,7 @@ function PreviewModal({ items, index, onIndexChange, onClose, onDelete, onUseAsR
           {toast}
         </div>
       )}
+      {dlg.element}
     </div>
   )
 }

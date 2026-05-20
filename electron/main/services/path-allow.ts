@@ -18,6 +18,8 @@ import { dbAll } from '../db/sqlite'
  */
 
 const sessionApproved = new Set<string>()
+/** Directory roots: any file/subfolder under these is allowed (prefix match). */
+const sessionApprovedRoots = new Set<string>()
 let dbCachedAt = 0
 const dbCached = new Set<string>()
 const DB_CACHE_TTL_MS = 5_000
@@ -30,6 +32,16 @@ function normalize(p: string): string {
 export function registerApproved(p: string | undefined | null): void {
   if (!p) return
   sessionApproved.add(normalize(p))
+}
+
+/**
+ * Approve a directory and ALL its descendants (recursive prefix match).
+ * Use this for project roots / workspaces where many child files will be
+ * accessed without each one being explicitly approved.
+ */
+export function registerApprovedRoot(p: string | undefined | null): void {
+  if (!p) return
+  sessionApprovedRoots.add(normalize(p))
 }
 
 function loadDbApproved(): Set<string> {
@@ -90,10 +102,15 @@ export function isApproved(filePath: string): boolean {
     if (norm === root || norm.startsWith(root + '/')) return true
   }
 
-  // 2. Approved this session (file dialog, paste, etc.)
+  // 2. Approved this session (file dialog, paste, etc.) — exact match
   if (sessionApproved.has(norm)) return true
 
-  // 3. Referenced in DB (attachments, gallery, kb sources)
+  // 3. Inside an approved directory root (Vibe project, workspace) — prefix match
+  for (const root of sessionApprovedRoots) {
+    if (norm === root || norm.startsWith(root + '/')) return true
+  }
+
+  // 4. Referenced in DB (attachments, gallery, kb sources)
   const dbSet = loadDbApproved()
   if (dbSet.has(norm)) return true
 

@@ -3,6 +3,8 @@ import { Plus, Trash2, Pencil, ArrowLeft, Loader2, CheckCircle2, XCircle, Server
 import type { McpServerConfig } from '../../../../shared/ipc-types'
 import { Select } from '../../components/ui/Select'
 import { cn } from '../../lib/utils'
+import { useConfirmDialog } from '../../components/ui/ConfirmDialog'
+import { toast } from '../../components/ui/Toast'
 
 const EMPTY_DRAFT: McpServerConfig = {
   id: '',
@@ -39,6 +41,7 @@ export function McpServers() {
   const [testResult, setTestResult] = useState<{ ok: boolean; tools?: Array<{ name: string; description?: string }>; error?: string } | null>(null)
   const [testing, setTesting] = useState(false)
   const [loading, setLoading] = useState(false)
+  const dlg = useConfirmDialog()
 
   useEffect(() => { reload() }, [])
 
@@ -71,16 +74,20 @@ export function McpServers() {
 
   async function saveDraft() {
     if (!draft) return
-    if (!draft.name.trim()) { alert('请填写服务器名称'); return }
-    if (draft.transport === 'stdio' && !draft.command?.trim()) { alert('stdio 需要填写 command'); return }
-    if (draft.transport === 'sse' && !draft.url?.trim()) { alert('SSE 需要填写 URL'); return }
+    if (!draft.name.trim()) { toast.error('请填写服务器名称'); return }
+    if (draft.transport === 'stdio' && !draft.command?.trim()) { toast.error('stdio 需要填写 command'); return }
+    if (draft.transport === 'sse' && !draft.url?.trim()) { toast.error('SSE 需要填写 URL'); return }
     await window.api.saveMcpServer(draft)
     setDraft(null)
     await reload()
   }
 
   async function deleteServer(id: string) {
-    if (!confirm('确定删除该 MCP 服务器配置？')) return
+    if (!(await dlg.confirm({
+      message: '确定删除该 MCP 服务器配置？',
+      tone: 'danger',
+      confirmLabel: '删除'
+    }))) return
     await window.api.deleteMcpServer(id)
     await reload()
   }
@@ -178,6 +185,7 @@ export function McpServers() {
             ))}
           </div>
         )}
+        {dlg.element}
       </div>
     )
   }

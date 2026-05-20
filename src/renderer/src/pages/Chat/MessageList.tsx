@@ -4,6 +4,7 @@ import type { Message, ToolCallRecord } from '../../../../shared/ipc-types'
 import { cn } from '../../lib/utils'
 import { copyImageToClipboard } from '../../lib/clipboard'
 import { useImageContextMenu } from '../../components/ui/ImageContextMenu'
+import { toast } from '../../components/ui/Toast'
 import { Markdown } from '../../lib/markdown'
 import { Play, X, RotateCcw, Clock, Cpu, Copy, Check, Download, Wand2, Brain, ChevronRight, ChevronDown, ChevronUp, Pencil, Trash2, RefreshCw } from 'lucide-react'
 
@@ -97,6 +98,8 @@ interface Props {
   onEditImage: (src: string) => void
   /** Total configured LLM providers — drives the first-run onboarding. null = still loading. */
   providersCount?: number | null
+  /** Currently configured default chat model id — empty string means none picked. */
+  defaultChatModel?: string
   /** Delete a single message by id (no cascade). */
   onDeleteMessage?: (messageId: string) => void
   /** Regenerate a specific assistant response. */
@@ -108,7 +111,7 @@ interface Props {
 }
 
 export function MessageList({
-  messages, onRetry, onEditImage, providersCount,
+  messages, onRetry, onEditImage, providersCount, defaultChatModel,
   onDeleteMessage, onRegenerate, onEditUserMessage, isRunning
 }: Props) {
   const ctxMenu = useImageContextMenu()
@@ -159,6 +162,36 @@ export function MessageList({
             </button>
             <p className="text-xs text-muted-foreground/70">
               已有可访问 OpenAI 协议的代理？把 baseUrl 填成代理地址，type 选「自定义」即可。
+            </p>
+          </div>
+        </div>
+      )
+    }
+    // Providers exist but no default chat model picked → guide to Settings → 模型
+    if (providersCount != null && providersCount > 0 && !defaultChatModel) {
+      return (
+        <div className="flex-1 flex items-center justify-center p-8">
+          <div className="max-w-md text-center space-y-4">
+            <div className="w-14 h-14 mx-auto rounded-full bg-amber-500/10 flex items-center justify-center">
+              <Cpu size={26} className="text-amber-500" />
+            </div>
+            <div className="space-y-1.5">
+              <h3 className="text-base font-semibold">还没有选择默认对话模型</h3>
+              <p className="text-sm text-muted-foreground leading-relaxed">
+                已经识别到 <strong className="text-foreground">{providersCount}</strong> 个 Key，但还没选定要默认用哪个模型。
+                前往「设置 → 模型」从 Key 列表里挑一个，并选择具体模型；之后所有新会话都会用它。
+              </p>
+            </div>
+            <div className="flex gap-2 justify-center">
+              <button
+                onClick={() => window.dispatchEvent(new CustomEvent('navigate', { detail: { page: 'settings' } }))}
+                className="btn-primary"
+              >
+                去设置默认模型
+              </button>
+            </div>
+            <p className="text-xs text-muted-foreground/70">
+              提示：模型列表为空时，到「设置 → 模型」点击右侧 🔁 按钮可重新拉取。
             </p>
           </div>
         </div>
@@ -445,6 +478,11 @@ function MessageBubble({
         {/* Meta footer for assistant messages */}
         {!isUser && meta && (
           <div className="flex items-center gap-2.5 mt-1 px-1 text-[11px] text-muted-foreground/55 select-none">
+            {meta.autoRoutedModel && (
+              <span className="flex items-center gap-1 text-amber-600/70">
+                ⚡ 自动路由{meta.autoRoutedIntent ? ` · ${meta.autoRoutedIntent}` : ''}
+              </span>
+            )}
             {meta.model && (
               <span className="flex items-center gap-1">
                 <Cpu size={9} />
@@ -815,7 +853,7 @@ function FileRevertCard({ tc }: { tc: ToolCallRecord }) {
       await window.api.revertBackup(result.backupPath, args.filePath || '')
       setReverted(true)
     } catch (e) {
-      alert('还原失败：' + (e as Error).message)
+      toast.error('还原失败：' + (e as Error).message)
     }
   }
 

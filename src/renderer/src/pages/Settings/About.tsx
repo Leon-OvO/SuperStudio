@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
-import { Loader2, RefreshCw, Sparkles, ExternalLink, Database, Download, Upload, FileWarning, Trash2, Copy } from 'lucide-react'
+import { Loader2, RefreshCw, Sparkles, ExternalLink, Database, Download, Upload, FileWarning, Trash2, Copy, RotateCcw } from 'lucide-react'
 import { useT } from '../../lib/i18n'
+import { useConfirmDialog } from '../../components/ui/ConfirmDialog'
+import { toast } from '../../components/ui/Toast'
 
 interface Props {
   onExportData: () => void
@@ -135,12 +137,78 @@ export function About({
 
       <ErrorLogSection />
 
-      <section className="space-y-2 border-t border-border pt-5 text-xs text-muted-foreground/80">
-        <p>开源协议：MIT</p>
-      </section>
+      <ResetSection />
     </div>
   )
 }
+
+function ResetSection() {
+  const [resetting, setResetting] = useState(false)
+  const [confirmOpen, setConfirmOpen] = useState(false)
+
+  async function handleResetConfirmed() {
+    setConfirmOpen(false)
+    setResetting(true)
+    try {
+      await window.api.resetAllSettings?.()
+      await window.api.logout?.()
+      window.location.reload()
+    } catch (e) {
+      toast.error('重置失败：' + (e as Error).message)
+      setResetting(false)
+    }
+  }
+
+  return (
+    <section className="space-y-3 border-t border-border pt-5">
+      <h3 className="text-sm font-medium flex items-center gap-1.5 text-destructive/80">
+        <RotateCcw size={13} /> 危险操作
+      </h3>
+      <p className="text-sm text-muted-foreground leading-relaxed">
+        重置全部设置会清空：应用设置、所有提供商配置、MCP 服务器。<strong className="text-foreground">对话记录不受影响</strong>。重置后将退出登录。
+      </p>
+      <button
+        onClick={() => setConfirmOpen(true)}
+        disabled={resetting}
+        className="flex items-center gap-2 px-4 py-2 rounded-md border border-destructive/40 text-destructive text-sm hover:bg-destructive/5 transition-colors disabled:opacity-50"
+      >
+        {resetting ? <Loader2 size={14} className="animate-spin" /> : <RotateCcw size={14} />}
+        重置全部设置
+      </button>
+
+      {/* Inline confirm — native confirm() breaks renderer input focus */}
+      {confirmOpen && (
+        <div
+          className="fixed inset-0 z-[200] bg-black/50 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={() => setConfirmOpen(false)}
+        >
+          <div
+            className="bg-popover border border-border rounded-xl shadow-2xl w-[420px] max-w-full p-5 space-y-4"
+            onClick={e => e.stopPropagation()}
+          >
+            <h3 className="text-base font-semibold flex items-center gap-2 text-destructive">
+              <RotateCcw size={16} />
+              确认重置全部设置？
+            </h3>
+            <p className="text-sm text-muted-foreground">
+              将清空：应用设置、所有提供商配置、MCP 服务器。<strong className="text-foreground">对话记录不受影响</strong>。重置后会退出登录。
+            </p>
+            <div className="flex justify-end gap-2 pt-1">
+              <button onClick={() => setConfirmOpen(false)} className="btn-secondary text-sm" autoFocus>取消</button>
+              <button
+                onClick={handleResetConfirmed}
+                className="px-3 py-1.5 rounded-md bg-destructive text-destructive-foreground text-sm hover:bg-destructive/90 transition-colors"
+              >
+                重置
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </section>
+  )
+}
+
 
 interface LogEntry {
   ts: number
@@ -155,6 +223,7 @@ function ErrorLogSection() {
   const [entries, setEntries] = useState<LogEntry[]>([])
   const [loading, setLoading] = useState(false)
   const [open, setOpen] = useState(false)
+  const dlg = useConfirmDialog()
 
   async function refresh() {
     setLoading(true)
@@ -169,7 +238,11 @@ function ErrorLogSection() {
   useEffect(() => { if (open) refresh() }, [open])
 
   async function clearAll() {
-    if (!confirm('确定清空错误日志？已写入磁盘的旧条目也会被删除。')) return
+    if (!(await dlg.confirm({
+      message: '确定清空错误日志？已写入磁盘的旧条目也会被删除。',
+      tone: 'danger',
+      confirmLabel: '清空'
+    }))) return
     await window.api.clearErrorLog?.()
     setEntries([])
   }
@@ -242,6 +315,7 @@ function ErrorLogSection() {
           </div>
         </div>
       )}
+      {dlg.element}
     </section>
   )
 }

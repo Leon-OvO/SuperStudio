@@ -6,6 +6,8 @@ import {
 import { cn, formatDate } from '../../lib/utils'
 import { renderMarkdown } from '../../lib/markdown'
 import { useInputDialog } from '../../components/ui/InputDialog'
+import { useConfirmDialog } from '../../components/ui/ConfirmDialog'
+import { toast } from '../../components/ui/Toast'
 
 interface Space {
   id: string
@@ -64,6 +66,7 @@ export function KnowledgePage() {
   const [highlightSnippet, setHighlightSnippet] = useState<string | null>(null)
   const unsubRef = useRef<(() => void) | null>(null)
   const inputDialog = useInputDialog()
+  const dlg = useConfirmDialog()
 
   useEffect(() => {
     loadSpaces()
@@ -114,7 +117,7 @@ export function KnowledgePage() {
   }
 
   async function deleteSpace(id: string) {
-    if (!confirm('确定删除该知识空间及其所有内容？')) return
+    if (!(await dlg.confirm({ message: '确定删除该知识空间及其所有内容？', tone: 'danger', confirmLabel: '删除' }))) return
     await window.api.deleteSpace(id)
     if (activeSpace === id) setActiveSpace(null)
     setActivePage(null)
@@ -154,14 +157,14 @@ export function KnowledgePage() {
   }, [])
 
   async function deletePage(id: string) {
-    if (!confirm('确定删除该页面？')) return
+    if (!(await dlg.confirm({ message: '确定删除该页面？', tone: 'danger', confirmLabel: '删除' }))) return
     await window.api.deletePage(id)
     if (activePage?.id === id) setActivePage(null)
     if (activeSpace) await loadPages(activeSpace)
   }
 
   async function deleteSource(id: string) {
-    if (!confirm('确定删除该导入文件及其向量？原始文件不会被删除。')) return
+    if (!(await dlg.confirm({ message: '确定删除该导入文件及其向量？原始文件不会被删除。', tone: 'danger', confirmLabel: '删除' }))) return
     await window.api.deleteSource(id)
     if (activeSpace) await loadSources(activeSpace)
   }
@@ -180,7 +183,7 @@ export function KnowledgePage() {
       await window.api.importFile({ spaceId: activeSpace, filePath, name })
       await loadSources(activeSpace)
     } catch (e) {
-      alert('导入失败：' + (e as Error).message)
+      toast.error('导入失败：' + (e as Error).message)
     } finally {
       setImportProgress(null)
     }
@@ -188,18 +191,22 @@ export function KnowledgePage() {
 
   async function reindexSpace() {
     if (!activeSpace) return
-    if (!confirm('重建该空间的所有向量索引？\n会先删除旧向量再重新向量化所有页面和导入文件。')) return
+    if (!(await dlg.confirm({
+      message: '重建该空间的所有向量索引？\n会先删除旧向量再重新向量化所有页面和导入文件。',
+      tone: 'danger',
+      confirmLabel: '重建'
+    }))) return
     setReindexing(true)
     try {
       const result = await window.api.reindexSpace(activeSpace)
       if (result.errors?.length) {
-        alert(`重建完成，但有 ${result.errors.length} 项失败：\n` +
-          result.errors.slice(0, 3).map((e: { name: string; error: string }) => `· ${e.name}: ${e.error}`).join('\n'))
+        toast.error(`重建完成，但有 ${result.errors.length} 项失败：\n` +
+          result.errors.slice(0, 3).map((e: { name: string; error: string }) => `· ${e.name}: ${e.error}`).join('\n'), { duration: 5000 })
       } else {
-        alert(`重建完成，共处理 ${result.total} 项。`)
+        toast.success(`重建完成，共处理 ${result.total} 项。`)
       }
     } catch (e) {
-      alert('重建失败：' + (e as Error).message)
+      toast.error('重建失败：' + (e as Error).message)
     } finally {
       setReindexing(false)
       setImportProgress(null)
@@ -466,6 +473,7 @@ export function KnowledgePage() {
       </div>
 
       {inputDialog.element}
+      {dlg.element}
     </div>
   )
 }

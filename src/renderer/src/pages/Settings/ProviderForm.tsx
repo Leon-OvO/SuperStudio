@@ -4,6 +4,7 @@ import type { ProviderConfig } from '../../../../shared/ipc-types'
 import { randomId } from '../../lib/id'
 import { Select } from '../../components/ui/Select'
 import { cn } from '../../lib/utils'
+import { toast } from '../../components/ui/Toast'
 
 interface Props {
   initial: ProviderConfig | null
@@ -24,7 +25,7 @@ export function ProviderForm({ initial, onSave, onCancel }: Props) {
   const [testResult, setTestResult] = useState<{ ok: boolean; modelCount?: number; error?: string } | null>(null)
 
   async function handleTestConnection() {
-    if (!apiKey.trim()) { alert('请先填写 API 密钥'); return }
+    if (!apiKey.trim()) { toast.error('请先填写 API 密钥'); return }
     setTesting(true)
     setTestResult(null)
     try {
@@ -43,7 +44,7 @@ export function ProviderForm({ initial, onSave, onCancel }: Props) {
   }
 
   async function handleFetchModels() {
-    if (!apiKey) { alert('请先填写 API 密钥'); return }
+    if (!apiKey) { toast.error('请先填写 API 密钥'); return }
     setFetching(true)
     try {
       const id = initial?.id || 'temp_' + randomId()
@@ -55,7 +56,7 @@ export function ProviderForm({ initial, onSave, onCancel }: Props) {
       }
       if (!initial) await window.api.deleteProvider(id)
     } catch (e) {
-      alert('拉取模型失败：' + (e as Error).message)
+      toast.error('拉取模型失败：' + (e as Error).message)
     } finally {
       setFetching(false)
     }
@@ -75,7 +76,7 @@ export function ProviderForm({ initial, onSave, onCancel }: Props) {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    if (!name || !apiKey) { alert('名称和 API 密钥不能为空'); return }
+    if (!name || !apiKey) { toast.error('名称和 API 密钥不能为空'); return }
     setSaving(true)
     try {
       await onSave({

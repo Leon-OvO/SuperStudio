@@ -109,6 +109,90 @@ function createTables(): void {
       chunk_count INTEGER DEFAULT 0,
       created_at INTEGER NOT NULL
     );
+
+    -- Vibe / Build page: project-level metadata
+    CREATE TABLE IF NOT EXISTS vibe_projects (
+      path           TEXT PRIMARY KEY,
+      name           TEXT NOT NULL,
+      provider_id    TEXT,
+      model_id       TEXT,
+      created_at     INTEGER NOT NULL,
+      last_opened_at INTEGER NOT NULL
+    );
+
+    -- Vibe: a "requirement" / change request the user filed against a project
+    CREATE TABLE IF NOT EXISTS vibe_requests (
+      id           TEXT PRIMARY KEY,
+      project_path TEXT NOT NULL,
+      slug         TEXT NOT NULL,
+      title        TEXT NOT NULL,
+      summary      TEXT DEFAULT '',
+      status       TEXT NOT NULL DEFAULT 'draft',
+      kind         TEXT NOT NULL DEFAULT 'change',
+      created_at   INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_vibe_requests_project ON vibe_requests(project_path);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_vibe_requests_slug ON vibe_requests(project_path, slug);
+
+    -- Vibe: individual tasks under a request (mirrors tasks.md on disk)
+    CREATE TABLE IF NOT EXISTS vibe_tasks (
+      id          TEXT PRIMARY KEY,
+      request_id  TEXT NOT NULL,
+      ord         INTEGER NOT NULL,
+      title       TEXT NOT NULL,
+      description TEXT DEFAULT '',
+      status      TEXT NOT NULL DEFAULT 'pending',
+      error_text  TEXT,
+      started_at  INTEGER,
+      finished_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_vibe_tasks_request ON vibe_tasks(request_id, ord);
+
+    -- Vibe: chat/tool message log per request
+    CREATE TABLE IF NOT EXISTS vibe_messages (
+      id         TEXT PRIMARY KEY,
+      request_id TEXT NOT NULL,
+      role       TEXT NOT NULL,
+      content    TEXT NOT NULL DEFAULT '',
+      tool_name  TEXT,
+      tool_args  TEXT,
+      is_error   INTEGER NOT NULL DEFAULT 0,
+      task_id    TEXT,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_vibe_messages_request ON vibe_messages(request_id, created_at);
+
+    -- Skills: installed prompt + tool-whitelist bundles. Per design:
+    -- skill = a reusable persona/preset that combines a system-prompt fragment
+    -- with an optional tool whitelist, optionally scoped to specific scenarios
+    -- (chat / vibe / video). Enabled skills get auto-merged into the active
+    -- LLM request for matching scenarios.
+    CREATE TABLE IF NOT EXISTS skills (
+      id                 TEXT PRIMARY KEY,
+      name               TEXT NOT NULL,
+      description        TEXT NOT NULL DEFAULT '',
+      icon               TEXT NOT NULL DEFAULT '',         -- emoji or short token
+      version            TEXT NOT NULL DEFAULT '0.0.0',
+      author             TEXT NOT NULL DEFAULT '',
+      system_prompt      TEXT NOT NULL DEFAULT '',         -- prompt fragment, merged at runtime
+      tool_whitelist     TEXT,                             -- JSON array | null (null = all tools)
+      starter_prompts    TEXT NOT NULL DEFAULT '[]',       -- JSON array of {label, prompt}
+      homepage           TEXT,
+      enabled            INTEGER NOT NULL DEFAULT 1,
+      enabled_scenarios  TEXT NOT NULL DEFAULT '[]',       -- JSON array: ('chat'|'vibe'|'video')[]
+      source_url         TEXT,                             -- where it was installed from
+      installed_at       INTEGER NOT NULL
+    );
+
+    -- Skill registry sources: list of URLs pointing to skill manifest JSON
+    -- documents. App ships a built-in entry; users can add more.
+    CREATE TABLE IF NOT EXISTS skill_sources (
+      url       TEXT PRIMARY KEY,
+      name      TEXT NOT NULL DEFAULT '',
+      enabled   INTEGER NOT NULL DEFAULT 1,
+      builtin   INTEGER NOT NULL DEFAULT 0,                -- 1 = shipped with app, can't be deleted
+      added_at  INTEGER NOT NULL
+    );
   `)
   saveDb()
 }
@@ -119,6 +203,12 @@ function applyMigrations(): void {
   // v2: session archive flag — soft-delete style. Lets users hide noisy
   // sessions without losing history, and provides a recoverable trash bucket.
   try { db.run(`ALTER TABLE sessions ADD COLUMN archived INTEGER NOT NULL DEFAULT 0`) } catch { /* already exists */ }
+  // v3: distinguish quick chat vs structured change requests in the Vibe page.
+  // 'chat' = simple Q&A with tools; 'change' = propose → tasks → apply.
+  try { db.run(`ALTER TABLE vibe_requests ADD COLUMN kind TEXT NOT NULL DEFAULT 'change'`) } catch { /* already exists */ }
+  // v4: mark built-in skills that ship with the app — they auto-install on
+  // first launch and can't be uninstalled (only disabled).
+  try { db.run(`ALTER TABLE skills ADD COLUMN builtin INTEGER NOT NULL DEFAULT 0`) } catch { /* already exists */ }
 }
 
 // Helper: run a query and save

@@ -61,13 +61,59 @@
   * { @apply border-border; }
   body {
     @apply bg-background text-foreground;
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', 'Hiragino Sans GB', system-ui, sans-serif;
-    -webkit-font-smoothing: antialiased;
+    /* Font stack: macOS uses -apple-system/PingFang (auto-handles CJK), Windows
+     * uses Segoe UI for Latin + Microsoft YaHei UI for CJK. Putting the Chinese
+     * fonts BEFORE Segoe UI ensures Chinese glyphs come from YaHei UI and not
+     * the awful default SimSun fallback. "Microsoft YaHei UI" is the modern
+     * hinted variant used in Windows 10+ UI; falls back to "Microsoft YaHei". */
+    font-family:
+      -apple-system, BlinkMacSystemFont,
+      'PingFang SC', 'Hiragino Sans GB',
+      'Microsoft YaHei UI', 'Microsoft YaHei', '微软雅黑',
+      'Segoe UI', system-ui, sans-serif;
+    /* Let the platform choose its native smoothing:
+     *   - Windows → ClearType subpixel (sharp for CJK at 12-16px)
+     *   - macOS   → grayscale antialiased (default)
+     * We DO NOT set -webkit-font-smoothing here; the platform default wins. */
+    text-rendering: optimizeLegibility;
+    font-feature-settings: "kern";
   }
+  /* Per-platform overrides via .platform-win / .platform-mac on <html> */
+  html.platform-mac body { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+  html.platform-win body { -webkit-font-smoothing: auto; }
   ::-webkit-scrollbar { width: 5px; height: 5px; }
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb { @apply bg-border/80 rounded-full; }
   ::-webkit-scrollbar-thumb:hover { @apply bg-muted-foreground/30; }
+
+  /* Prominent scrollbar variant — for content panels where the user needs
+   * an obvious affordance to scroll (chat, conversations). Wider thumb that
+   * doesn't fade into the background, with a subtle track so it's always
+   * visible even when there's no hover. */
+  .scrollbar-prominent::-webkit-scrollbar { width: 10px; height: 10px; }
+  .scrollbar-prominent::-webkit-scrollbar-track { @apply bg-muted/30; }
+  .scrollbar-prominent::-webkit-scrollbar-thumb { @apply bg-muted-foreground/40 rounded-full border-2 border-transparent bg-clip-padding; }
+  .scrollbar-prominent::-webkit-scrollbar-thumb:hover { @apply bg-muted-foreground/60; }
+
+  /* Hide scrollbar entirely — for containers that have a custom minimap
+   * replacing the native scrollbar. */
+  .scrollbar-hidden::-webkit-scrollbar { display: none; }
+  .scrollbar-hidden { scrollbar-width: none; }
+
+  /* WeChat-style compact font sizes — overrides Tailwind's text-* defaults.
+   * Tailwind defaults: xs=12 sm=14 base=16 lg=18 xl=20 — these are too big for
+   * a dense desktop app. Spacing utilities (p-*, gap-*) are left untouched so
+   * layout doesn't shift. */
+  .text-xs   { font-size: 11px; line-height: 1.5; }
+  .text-sm   { font-size: 12.5px; line-height: 1.55; }
+  .text-base { font-size: 13.5px; line-height: 1.6; }
+  .text-lg   { font-size: 15px; line-height: 1.5; }
+  .text-xl   { font-size: 17px; line-height: 1.45; }
+  .text-2xl  { font-size: 20px; line-height: 1.4; }
+  /* Sub-xs sizes used in chips / hints — keep readable but tight */
+  .text-\[10px\], .text-\[11px\] { line-height: 1.5; }
+  /* Default body text inherits text-sm sizing */
+  body { font-size: 12.5px; line-height: 1.55; }
 }
 
 @layer components {

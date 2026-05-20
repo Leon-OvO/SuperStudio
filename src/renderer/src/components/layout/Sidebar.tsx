@@ -1,4 +1,4 @@
-import { MessageSquare, Zap, Image, BookOpen, Settings, Sun, Moon, Languages } from 'lucide-react'
+import { MessageSquare, Zap, Image, BookOpen, Code2, Sparkles, Settings, Sun, Moon, Languages } from 'lucide-react'
 import { useUIStore } from '../../stores/ui'
 import { cn } from '../../lib/utils'
 import { useT, setLanguage, useLanguage } from '../../lib/i18n'
@@ -8,11 +8,15 @@ export function Sidebar() {
   const t = useT()
   const lang = useLanguage()
 
+  // Dashboard is intentionally not in the side nav — accessible from the top-right
+  // user menu (TopBarUser) so the left nav stays focused on workspace pages.
   const navItems = [
     { id: 'chat' as const, icon: MessageSquare, label: t('nav.chat') },
+    { id: 'vibe' as const, icon: Code2, label: t('nav.vibe') },
     { id: 'workflow' as const, icon: Zap, label: t('nav.workflow') },
     { id: 'gallery' as const, icon: Image, label: t('nav.gallery') },
     { id: 'knowledge' as const, icon: BookOpen, label: t('nav.knowledge') },
+    { id: 'skills' as const, icon: Sparkles, label: t('nav.skills') },
   ]
 
   const themeLabel = theme === 'dark' ? t('nav.themeLight') : t('nav.themeDark')

@@ -10,6 +10,7 @@ import { readFile, writeFile } from '../services/fileops'
 import { searchWeb } from '../services/search'
 import { saveGalleryItem } from '../services/gallery'
 import { mcpManager, type McpTool } from '../services/mcp'
+import { getActiveSkillsForScenario, type InstalledSkill } from '../services/skills-db'
 import { notifyTaskComplete } from '../services/tray'
 import { dbRun, dbAll, dbGet } from '../db/sqlite'
 import { randomUUID } from 'crypto'
@@ -97,7 +98,19 @@ export async function runAgent(
 
   // Build system prompt with knowledge context (mounted spaces take priority over global)
   const kbContext = await buildKbContext(message, sessionId, settings, mountedSpaceIds)
-  const systemPrompt = buildSystemPrompt(kbContext, mcpTools)
+
+  // Gather skills configured for the chat scenario — each one contributes a
+  // system prompt fragment and (optionally) restricts the tool list.
+  let activeSkills: InstalledSkill[] = []
+  try {
+    activeSkills = getActiveSkillsForScenario('chat')
+    if (activeSkills.length) {
+      console.log(`[Agent] active chat skills: ${activeSkills.map(s => s.id).join(', ')}`)
+    }
+  } catch (e) {
+    console.warn('[Agent] failed to load active skills:', (e as Error).message)
+  }
+  const systemPrompt = buildSystemPrompt(kbContext, mcpTools, activeSkills)
 
   const toolCallLog: Array<{ toolName: string; args: unknown; result: unknown }> = []
   let stepIndex = 0
@@ -202,18 +215,7 @@ export async function runAgent(
     if (mcpHasWebSearch) console.log('[Agent] builtin web_search suppressed — MCP equivalent available')
     if (mcpHasVision) console.log('[Agent] builtin vision_analyze suppressed — MCP equivalent available')
 
-    const result = streamText({
-      model,
-      system: systemPrompt,
-      messages: await buildMessageHistory(sessionId, message, attachments),
-      abortSignal: abort.signal,
-      maxSteps: 20,
-      maxRetries: 5,
-      onError: ({ error }) => {
-        console.error('[Agent] streamText onError', error)
-        streamErr = error as Error
-      },
-      tools: {
+    const allTools: Record<string, ReturnType<typeof tool>> = {
         ...(mcpToolEntries as Record<string, ReturnType<typeof tool>>),
         ...(mcpHasWebSearch ? {} : {
         web_search: tool({
@@ -340,6 +342,29 @@ export async function runAgent(
         // automatically. Exposing it as a tool only causes the model to either
         // skip it (missing entries) or double-call it (duplicate entries).
       }
+
+    // Apply skill tool whitelist (union across skills; null = unrestricted)
+    const allowSet = computeToolAllowSet(activeSkills)
+    const tools: Record<string, ReturnType<typeof tool>> = allowSet
+      ? Object.fromEntries(Object.entries(allTools).filter(([name]) => allowSet.has(name)))
+      : allTools
+    if (allowSet) {
+      const dropped = Object.keys(allTools).filter(n => !allowSet.has(n))
+      if (dropped.length) console.log(`[Agent] skills filtered tools, dropped: ${dropped.join(', ')}`)
+    }
+
+    const result = streamText({
+      model,
+      system: systemPrompt,
+      messages: await buildMessageHistory(sessionId, message, attachments),
+      abortSignal: abort.signal,
+      maxSteps: 20,
+      maxRetries: 5,
+      onError: ({ error }) => {
+        console.error('[Agent] streamText onError', error)
+        streamErr = error as Error
+      },
+      tools
     })
 
     // Collect full response text
@@ -509,7 +534,7 @@ async function buildMessageHistory(
   return [...history, { role: 'user' as const, content: userContent }]
 }
 
-function buildSystemPrompt(kbContext: string, mcpTools: McpTool[] = []): string {
+function buildSystemPrompt(kbContext: string, mcpTools: McpTool[] = [], skills: InstalledSkill[] = []): string {
   const desktop = (() => {
     try { return app.getPath('desktop') } catch { return '' }
   })()
@@ -562,11 +587,39 @@ function buildSystemPrompt(kbContext: string, mcpTools: McpTool[] = []): string 
     )
   }
 
+  if (skills.length) {
+    const skillBlocks = skills.map(s => {
+      const header = `### ${s.name}${s.version ? ` (v${s.version})` : ''}`
+      const body = (s.systemPrompt || '').trim() || `(${s.description || 'no prompt provided'})`
+      return `${header}\n${body}`
+    }).join('\n\n')
+    sections.push(
+      `## Active Skills (user-enabled)\n` +
+      `The user has enabled the following skills for chat. Follow each skill's guidance below where it applies; ` +
+      `they are additive on top of your base behavior.\n\n${skillBlocks}`
+    )
+  }
+
   if (kbContext) {
     sections.push(`## Knowledge Base Context\n${kbContext}`)
   }
 
   return sections.join('\n\n')
+}
+
+/**
+ * Compute the union of tool whitelists across active skills.
+ * Returns `null` if any skill is unrestricted (null/undefined whitelist) —
+ * meaning "no filter, allow everything". Returns a `Set<string>` otherwise.
+ */
+function computeToolAllowSet(skills: InstalledSkill[]): Set<string> | null {
+  if (!skills.length) return null
+  const allowed = new Set<string>()
+  for (const s of skills) {
+    if (!s.toolWhitelist) return null // any unrestricted skill removes the filter
+    for (const name of s.toolWhitelist) allowed.add(name)
+  }
+  return allowed
 }
 
 async function buildKbContext(message: string, _sessionId: string, _settings: AppSettings, mountedSpaceIds: string[] = []): Promise<string> {

@@ -27,6 +27,12 @@ const defaults: StoreSchema = {
     kbGlobalEnabled: false,
     kbGlobalSpaceIds: [],
     dataDirectory: '',
+    autoModelEnabled: false,
+    autoModelMode: 'standard',
+    autoModelRoutes: {},
+    autoModelSmartModel: '',
+    buildRecentProjectDirs: [],
+    vibeAutoApply: false,
   }
 }
 

@@ -1,5 +1,6 @@
 import { Component, type ReactNode } from 'react'
 import { AlertTriangle, RefreshCw, Copy } from 'lucide-react'
+import { toast } from './Toast'
 
 interface Props {
   children: ReactNode
@@ -49,9 +50,10 @@ export class ErrorBoundary extends Component<Props, State> {
     ].join('\n')
     try {
       await navigator.clipboard.writeText(text)
-      alert('错误详情已复制到剪贴板')
+      toast.success('错误详情已复制到剪贴板')
     } catch (e) {
       console.error('clipboard write failed', e)
+      toast.error('复制失败：' + (e as Error).message)
     }
   }
 

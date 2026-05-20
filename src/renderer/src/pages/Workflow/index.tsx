@@ -13,6 +13,8 @@ import {
 import { NodePalette } from './NodePalette'
 import { NodeInspector } from './NodeInspector'
 import { useUIStore } from '../../stores/ui'
+import { useConfirmDialog } from '../../components/ui/ConfirmDialog'
+import { toast } from '../../components/ui/Toast'
 
 interface WorkflowMeta {
   id: string
@@ -44,6 +46,7 @@ function WorkflowEditor() {
   const [variableForm, setVariableForm] = useState<Record<string, string> | null>(null)
   const idCounter = useRef(0)
   const { pendingWorkflowId, setPendingWorkflowId } = useUIStore()
+  const dlg = useConfirmDialog()
 
   useEffect(() => { loadWorkflows() }, [])
 
@@ -109,14 +112,14 @@ function WorkflowEditor() {
   }
 
   async function deleteWorkflow(id: string) {
-    if (!confirm('确定删除该工作流？')) return
+    if (!(await dlg.confirm({ message: '确定删除该工作流？', tone: 'danger', confirmLabel: '删除' }))) return
     await window.api.deleteWorkflow(id)
     if (currentId === id) await newWorkflow()
     await loadWorkflows()
   }
 
-  function loadTemplate(template: WorkflowTemplate) {
-    if (!confirm(`加载模板「${template.name}」将替换当前画布，确定吗？`)) return
+  async function loadTemplate(template: WorkflowTemplate) {
+    if (!(await dlg.confirm(`加载模板「${template.name}」将替换当前画布，确定吗？`))) return
     setCurrentId(null)
     setName(template.name)
     setNodes(template.definition.nodes)
@@ -127,7 +130,7 @@ function WorkflowEditor() {
 
   async function runWorkflow() {
     if (!currentId) {
-      alert('请先保存工作流')
+      toast.error('请先保存工作流')
       return
     }
 
@@ -139,10 +142,11 @@ function WorkflowEditor() {
       const flagged: Record<string, string> = {}
       for (const err of validation.errors) flagged[err.nodeId] = 'error'
       setNodeStatuses(flagged)
-      alert(
+      toast.error(
         `工作流校验失败：\n\n` +
         validation.errors.map(e => `• ${e.message}`).join('\n') +
-        `\n\n相关节点已在画布上标红。修复后再点「运行」。`
+        `\n\n相关节点已在画布上标红。修复后再点「运行」。`,
+        { duration: 6000 }
       )
       return
     }
@@ -388,6 +392,8 @@ function WorkflowEditor() {
           </div>
         </div>
       )}
+
+      {dlg.element}
     </div>
   )
 }

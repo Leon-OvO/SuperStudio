@@ -9,9 +9,16 @@ import { kbHandlers } from './knowledge'
 import { workflowHandlers } from './workflows'
 import { imageEditHandlers } from './image-edit'
 import { mcpHandlers } from './mcp'
+import { authHandlers } from './auth'
+import { dashboardHandlers } from './dashboard'
+import { vibeHandlers } from './vibe'
+import { skillsHandlers } from './skills'
+import { terminalHandlers } from './terminal'
 import { logEntry, getEntriesFromDisk, clearEntries } from '../services/error-log'
 
 export function registerIpcHandlers(): void {
+  authHandlers()
+  dashboardHandlers()
   settingsHandlers()
   sessionHandlers()
   agentHandlers()
@@ -21,6 +28,9 @@ export function registerIpcHandlers(): void {
   workflowHandlers()
   imageEditHandlers()
   mcpHandlers()
+  vibeHandlers()
+  skillsHandlers()
+  terminalHandlers()
 
   ipcMain.handle(IPC.APP_VERSION, () => app.getVersion())
 

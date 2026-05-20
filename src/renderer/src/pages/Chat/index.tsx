@@ -1,6 +1,7 @@
 import React, { useEffect, useRef } from 'react'
 import { useChatStore } from '../../stores/chat'
 import { useUIStore } from '../../stores/ui'
+import { resolveModel } from '../../lib/auto-router'
 import { SessionList } from './SessionList'
 import { MessageList } from './MessageList'
 import { ChatInput } from './ChatInput'
@@ -11,6 +12,8 @@ import type { AgentProgressEvent, Message } from '../../../../shared/ipc-types'
 import { randomId } from '../../lib/id'
 import { ImageEditor } from '../../components/ui/ImageEditor'
 import { buildExportTarget } from '../../lib/session-export'
+import { useConfirmDialog } from '../../components/ui/ConfirmDialog'
+import { toast } from '../../components/ui/Toast'
 
 interface Attachment { name: string; path: string; mimeType: string }
 
@@ -32,22 +35,31 @@ export function ChatPage() {
   const defaultModelRef = useRef<{ providerId: string; model: string } | null>(null)
   const defaultImageModelRef = useRef<{ providerId: string; model: string } | null>(null)
   const lastSentRef = useRef<{ text: string; attachments?: Array<{ name: string; path: string; mimeType: string }> } | null>(null)
+  const pendingAutoRouteRef = useRef<{ intent: string } | null>(null)
   const [imageParamsMap, setImageParamsMap] = React.useState<Record<string, ImageParams>>({})
   const [defaultImageModel, setDefaultImageModel] = React.useState<string>('')
   const [attachments, setAttachments] = React.useState<Attachment[]>([])
   // Top-level ImageEditor — any image in the chat surface can open it.
   const [editorSrc, setEditorSrc] = React.useState<string | null>(null)
   const [providersCount, setProvidersCount] = React.useState<number | null>(null)
+  const [defaultChatModel, setDefaultChatModelState] = React.useState<string>('')
+  const dlg = useConfirmDialog()
 
   useEffect(() => {
     loadSessions()
-    window.api.getSettings().then((s: { defaultChatProviderId: string; defaultChatModel: string; defaultImageModel?: string; defaultImageProviderId?: string }) => {
+    const loadSettings = () => window.api.getSettings().then((s: { defaultChatProviderId: string; defaultChatModel: string; defaultImageModel?: string; defaultImageProviderId?: string }) => {
       defaultModelRef.current = { providerId: s.defaultChatProviderId, model: s.defaultChatModel }
+      setDefaultChatModelState(s.defaultChatModel || '')
       setDefaultImageModel(s.defaultImageModel || '')
       if (s.defaultImageProviderId && s.defaultImageModel) {
         defaultImageModelRef.current = { providerId: s.defaultImageProviderId, model: s.defaultImageModel }
       }
     })
+    loadSettings()
+    // Re-read settings when window gets focus — picks up changes made in Settings tab
+    const settingsFocusHandler = () => loadSettings()
+    window.addEventListener('focus', settingsFocusHandler)
+    unsubRef.current.push(() => window.removeEventListener('focus', settingsFocusHandler))
     // Track provider count for the empty-state onboarding
     const refreshProviders = () => window.api.listProviders().then((p: unknown[]) => setProvidersCount(p.length))
     refreshProviders()
@@ -82,6 +94,8 @@ export function ChatPage() {
       setRunning(false)
       if (d.sessionTitle) updateSessionTitle(d.sessionId, d.sessionTitle)
       if (d.content) {
+        const autoRoute = pendingAutoRouteRef.current
+        pendingAutoRouteRef.current = null
         addMessage(d.sessionId, {
           id: d.messageId || randomId(),
           sessionId: d.sessionId,
@@ -93,7 +107,10 @@ export function ChatPage() {
             result: tc.result,
             status: 'done' as const
           })),
-          meta: d.meta,
+          meta: {
+            ...d.meta,
+            ...(autoRoute ? { autoRoutedModel: true, autoRoutedIntent: autoRoute.intent } : {})
+          },
           createdAt: Date.now()
         })
       }
@@ -212,6 +229,21 @@ export function ChatPage() {
     if (!activeSessionId || isRunning) return
     lastSentRef.current = { text, attachments }
 
+    // Auto-model routing: resolve before adding user message to avoid UI flicker
+    try {
+      const [settings, providers] = await Promise.all([
+        window.api.getSettings(),
+        window.api.listProviders()
+      ])
+      if (settings.autoModelEnabled) {
+        const route = await resolveModel(text, attachments ?? [], settings, providers)
+        if (route) {
+          setSessionModel(activeSessionId, route.providerId, route.model)
+          pendingAutoRouteRef.current = { intent: route.intent }
+        }
+      }
+    } catch { /* routing failure is non-fatal */ }
+
     const userMsg: Message = {
       id: randomId(),
       sessionId: activeSessionId,
@@ -239,7 +271,7 @@ export function ChatPage() {
   /** Delete a single message (both DB + store). No cascade. */
   async function handleDeleteMessage(messageId: string) {
     if (!activeSessionId || isRunning) return
-    if (!confirm('确定删除这条消息？')) return
+    if (!(await dlg.confirm({ message: '确定删除这条消息？', tone: 'danger', confirmLabel: '删除' }))) return
     await window.api.deleteMessage(messageId)
     removeMessage(activeSessionId, messageId)
   }
@@ -308,7 +340,7 @@ export function ChatPage() {
       })
       if (!result.canceled) console.log('[export] session saved to', result.filePath)
     } catch (e) {
-      alert('导出失败：' + (e as Error).message)
+      toast.error('导出失败：' + (e as Error).message)
     }
   }
 
@@ -324,10 +356,10 @@ export function ChatPage() {
         })
         window.dispatchEvent(new CustomEvent('navigate', { detail: { page: 'workflow', workflowId: saved?.id } }))
       } else {
-        alert('当前会话没有可提取的工具调用记录。')
+        toast.info('当前会话没有可提取的工具调用记录。')
       }
     } catch (e) {
-      alert('生成工作流失败：' + (e as Error).message)
+      toast.error('生成工作流失败：' + (e as Error).message)
     }
   }
 
@@ -366,6 +398,7 @@ export function ChatPage() {
           onRetry={canRetry ? handleRetry : undefined}
           onEditImage={setEditorSrc}
           providersCount={providersCount}
+          defaultChatModel={defaultChatModel}
           onDeleteMessage={handleDeleteMessage}
           onRegenerate={handleRegenerate}
           onEditUserMessage={handleEditUserMessage}
@@ -398,6 +431,7 @@ export function ChatPage() {
           onClose={() => setEditorSrc(null)}
         />
       )}
+      {dlg.element}
     </div>
   )
 }
