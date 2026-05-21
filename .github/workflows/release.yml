@@ -40,15 +40,29 @@ jobs:
 
       # @lancedb/lancedb ships per-platform native bindings as separate
       # optionalDependencies — npm only installs the one matching the host
-      # arch. The macOS runner is arm64, so the darwin-x64 binding is
-      # missing when we cross-build for Intel Macs and the app crashes at
-      # startup with "Cannot find module '@lancedb/lancedb-darwin-x64'".
-      # Force-install both Mac arches.
-      - name: Install cross-arch lancedb binaries (macOS)
+      # arch. The macOS runner is arm64, so darwin-arm64 lands automatically
+      # via `npm ci` but the darwin-x64 binding is missing when we cross-build
+      # for Intel Macs, and the app crashes at startup with:
+      #   "Cannot find module '@lancedb/lancedb-darwin-x64'"
+      #
+      # Two sequential `npm install --no-save` calls don't work: npm's
+      # reconciliation removes the first install's additions when the second
+      # runs (you'll see "removed 1 package" in the log). Instead, fetch the
+      # darwin-x64 tarball with `npm pack` and extract directly into
+      # node_modules so npm has nothing left to undo.
+      - name: Bundle darwin-x64 lancedb binding (macOS)
         if: matrix.os == 'macos-latest'
         run: |
-          npm install --no-save --force --os=darwin --cpu=x64 @lancedb/lancedb-darwin-x64
-          npm install --no-save --force --os=darwin --cpu=arm64 @lancedb/lancedb-darwin-arm64
+          set -euo pipefail
+          LANCE_VERSION=$(node -p "require('./node_modules/@lancedb/lancedb/package.json').version")
+          echo "lance version: $LANCE_VERSION"
+          DEST=node_modules/@lancedb/lancedb-darwin-x64
+          rm -rf "$DEST"
+          mkdir -p "$DEST" tmp-lancedb
+          (cd tmp-lancedb && npm pack "@lancedb/lancedb-darwin-x64@${LANCE_VERSION}")
+          tar -xzf tmp-lancedb/*.tgz -C "$DEST" --strip-components=1
+          rm -rf tmp-lancedb
+          ls -la "$DEST"
 
       - name: Build artifacts (Windows)
         if: matrix.os == 'windows-latest'
