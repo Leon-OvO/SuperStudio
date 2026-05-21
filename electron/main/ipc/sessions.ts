@@ -6,7 +6,17 @@ import { randomUUID } from 'crypto'
 
 export function sessionHandlers(): void {
   ipcMain.handle(IPC.SESSIONS_LIST, () =>
-    dbAll(`SELECT id, title, created_at AS createdAt, updated_at AS updatedAt, COALESCE(archived, 0) AS archived FROM sessions ORDER BY updated_at DESC`)
+    dbAll(`
+      SELECT s.id, s.title,
+             s.created_at AS createdAt,
+             s.updated_at AS updatedAt,
+             COALESCE(s.archived, 0) AS archived,
+             COALESCE((SELECT SUM(cost_usd)      FROM messages WHERE session_id = s.id), 0) AS totalCostUsd,
+             COALESCE((SELECT SUM(input_tokens)  FROM messages WHERE session_id = s.id), 0) AS totalInputTokens,
+             COALESCE((SELECT SUM(output_tokens) FROM messages WHERE session_id = s.id), 0) AS totalOutputTokens
+      FROM sessions s
+      ORDER BY s.updated_at DESC
+    `)
   )
 
   ipcMain.handle(IPC.SESSIONS_CREATE, (_e, title?: string) => {
@@ -37,18 +47,35 @@ export function sessionHandlers(): void {
   ipcMain.handle(IPC.MESSAGES_LIST, (_e, sessionId: string) => {
     const rows = dbAll<{
       id: string; session_id: string; role: string; content: string;
-      tool_calls: string | null; attachments: string | null; meta: string | null; created_at: number
-    }>(`SELECT id, session_id, role, content, tool_calls, attachments, meta, created_at FROM messages WHERE session_id = ? ORDER BY created_at ASC`, [sessionId])
-    return rows.map(r => ({
-      id: r.id,
-      sessionId: r.session_id,
-      role: r.role,
-      content: r.content,
-      toolCalls: r.tool_calls ? JSON.parse(r.tool_calls) : undefined,
-      attachments: r.attachments ? JSON.parse(r.attachments) : undefined,
-      meta: r.meta ? JSON.parse(r.meta) : undefined,
-      createdAt: r.created_at
-    }))
+      tool_calls: string | null; attachments: string | null; meta: string | null; created_at: number;
+      input_tokens: number | null; output_tokens: number | null; cost_usd: number | null; model: string | null
+    }>(`SELECT id, session_id, role, content, tool_calls, attachments, meta, created_at,
+               input_tokens, output_tokens, cost_usd, model
+        FROM messages WHERE session_id = ? ORDER BY created_at ASC`, [sessionId])
+    return rows.map(r => {
+      const baseMeta = r.meta ? JSON.parse(r.meta) : undefined
+      // Prefer columns when present; fall back to whatever was inlined in meta
+      // for rows written before the migration.
+      const meta = (baseMeta || r.input_tokens != null || r.output_tokens != null || r.cost_usd != null || r.model)
+        ? {
+            ...(baseMeta || {}),
+            ...(r.model ? { model: r.model } : {}),
+            ...(r.input_tokens != null ? { inputTokens: r.input_tokens } : {}),
+            ...(r.output_tokens != null ? { outputTokens: r.output_tokens } : {}),
+            ...(r.cost_usd != null ? { costUsd: r.cost_usd } : {})
+          }
+        : undefined
+      return {
+        id: r.id,
+        sessionId: r.session_id,
+        role: r.role,
+        content: r.content,
+        toolCalls: r.tool_calls ? JSON.parse(r.tool_calls) : undefined,
+        attachments: r.attachments ? JSON.parse(r.attachments) : undefined,
+        meta,
+        createdAt: r.created_at
+      }
+    })
   })
 
   ipcMain.handle(IPC.MESSAGES_DELETE, (_e, messageId: string) => {

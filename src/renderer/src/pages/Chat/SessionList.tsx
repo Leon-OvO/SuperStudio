@@ -4,6 +4,7 @@ import { useVirtualizer } from '@tanstack/react-virtual'
 import { cn } from '../../lib/utils'
 import type { Session } from '../../../../shared/ipc-types'
 import { DateRangeFilter, resolveDateRange, type DateFilter } from './DateRangeFilter'
+import { formatCostUsd } from '../../lib/format-cost'
 
 interface Props {
   sessions: Session[]
@@ -257,6 +258,14 @@ function SessionItem({
         ? <Archive size={12} className="shrink-0 opacity-50" />
         : <MessageSquare size={12} className="shrink-0 opacity-60" />}
       <span className="flex-1 truncate leading-tight">{session.title}</span>
+      {session.totalCostUsd != null && session.totalCostUsd > 0 && (
+        <span
+          className="shrink-0 text-[10px] text-muted-foreground/60 tabular-nums opacity-100 group-hover:opacity-0 transition-opacity"
+          title={`本对话累计消耗 ${formatCostUsd(session.totalCostUsd)}（输入 ${session.totalInputTokens ?? 0} / 输出 ${session.totalOutputTokens ?? 0} tokens）`}
+        >
+          {formatCostUsd(session.totalCostUsd)}
+        </span>
+      )}
       <button
         onClick={(e) => { e.stopPropagation(); onArchive(session.id, !isArchived) }}
         title={isArchived ? '取消归档' : '归档（从列表隐藏，不删除）'}

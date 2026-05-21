@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState } from 'react'
-import { Loader2, Square, Play, ListChecks, Brain, Zap, MessageSquare, Search, Bug, Wrench, Send } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { Square, Play, Brain, Zap, MessageSquare, Search, Bug, Wrench, Send, Coins } from 'lucide-react'
 import { cn } from '../../../lib/utils'
 import { TaskRow } from './TaskRow'
 import { MessageBubble } from './MessageBubble'
 import { MessagesMinimap } from './MessagesMinimap'
+import { formatCostUsd, formatTokens } from '../../../lib/format-cost'
 import type { VibeRequestInfo, VibeTaskInfo, VibeMessageInfo, VibeIntent } from '../../../../../shared/ipc-types'
 
 interface Props {
@@ -39,11 +40,18 @@ export function RequestTabContent({
     return request.kind as VibeIntent
   })
   const messagesRef = useRef<HTMLDivElement>(null)
+  const messagesContentRef = useRef<HTMLDivElement>(null)
   const taRef = useRef<HTMLTextAreaElement>(null)
+  // Sticky-bottom flag: true ⇒ auto-scroll on content growth. Flips to false
+  // when the user scrolls up; flips back to true when they scroll near bottom.
+  const stickRef = useRef(true)
 
-  // When switching requests, default intent to that request's kind
+  // When switching requests, default intent to that request's kind + snap to bottom
   useEffect(() => {
     if (request) setIntent(request.kind as VibeIntent)
+    stickRef.current = true
+    const el = messagesRef.current
+    if (el) el.scrollTop = el.scrollHeight
   }, [request?.id])
 
   useEffect(() => {
@@ -53,15 +61,42 @@ export function RequestTabContent({
     ta.style.height = Math.min(ta.scrollHeight, 200) + 'px'
   }, [input])
 
+  // Auto-scroll: ResizeObserver on inner content fires whenever messages grow
+  // (new bubble, streaming text accumulation, task expansions, etc).
+  // We only scroll when stickRef is true.
   useEffect(() => {
-    const el = messagesRef.current
-    if (el) el.scrollTop = el.scrollHeight
-  }, [messages.length, tasks.map(t => t.status).join(','), running])
+    const scroller = messagesRef.current
+    const content = messagesContentRef.current
+    if (!scroller || !content) return
+    const ro = new ResizeObserver(() => {
+      if (stickRef.current) scroller.scrollTop = scroller.scrollHeight
+    })
+    ro.observe(content)
+    return () => ro.disconnect()
+  }, [])
+
+  function onMessagesScroll(e: React.UIEvent<HTMLDivElement>) {
+    const el = e.currentTarget
+    const fromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+    stickRef.current = fromBottom < 40
+  }
 
   const hasTasks = tasks.length > 0
   const doneCount = tasks.filter(t => t.status === 'done').length
   const pendingCount = tasks.filter(t => t.status === 'pending').length
   const hasPending = pendingCount > 0
+
+  // Per-request rollup: total tokens + cost across every assistant turn in this
+  // conversation. Memoised so we don't re-walk messages every render.
+  const usageTotal = useMemo(() => {
+    let inTok = 0, outTok = 0, cost = 0, any = false
+    for (const m of messages) {
+      if (m.inputTokens  != null) { inTok += m.inputTokens; any = true }
+      if (m.outputTokens != null) { outTok += m.outputTokens; any = true }
+      if (m.costUsd      != null) { cost  += m.costUsd; any = true }
+    }
+    return any ? { inputTokens: inTok, outputTokens: outTok, costUsd: cost } : null
+  }, [messages])
   const stage: 'explore' | 'planned' | 'done' =
     !hasTasks ? 'explore' :
     pendingCount === 0 ? 'done' : 'planned'
@@ -75,6 +110,12 @@ export function RequestTabContent({
     if (intent === 'bugfix')  onBugfix(t, request.id)
     if (intent === 'change')  onPropose(t, request.id)
     setInput('')
+    // User just sent a message — always pin them to the bottom.
+    stickRef.current = true
+    requestAnimationFrame(() => {
+      const el = messagesRef.current
+      if (el) el.scrollTop = el.scrollHeight
+    })
   }
 
   if (!request) {
@@ -88,9 +129,6 @@ export function RequestTabContent({
   const requestKind = request.kind as VibeIntent
   const kindMeta = INTENT_META[requestKind] ?? INTENT_META.change
   const KindIcon = kindMeta.Icon
-  const isChat = requestKind === 'chat'
-  const isExploreKind = requestKind === 'explore'
-  const isBugfix = requestKind === 'bugfix'
   const isChange = requestKind === 'change'
 
   return (
@@ -108,8 +146,8 @@ export function RequestTabContent({
           {request.summary && (
             <div className="text-[11px] text-muted-foreground leading-relaxed line-clamp-2">{request.summary}</div>
           )}
-          <div className="flex items-center gap-2 text-[10px] text-muted-foreground/70 mt-1">
-            <span className={cn('px-1.5 py-px rounded text-[9px] uppercase font-semibold border', kindMeta.bg, kindMeta.color)}>
+          <div className="flex items-center gap-2 text-[11px] text-muted-foreground mt-1">
+            <span className={cn('px-1.5 py-px rounded text-[10px] uppercase font-semibold border', kindMeta.bg, kindMeta.color)}>
               {kindMeta.label}
             </span>
             {isChange && (
@@ -117,8 +155,20 @@ export function RequestTabContent({
                 <StageBreadcrumb stage={stage} hasTasks={hasTasks} doneCount={doneCount} totalTasks={tasks.length} />
               </>
             )}
-            <span>·</span>
-            <span className="font-mono">{request.slug}</span>
+            <span className="text-muted-foreground/60">·</span>
+            <span className="truncate">{request.slug}</span>
+            {usageTotal && (
+              <>
+                <span className="text-muted-foreground/60">·</span>
+                <span
+                  className="inline-flex items-center gap-1 px-1.5 py-px rounded bg-amber-500/10 text-amber-700 dark:text-amber-300 text-[10px] font-medium tabular-nums"
+                  title={`本对话累计消耗：输入 ${usageTotal.inputTokens.toLocaleString()} tokens，输出 ${usageTotal.outputTokens.toLocaleString()} tokens`}
+                >
+                  <Coins size={9} />
+                  {formatTokens(usageTotal.inputTokens + usageTotal.outputTokens)} tok · {formatCostUsd(usageTotal.costUsd)}
+                </span>
+              </>
+            )}
           </div>
         </div>
         {hasPending && (
@@ -155,7 +205,7 @@ export function RequestTabContent({
               <Search size={14} className="text-sky-500 animate-pulse shrink-0" />
               <div className="flex-1">
                 <div className="text-xs font-medium text-sky-700 dark:text-sky-300">AI 正在探索项目…</div>
-                <div className="text-[10px] text-muted-foreground/70 mt-0.5">只读模式（不会修改任何文件）</div>
+                <div className="text-[11px] text-muted-foreground mt-0.5">只读模式（不会修改任何文件）</div>
               </div>
             </>
           ) : running === 'bugfix' ? (
@@ -163,7 +213,7 @@ export function RequestTabContent({
               <Bug size={14} className="text-rose-500 animate-pulse shrink-0" />
               <div className="flex-1">
                 <div className="text-xs font-medium text-rose-700 dark:text-rose-300">AI 正在定位并修复 BUG…</div>
-                <div className="text-[10px] text-muted-foreground/70 mt-0.5">自动模式，无需手动确认</div>
+                <div className="text-[11px] text-muted-foreground mt-0.5">自动模式，无需手动确认</div>
               </div>
             </>
           ) : running === 'propose' ? (
@@ -171,7 +221,7 @@ export function RequestTabContent({
               <Brain size={14} className="text-primary animate-pulse shrink-0" />
               <div className="flex-1">
                 <div className="text-xs font-medium text-primary">AI 正在拆解需求…</div>
-                <div className="text-[10px] text-muted-foreground/70 mt-0.5">分析中，通常需要 10-30 秒</div>
+                <div className="text-[11px] text-muted-foreground mt-0.5">分析中，通常需要 10-30 秒</div>
               </div>
             </>
           ) : (
@@ -184,7 +234,7 @@ export function RequestTabContent({
                     : '准备执行任务…'
                   }
                 </div>
-                <div className="text-[10px] text-muted-foreground/70 mt-0.5">
+                <div className="text-[11px] text-muted-foreground mt-0.5">
                   {doneCount}/{tasks.length} 已完成 · 实时查看下方工具调用
                 </div>
               </div>
@@ -200,7 +250,7 @@ export function RequestTabContent({
       <div className="flex-1 min-h-0 flex overflow-hidden">
         {hasTasks && (
           <div className="w-[320px] shrink-0 border-r border-border/60 overflow-y-auto py-2 bg-card/30">
-            <div className="px-3 py-1 text-[10px] uppercase text-muted-foreground/60 font-semibold">
+            <div className="px-3 py-1 text-[10px] uppercase text-muted-foreground/80 font-semibold tracking-wider">
               任务列表
             </div>
             <div className="px-1">
@@ -222,27 +272,30 @@ export function RequestTabContent({
         <div className="flex-1 min-w-0 flex">
           <div
             ref={messagesRef}
-            className="flex-1 min-w-0 overflow-y-auto py-3 px-5 space-y-1 scrollbar-prominent"
+            onScroll={onMessagesScroll}
+            className="flex-1 min-w-0 overflow-y-auto py-3 px-5 scrollbar-prominent"
           >
-            <div className="text-[10px] uppercase text-muted-foreground/60 font-semibold mb-1">
-              {hasTasks ? '对话与工作过程' : '对话'}
-            </div>
-            {messages.length === 0 ? (
-              <div className="text-[11px] text-muted-foreground/60 text-center py-6">
-                {running ? '等待 AI 响应…' : '问问题开始对话'}
+            <div ref={messagesContentRef} className="space-y-1">
+              <div className="text-[10px] uppercase text-muted-foreground/70 font-semibold mb-1 tracking-wider">
+                {hasTasks ? '对话与工作过程' : '对话'}
               </div>
-            ) : (
-              messages.map(m => (
-                <div
-                  key={m.id}
-                  data-msg-id={m.id}
-                  data-msg-role={m.role}
-                  data-msg-error={m.isError ? '1' : '0'}
-                >
-                  <MessageBubble msg={m} />
+              {messages.length === 0 ? (
+                <div className="text-[12px] text-muted-foreground text-center py-6">
+                  {running ? '等待 AI 响应…' : '问问题开始对话'}
                 </div>
-              ))
-            )}
+              ) : (
+                messages.map(m => (
+                  <div
+                    key={m.id}
+                    data-msg-id={m.id}
+                    data-msg-role={m.role}
+                    data-msg-error={m.isError ? '1' : '0'}
+                  >
+                    <MessageBubble msg={m} />
+                  </div>
+                ))
+              )}
+            </div>
           </div>
           <MessagesMinimap scrollRef={messagesRef} messages={messages} />
         </div>
@@ -280,7 +333,7 @@ export function RequestTabContent({
             )
           })}
           {/* Hint about what current intent will do to this request */}
-          <span className="text-[10px] text-muted-foreground/60 ml-auto">
+          <span className="text-[11px] text-muted-foreground ml-auto">
             {intent === requestKind
               ? '继续当前模式'
               : intent === 'change'

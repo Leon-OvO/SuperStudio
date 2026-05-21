@@ -65,6 +65,10 @@ export interface VibeMessageRow {
   is_error: number
   task_id: string | null
   created_at: number
+  input_tokens: number | null
+  output_tokens: number | null
+  cost_usd: number | null
+  model: string | null
 }
 
 // ---------------------------------------------------------------------------
@@ -226,22 +230,34 @@ export function appendMessage(args: {
   toolArgs?: string
   isError?: boolean
   taskId?: string
+  inputTokens?: number | null
+  outputTokens?: number | null
+  costUsd?: number | null
+  model?: string | null
 }): VibeMessageRow {
   const id = randomUUID()
   const now = Date.now()
+  const inputTokens = args.inputTokens ?? null
+  const outputTokens = args.outputTokens ?? null
+  const costUsd = args.costUsd ?? null
+  const model = args.model ?? null
   dbRun(
-    `INSERT INTO vibe_messages (id, request_id, role, content, tool_name, tool_args, is_error, task_id, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO vibe_messages
+       (id, request_id, role, content, tool_name, tool_args, is_error, task_id, created_at,
+        input_tokens, output_tokens, cost_usd, model)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       id, args.requestId, args.role, args.content,
       args.toolName ?? null, args.toolArgs ?? null,
-      args.isError ? 1 : 0, args.taskId ?? null, now
+      args.isError ? 1 : 0, args.taskId ?? null, now,
+      inputTokens, outputTokens, costUsd, model
     ]
   )
   return {
     id, request_id: args.requestId, role: args.role, content: args.content,
     tool_name: args.toolName ?? null, tool_args: args.toolArgs ?? null,
-    is_error: args.isError ? 1 : 0, task_id: args.taskId ?? null, created_at: now
+    is_error: args.isError ? 1 : 0, task_id: args.taskId ?? null, created_at: now,
+    input_tokens: inputTokens, output_tokens: outputTokens, cost_usd: costUsd, model
   }
 }
 

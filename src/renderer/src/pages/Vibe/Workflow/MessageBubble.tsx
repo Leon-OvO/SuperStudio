@@ -1,6 +1,7 @@
-import { Wrench, Check, AlertCircle, User, Bot, Info } from 'lucide-react'
+import { Wrench, Check, AlertCircle, User, Bot, Info, Coins } from 'lucide-react'
 import { cn } from '../../../lib/utils'
 import { Markdown } from '../../../lib/markdown'
+import { formatUsageLine } from '../../../lib/format-cost'
 import type { VibeMessageInfo } from '../../../../../shared/ipc-types'
 
 interface Props { msg: VibeMessageInfo }
@@ -15,11 +16,23 @@ export function MessageBubble({ msg }: Props) {
     )
   }
   if (msg.role === 'assistant') {
+    const usage = formatUsageLine({
+      inputTokens: msg.inputTokens,
+      outputTokens: msg.outputTokens,
+      costUsd: msg.costUsd
+    })
     return (
       <div className="flex items-start gap-2 py-1">
         <Bot size={12} className="text-primary mt-1 shrink-0" />
         <div className="flex-1 min-w-0 text-xs text-foreground/90 leading-relaxed">
           <Markdown content={msg.content} compact />
+          {usage && (
+            <div className="mt-1 flex items-center gap-1 text-[10px] text-muted-foreground/80 tabular-nums">
+              <Coins size={9} className="opacity-70" />
+              <span>{usage}</span>
+              {msg.model && <span className="opacity-60">· {msg.model}</span>}
+            </div>
+          )}
         </div>
       </div>
     )

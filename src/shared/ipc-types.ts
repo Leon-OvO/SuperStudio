@@ -78,6 +78,14 @@ export const IPC = {
   // App-level (version)
   APP_VERSION: 'app:version',
 
+  // System integration — OS-level settings (auto-launch + Explorer context menu)
+  APP_SET_AUTO_LAUNCH: 'app:set-auto-launch',
+  APP_SET_SHELL_INTEGRATION: 'app:set-shell-integration',
+  APP_GET_SYSTEM_STATE: 'app:get-system-state',
+  /** main → renderer: a file/folder path was passed to the app via
+   *  command line (Explorer right-click "Open with SuperStudio") */
+  APP_OPEN_PATH_FROM_SHELL: 'app:open-path-from-shell',
+
   // Error log
   LOG_LIST: 'log:list',
   LOG_CLEAR: 'log:clear',
@@ -301,6 +309,37 @@ export interface AppSettings {
   /** When true, the Build page auto-triggers `apply` right after `propose` finishes
    *  decomposing a 新需求 — no need to manually click 执行剩余任务. */
   vibeAutoApply: boolean
+
+  /** Launch SuperStudio at OS login. Default false — opt-in. */
+  autoLaunch: boolean
+  /** Register the "用 SuperStudio 打开" Windows Explorer right-click entry
+   *  for files and folders. Default true on Windows; no-op on macOS/Linux.
+   *  Files open in the editor, folders open as Vibe projects. */
+  shellIntegrationEnabled: boolean
+}
+
+/** Snapshot of OS-level toggle state, read back from the actual platform — so
+ *  the UI can show what's really registered even if the store is out of sync
+ *  (e.g. user moved the app .exe). */
+export interface SystemIntegrationState {
+  /** True if Electron reports the app is registered to start at login. */
+  autoLaunch: boolean
+  /** True if the registry keys for the right-click "open with" entry exist. */
+  shellIntegration: boolean
+  /** Whether shell-integration is supported on the current platform.
+   *  Currently only Windows; macOS/Linux fall back to no-op. */
+  shellIntegrationSupported: boolean
+}
+
+/** Payload of APP_OPEN_PATH_FROM_SHELL. Sent by main after parsing argv
+ *  from Explorer's right-click "用 SuperStudio 打开". The renderer routes
+ *  files into the editor (using `parent` as the project root) and folders
+ *  as Vibe projects. */
+export interface ShellOpenTarget {
+  path: string
+  kind: 'file' | 'dir'
+  /** For files: the parent directory, used as the project root. */
+  parent?: string
 }
 
 // Vibe / Build page types
@@ -363,6 +402,10 @@ export interface VibeMessageInfo {
   isError: boolean
   taskId: string | null
   createdAt: number
+  inputTokens?: number | null
+  outputTokens?: number | null
+  costUsd?: number | null
+  model?: string | null
 }
 
 export interface VibeProjectInfo {
@@ -510,6 +553,10 @@ export interface Session {
   updatedAt: number
   /** 1 = archived (hidden from default list); 0 / undefined = active */
   archived?: number
+  /** Sum of cost_usd across all messages in this session (0 if none priced). */
+  totalCostUsd?: number
+  totalInputTokens?: number
+  totalOutputTokens?: number
 }
 
 export interface MessageMeta {
@@ -519,6 +566,9 @@ export interface MessageMeta {
   durationMs?: number
   autoRoutedModel?: boolean
   autoRoutedIntent?: string
+  inputTokens?: number
+  outputTokens?: number
+  costUsd?: number
 }
 
 // Message

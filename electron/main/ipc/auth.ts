@@ -7,7 +7,7 @@ import { IPC } from '../../../src/shared/ipc-types'
 import type { AuthState, StoredKeyInfo, GroupKeyOptions, SubscriptionKeyView } from '../../../src/shared/ipc-types'
 import {
   storeTokens, getAccessToken, getRefreshToken, storeUser, getUser,
-  storeAllKeys, getAllKeys, getKeyValue, clearAuth, isLoggedIn,
+  storeAllKeys, getAllKeys, clearAuth, isLoggedIn,
   storeKeysMeta, getKeysMeta, getSelectedKeyIds, setSelectedKeyId,
   storeCredentials, getCredentials, clearCredentials
 } from '../auth-store'

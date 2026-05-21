@@ -4,11 +4,14 @@ import { GlobalSettings } from './GlobalSettings'
 import { McpServers } from './McpServers'
 import { About } from './About'
 import { AccountTab } from './AccountTab'
-import { AutoModelTab } from './AutoModelTab'
+import { SystemTab } from './SystemTab'
 import { useConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { toast } from '../../components/ui/Toast'
 
-type Tab = 'account' | 'defaults' | 'auto-model' | 'search' | 'kb' | 'build' | 'mcp' | 'about'
+// 'system' is the parent tab that now bundles 模型 / 自动切换模型 / 构建 as
+// sub-sections (see SystemTab). The standalone 'defaults' / 'auto-model' /
+// 'build' tabs are gone from the sidebar.
+type Tab = 'account' | 'system' | 'search' | 'kb' | 'mcp' | 'about'
 
 export function SettingsPage() {
   const [tab, setTab] = useState<Tab>('account')
@@ -141,11 +144,9 @@ export function SettingsPage() {
     <div className="flex h-full">
       <aside className="w-48 shrink-0 border-r border-border bg-sidebar p-2 space-y-1 flex flex-col">
         <TabButton active={tab === 'account'} onClick={() => setTab('account')}>账号</TabButton>
-        <TabButton active={tab === 'defaults'} onClick={() => setTab('defaults')}>模型</TabButton>
-        <TabButton active={tab === 'auto-model'} onClick={() => setTab('auto-model')}>自动切换模型</TabButton>
+        <TabButton active={tab === 'system'} onClick={() => setTab('system')}>全局</TabButton>
         <TabButton active={tab === 'search'} onClick={() => setTab('search')}>网络搜索</TabButton>
         <TabButton active={tab === 'kb'} onClick={() => setTab('kb')}>知识库</TabButton>
-        <TabButton active={tab === 'build'} onClick={() => setTab('build')}>构建</TabButton>
         <TabButton active={tab === 'mcp'} onClick={() => setTab('mcp')}>MCP 服务器</TabButton>
         <div className="flex-1" />
         <TabButton active={tab === 'about'} onClick={() => setTab('about')}>关于 & 更新</TabButton>
@@ -153,6 +154,14 @@ export function SettingsPage() {
       <div className="flex-1 overflow-y-auto p-6">
         {tab === 'account' && <AccountTab onProvidersRefresh={reload} />}
         {tab === 'mcp' && <McpServers />}
+        {tab === 'system' && (
+          <SystemTab
+            settings={settings}
+            providers={providers}
+            onSave={handleSaveSettings}
+            onProvidersRefresh={reload}
+          />
+        )}
         {tab === 'about' && (
           <About
             onExportData={handleExportConfig}
@@ -165,20 +174,13 @@ export function SettingsPage() {
             chatImportRunning={chatImportRunning}
           />
         )}
-        {(tab === 'defaults' || tab === 'search' || tab === 'kb' || tab === 'build') && settings && (
+        {(tab === 'search' || tab === 'kb') && settings && (
           <GlobalSettings
             tab={tab}
             settings={settings}
             providers={providers}
             onSave={handleSaveSettings}
             onProvidersRefresh={reload}
-          />
-        )}
-        {tab === 'auto-model' && settings && (
-          <AutoModelTab
-            settings={settings}
-            providers={providers}
-            onSave={handleSaveSettings}
           />
         )}
       </div>

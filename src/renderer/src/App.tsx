@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useState } from 'react'
 import { useUIStore } from './stores/ui'
 import { useAuthStore } from './stores/auth'
+import { useVibeStore } from './pages/Vibe/store'
 import { Sidebar } from './components/layout/Sidebar'
 import { TitleBar } from './components/layout/TitleBar'
 import { DashboardPage } from './pages/Dashboard'
@@ -16,6 +17,7 @@ import { CommandPalette } from './components/ui/CommandPalette'
 import { ToastHost } from './components/ui/Toast'
 import { LoginScreen } from './pages/Login'
 import { DataDirectorySetup } from './components/DataDirectorySetup'
+import { ChatModelSetup } from './components/ChatModelSetup'
 
 type PageId = 'dashboard' | 'chat' | 'workflow' | 'gallery' | 'knowledge' | 'vibe' | 'skills' | 'settings'
 
@@ -29,6 +31,11 @@ export default function App() {
   // make a conscious storage choice on first run instead of silently writing
   // gigabytes of media into AppData.
   const [dataDirReady, setDataDirReady] = useState<boolean | null>(null)
+  // Same pattern for the default chat model. Checked only after dataDirReady
+  // is true, so the two gates render sequentially rather than fighting each
+  // other. `true` means either the user has saved a default or they chose to
+  // skip (in which case Chat/Vibe will surface the picker on demand).
+  const [chatModelReady, setChatModelReady] = useState<boolean | null>(null)
 
   useEffect(() => {
     restoreSession()
@@ -38,16 +45,19 @@ export default function App() {
   // logged-in state. Logged-out users see the login screen first; we only
   // gate the main UI behind the directory choice, not the login itself.
   useEffect(() => {
-    if (!isLoggedIn) { setDataDirReady(null); return }
+    if (!isLoggedIn) { setDataDirReady(null); setChatModelReady(null); return }
     let cancelled = false
     ;(async () => {
       try {
         const s = await window.api.getSettings()
-        if (!cancelled) setDataDirReady(!!s.dataDirectory)
+        if (!cancelled) {
+          setDataDirReady(!!s.dataDirectory)
+          setChatModelReady(!!(s.defaultChatProviderId && s.defaultChatModel))
+        }
       } catch {
         // If settings can't be read at all, don't lock the user out — fall
         // through to the main UI so they can recover via Settings manually.
-        if (!cancelled) setDataDirReady(true)
+        if (!cancelled) { setDataDirReady(true); setChatModelReady(true) }
       }
     })()
     return () => { cancelled = true }
@@ -145,6 +155,37 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKey)
   }, [setPage])
 
+  // MenuBar (Vibe page) dispatches these so menu items can open globally-
+  // owned modals without prop-drilling. Toggle is intentional — clicking the
+  // menu item twice should close it again.
+  useEffect(() => {
+    const onPalette = () => setPaletteOpen(o => !o)
+    const onShortcuts = () => setShortcutsOpen(o => !o)
+    window.addEventListener('app:open-palette', onPalette)
+    window.addEventListener('app:open-shortcuts', onShortcuts)
+    return () => {
+      window.removeEventListener('app:open-palette', onPalette)
+      window.removeEventListener('app:open-shortcuts', onShortcuts)
+    }
+  }, [])
+
+  // OS-level "用 SuperStudio 打开" — Explorer right-click forwards a path here.
+  // We park the target on the Vibe store and switch the active page; VibePage
+  // picks the target up on (re)mount. Storing in the store instead of firing
+  // a DOM event removes the mount-timing race — the event used to fire 60ms
+  // after setPage('vibe'), which sometimes beat VibePage's listener attach,
+  // and the file silently failed to open.
+  useEffect(() => {
+    const off = window.api.onOpenPathFromShell?.((payload: unknown) => {
+      const target = typeof payload === 'string'
+        ? { path: payload, kind: 'dir' as const }
+        : payload as { path: string; kind: 'file' | 'dir'; parent?: string }
+      useVibeStore.getState().setPendingShellOpen(target)
+      setPage('vibe')
+    })
+    return off
+  }, [setPage])
+
   if (isInitializing) {
     return (
       <div className="flex flex-col h-screen w-screen overflow-hidden bg-background text-foreground">
@@ -180,6 +221,26 @@ export default function App() {
       <div className="flex flex-col h-screen w-screen overflow-hidden bg-background text-foreground">
         <TitleBar />
         <DataDirectorySetup onDone={() => setDataDirReady(true)} />
+      </div>
+    )
+  }
+
+  // Once the data directory is set, ensure the user has picked a default
+  // chat model. We deliberately don't gate image/video/embedding here —
+  // most users won't touch those tabs on day one.
+  if (chatModelReady === null) {
+    return (
+      <div className="flex flex-col h-screen w-screen overflow-hidden bg-background text-foreground">
+        <TitleBar />
+      </div>
+    )
+  }
+
+  if (!chatModelReady) {
+    return (
+      <div className="flex flex-col h-screen w-screen overflow-hidden bg-background text-foreground">
+        <TitleBar />
+        <ChatModelSetup onDone={() => setChatModelReady(true)} />
       </div>
     )
   }

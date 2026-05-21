@@ -6,6 +6,7 @@ import { initDb } from './db/sqlite'
 import { registerIpcHandlers } from './ipc'
 import { installFetchLogger } from './debug-fetch'
 import { IPC } from '../../src/shared/ipc-types'
+import type { ShellOpenTarget } from './services/system-integration'
 
 installFetchLogger()
 
@@ -31,6 +32,37 @@ protocol.registerSchemesAsPrivileged([
 ])
 
 let mainWindow: BrowserWindow | null = null
+/** Path captured from argv during cold start (Explorer "Open with"). Sent to
+ *  the renderer once it signals ready — we can't send before the first window
+ *  exists. */
+let pendingShellPath: ShellOpenTarget | null = null
+
+// Single-instance lock — Explorer's right-click "用 SuperStudio 打开" should
+// FOCUS the existing window and forward the path, NOT spawn a second app
+// instance with its own SQLite/store/etc.
+const gotSingleInstanceLock = app.requestSingleInstanceLock()
+if (!gotSingleInstanceLock) {
+  app.quit()
+} else {
+  app.on('second-instance', async (_event, argv) => {
+    // Restore + focus existing window
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore()
+      mainWindow.show()
+      mainWindow.focus()
+    }
+    // Forward the path the user right-clicked on to the renderer
+    try {
+      const { findPathArg } = await import('./services/system-integration')
+      const target = findPathArg(argv)
+      if (target && mainWindow) {
+        mainWindow.webContents.send(IPC.APP_OPEN_PATH_FROM_SHELL, target)
+      }
+    } catch (e) {
+      console.warn('[main] second-instance arg parse failed:', (e as Error).message)
+    }
+  })
+}
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -55,6 +87,14 @@ function createWindow(): void {
 
   mainWindow.on('ready-to-show', () => {
     mainWindow!.show()
+    // Now that the renderer is alive, forward any path captured from argv
+    // during cold start. We delay a frame so the renderer's IPC listener has
+    // mounted (App.tsx subscribes inside useEffect → runs after first paint).
+    if (pendingShellPath) {
+      const p = pendingShellPath
+      pendingShellPath = null
+      setTimeout(() => mainWindow?.webContents.send(IPC.APP_OPEN_PATH_FROM_SHELL, p), 300)
+    }
   })
 
   const wcRef = mainWindow.webContents
@@ -153,6 +193,24 @@ app.whenReady().then(async () => {
   const startupSettings = readSettings()
   await initDb(startupSettings.dataDirectory || undefined)
   registerIpcHandlers()
+
+  // Reconcile OS-level toggles with the stored intent on every boot. This
+  // matters after the user moves the .exe (path inside the registry / login
+  // item is now stale) or after an upgrade (defaults may have changed).
+  try {
+    const { setAutoLaunch, setShellIntegration, findPathArg } = await import('./services/system-integration')
+    setAutoLaunch(!!startupSettings.autoLaunch)
+    // Best-effort — never block startup on registry writes.
+    setShellIntegration(!!startupSettings.shellIntegrationEnabled).catch(e =>
+      console.warn('[startup] setShellIntegration failed:', (e as Error).message)
+    )
+    // Cold-start argv may carry a path the user right-clicked on. Stash it
+    // and forward once the window is ready-to-show.
+    const target = findPathArg(process.argv)
+    if (target) pendingShellPath = target
+  } catch (e) {
+    console.warn('[startup] system-integration init failed:', (e as Error).message)
+  }
 
   // Re-register Vibe recent projects as approved roots — they live in settings
   // (persisted) but path-allow's approvedRoots is in-memory only, so we have to

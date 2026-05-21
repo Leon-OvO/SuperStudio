@@ -13,6 +13,7 @@ import { mcpManager, type McpTool } from '../services/mcp'
 import { getActiveSkillsForScenario, type InstalledSkill } from '../services/skills-db'
 import { notifyTaskComplete } from '../services/tray'
 import { dbRun, dbAll, dbGet } from '../db/sqlite'
+import { computeCost } from '../services/model-pricing'
 import { randomUUID } from 'crypto'
 import path from 'path'
 import { app } from 'electron'
@@ -370,6 +371,7 @@ export async function runAgent(
     // Collect full response text
     let fullText = ''
     let chunkCount = 0
+    let usage: { promptTokens?: number; completionTokens?: number } | null = null
     console.log('[Agent] streaming started')
     try {
       for await (const chunk of result.textStream) {
@@ -381,7 +383,14 @@ export async function runAgent(
       console.error('[Agent] textStream iteration threw', iterErr)
       streamErr = iterErr as Error
     }
-    console.log('[Agent] streaming finished', { chunks: chunkCount, len: fullText.length, hadErr: !!streamErr })
+    try { usage = await result.usage } catch (e) { console.warn('[Agent] usage await threw:', (e as Error).message) }
+    console.log('[Agent] streaming finished', {
+      chunks: chunkCount,
+      len: fullText.length,
+      hadErr: !!streamErr,
+      usage,
+      usageRaw: JSON.stringify(usage)
+    })
 
     if (streamErr && !fullText) {
       throw streamErr
@@ -402,19 +411,35 @@ export async function runAgent(
 
     // Save assistant message with tool call log and metadata
     const asstMsgId = randomUUID()
+    // Coerce NaN/Infinity to null — some providers resolve `result.usage` with
+    // NaN when they don't report tokens, and NaN propagates through `??` then
+    // pollutes the DB + renders as "— → — tok · —" chips.
+    const finite = (n: number | undefined | null) => (n != null && Number.isFinite(n) ? n : null)
+    const inTok = finite(usage?.promptTokens)
+    const outTok = finite(usage?.completionTokens)
+    const costUsd = inTok != null && outTok != null && (inTok > 0 || outTok > 0)
+      ? computeCost(effectiveModel, inTok, outTok)
+      : null
     const meta = JSON.stringify({
       model: effectiveModel,
       providerId: effectiveProviderId,
       providerName: effectiveProviderName,
-      durationMs: Date.now() - runStartTime
+      durationMs: Date.now() - runStartTime,
+      inputTokens: inTok ?? undefined,
+      outputTokens: outTok ?? undefined,
+      costUsd: costUsd ?? undefined
     })
     dbRun(
-      `INSERT INTO messages (id, session_id, role, content, tool_calls, meta, created_at) VALUES (?, ?, 'assistant', ?, ?, ?, ?)`,
+      `INSERT INTO messages
+         (id, session_id, role, content, tool_calls, meta, created_at,
+          input_tokens, output_tokens, cost_usd, model)
+       VALUES (?, ?, 'assistant', ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         asstMsgId, sessionId, fullText,
         toolCallLog.length ? JSON.stringify(toolCallLog) : null,
         meta,
-        Date.now()
+        Date.now(),
+        inTok, outTok, costUsd, effectiveModel
       ]
     )
 
@@ -425,7 +450,10 @@ export async function runAgent(
       model: effectiveModel,
       providerId: effectiveProviderId,
       providerName: effectiveProviderName,
-      durationMs: Date.now() - runStartTime
+      durationMs: Date.now() - runStartTime,
+      ...(inTok != null ? { inputTokens: inTok } : {}),
+      ...(outTok != null ? { outputTokens: outTok } : {}),
+      ...(costUsd != null ? { costUsd } : {})
     }
 
     win.webContents.send(IPC.AGENT_DONE, {

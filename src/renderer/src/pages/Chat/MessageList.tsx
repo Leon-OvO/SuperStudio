@@ -6,7 +6,8 @@ import { copyImageToClipboard } from '../../lib/clipboard'
 import { useImageContextMenu } from '../../components/ui/ImageContextMenu'
 import { toast } from '../../components/ui/Toast'
 import { Markdown } from '../../lib/markdown'
-import { Play, X, RotateCcw, Clock, Cpu, Copy, Check, Download, Wand2, Brain, ChevronRight, ChevronDown, ChevronUp, Pencil, Trash2, RefreshCw } from 'lucide-react'
+import { Play, X, RotateCcw, Clock, Cpu, Copy, Check, Download, Wand2, Brain, ChevronRight, ChevronDown, ChevronUp, Pencil, Trash2, RefreshCw, Coins } from 'lucide-react'
+import { formatUsageLine } from '../../lib/format-cost'
 
 function toFileUrl(p: string): string {
   // Three slashes: local-file:///F:/path — empty authority avoids Chromium treating "F:" as host
@@ -477,27 +478,45 @@ function MessageBubble({
 
         {/* Meta footer for assistant messages */}
         {!isUser && meta && (
-          <div className="flex items-center gap-2.5 mt-1 px-1 text-[11px] text-muted-foreground/55 select-none">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mt-1.5 px-1 text-[11px] text-muted-foreground select-none">
             {meta.autoRoutedModel && (
-              <span className="flex items-center gap-1 text-amber-600/70">
+              <span className="flex items-center gap-1 text-amber-600 dark:text-amber-400">
                 ⚡ 自动路由{meta.autoRoutedIntent ? ` · ${meta.autoRoutedIntent}` : ''}
               </span>
             )}
             {meta.model && (
-              <span className="flex items-center gap-1">
-                <Cpu size={9} />
+              <span className="flex items-center gap-1 text-foreground/75 font-medium">
+                <Cpu size={10} />
                 {meta.model}
               </span>
             )}
             {meta.providerName && meta.providerName !== meta.model && (
-              <span>{meta.providerName}</span>
+              <span className="text-muted-foreground/75">{meta.providerName}</span>
             )}
             {meta.durationMs != null && (
-              <span className="flex items-center gap-1">
-                <Clock size={9} />
+              <span className="flex items-center gap-1 text-muted-foreground/75">
+                <Clock size={10} />
                 {(meta.durationMs / 1000).toFixed(1)}s
               </span>
             )}
+            {(() => {
+              const usage = formatUsageLine({
+                inputTokens: meta.inputTokens,
+                outputTokens: meta.outputTokens,
+                costUsd: meta.costUsd
+              })
+              const inTok = Number.isFinite(meta.inputTokens) ? meta.inputTokens : null
+              const outTok = Number.isFinite(meta.outputTokens) ? meta.outputTokens : null
+              return usage ? (
+                <span
+                  className="inline-flex items-center gap-1 px-1.5 py-px rounded bg-amber-500/10 text-amber-700 dark:text-amber-300 font-medium tabular-nums"
+                  title={`输入 ${inTok ?? 0} tokens · 输出 ${outTok ?? 0} tokens`}
+                >
+                  <Coins size={10} />
+                  {usage}
+                </span>
+              ) : null
+            })()}
           </div>
         )}
       </div>

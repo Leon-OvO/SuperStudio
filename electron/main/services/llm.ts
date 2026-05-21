@@ -15,13 +15,24 @@ export function createLLMClient(providerId: string, modelId: string): LanguageMo
 export function buildModel(provider: ProviderConfig, modelId: string): LanguageModel {
   switch (provider.type) {
     case 'openai': {
-      const client = createOpenAI({ apiKey: provider.apiKey, baseURL: provider.baseUrl })
+      // `strict` makes the SDK send `stream_options: { include_usage: true }`,
+      // without which streaming responses don't carry token counts.
+      const client = createOpenAI({
+        apiKey: provider.apiKey,
+        baseURL: provider.baseUrl,
+        compatibility: 'strict'
+      })
       return client(modelId)
     }
     case 'custom': {
+      // Same as 'openai' — most modern OpenAI-compatible proxies (OpenRouter,
+      // Together, Groq, SuperCode gateway, etc.) honor `stream_options` and
+      // need it on to return usage. If a downstream proxy chokes on the field,
+      // it'd need a per-provider opt-out — add one then.
       const client = createOpenAI({
         apiKey: provider.apiKey,
-        baseURL: provider.baseUrl || 'https://api.openai.com/v1'
+        baseURL: provider.baseUrl || 'https://api.openai.com/v1',
+        compatibility: 'strict'
       })
       return client(modelId)
     }

@@ -2,13 +2,11 @@ import { useEffect, useRef, useState } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
-import { X } from 'lucide-react'
 import '@xterm/xterm/css/xterm.css'
 import { useUIStore } from '../../../stores/ui'
 
 interface Props {
   projectPath: string
-  onClose: () => void
 }
 
 function pickFontFamily(): string {
@@ -35,7 +33,7 @@ function makeTheme(isDark: boolean): Record<string, string> {
       }
 }
 
-export function TerminalPanel({ projectPath, onClose }: Props) {
+export function TerminalPanel({ projectPath }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
@@ -137,19 +135,7 @@ export function TerminalPanel({ projectPath, onClose }: Props) {
   }, [isDark])
 
   return (
-    <div className="flex flex-col h-full min-h-0 bg-card border-t border-border">
-      <div className="flex items-center gap-2 px-3 py-1 border-b border-border shrink-0 text-[11px] text-muted-foreground">
-        <span className="font-medium uppercase tracking-wide">终端</span>
-        <span className="font-mono truncate opacity-60">{projectPath}</span>
-        <div className="flex-1" />
-        <button
-          onClick={onClose}
-          className="p-1 rounded hover:bg-accent hover:text-foreground"
-          title="关闭终端 (Ctrl+`)"
-        >
-          <X size={12} />
-        </button>
-      </div>
+    <div className="flex flex-col h-full min-h-0 bg-card">
       <div
         ref={containerRef}
         className="flex-1 min-h-0 ss-xterm-host"

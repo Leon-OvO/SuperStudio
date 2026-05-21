@@ -191,6 +191,22 @@ const api = {
   // --- App version ---
   appVersion: () => ipcRenderer.invoke(IPC.APP_VERSION),
 
+  // --- System integration (auto-launch + Explorer right-click menu) ---
+  setAutoLaunch: (enabled: boolean) => ipcRenderer.invoke(IPC.APP_SET_AUTO_LAUNCH, enabled) as Promise<{ ok: boolean; error?: string }>,
+  setShellIntegration: (enabled: boolean) => ipcRenderer.invoke(IPC.APP_SET_SHELL_INTEGRATION, enabled) as Promise<{ ok: boolean; error?: string }>,
+  getSystemState: () => ipcRenderer.invoke(IPC.APP_GET_SYSTEM_STATE) as Promise<{
+    autoLaunch: boolean
+    shellIntegration: boolean
+    shellIntegrationSupported: boolean
+    storedAutoLaunch: boolean
+    storedShellIntegration: boolean
+  }>,
+  onOpenPathFromShell: (cb: (path: string) => void) => {
+    const listener = (_e: unknown, p: string) => cb(p)
+    ipcRenderer.on(IPC.APP_OPEN_PATH_FROM_SHELL, listener)
+    return () => ipcRenderer.removeListener(IPC.APP_OPEN_PATH_FROM_SHELL, listener)
+  },
+
   // --- Whole-app config export / import ---
   exportConfig: () => ipcRenderer.invoke(IPC.CONFIG_EXPORT),
   importConfig: (opts?: { strategy?: 'merge' | 'replace' }) =>

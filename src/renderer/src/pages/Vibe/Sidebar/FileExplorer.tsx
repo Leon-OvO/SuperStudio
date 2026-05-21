@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   Folder, FolderOpen, File as FileIcon, ChevronRight, ChevronDown,
-  RefreshCw, ExternalLink, Copy, Check, ChevronsDown
+  RefreshCw, ExternalLink, Copy, Check, ChevronsDown, FolderTree,
+  Search as SearchIcon
 } from 'lucide-react'
 import { cn } from '../../../lib/utils'
 import type { FileTreeNode } from '../../../../../shared/ipc-types'
@@ -22,15 +23,35 @@ interface ContextMenuState {
   node: FileTreeNode
 }
 
+// Quote a value for safe use inside a CSS attribute selector. Chromium has
+// CSS.escape, but we treat backslashes (Windows paths) explicitly so the
+// query stays predictable in tests/older runtimes too.
+function cssEscape(value: string): string {
+  if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') return CSS.escape(value)
+  return value.replace(/[\\"]/g, '\\$&')
+}
+
+function countFiles(node: FileTreeNode | null): number {
+  if (!node) return 0
+  let total = node.isDir ? 0 : 1
+  if (node.children) for (const c of node.children) total += countFiles(c)
+  return total
+}
+
+function flattenMatches(node: FileTreeNode, q: string, out: FileTreeNode[]): void {
+  if (!node.isDir && node.name.toLowerCase().includes(q)) out.push(node)
+  if (node.children) for (const c of node.children) flattenMatches(c, q, out)
+}
+
 export function FileExplorer({ root, activeFilePath, onOpenFile, onRefresh, onCollapse, dirtyPaths }: Props) {
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set(root ? [root.path] : []))
   const [ctxMenu, setCtxMenu] = useState<ContextMenuState | null>(null)
   const [copied, setCopied] = useState(false)
+  const [query, setQuery] = useState('')
 
   useEffect(() => {
     if (!ctxMenu) return
     function onDown(e: MouseEvent) {
-      // Close on any outside click
       const target = e.target as HTMLElement
       if (!target.closest('[data-context-menu]')) setCtxMenu(null)
     }
@@ -44,6 +65,54 @@ export function FileExplorer({ root, activeFilePath, onOpenFile, onRefresh, onCo
       document.removeEventListener('keydown', onEsc)
     }
   }, [ctxMenu])
+
+  // Listen for "reveal in side bar" requests fired from tab right-click menus.
+  // Expand every ancestor folder of the target path so the file becomes
+  // visible — selection highlight is already driven by `activeFilePath`.
+  useEffect(() => {
+    function onReveal(e: Event) {
+      const detail = (e as CustomEvent<{ path: string }>).detail
+      const target = detail?.path
+      if (!target || !root) return
+      const rootPath = root.path.replace(/[\\/]+$/, '')
+      if (!target.startsWith(rootPath)) return
+      const ancestors: string[] = [rootPath]
+      let cur = target
+      // Strip the file itself
+      const lastSep = Math.max(cur.lastIndexOf('/'), cur.lastIndexOf('\\'))
+      if (lastSep >= 0) cur = cur.slice(0, lastSep)
+      // Walk up from the file's directory until we hit the project root.
+      while (cur.length > rootPath.length) {
+        ancestors.push(cur)
+        const sep = Math.max(cur.lastIndexOf('/'), cur.lastIndexOf('\\'))
+        if (sep < 0) break
+        cur = cur.slice(0, sep)
+      }
+      setExpanded(prev => {
+        const next = new Set(prev)
+        for (const a of ancestors) next.add(a)
+        return next
+      })
+      // Defer the scroll so the newly-expanded folders have rendered first.
+      requestAnimationFrame(() => {
+        const el = document.querySelector(`[data-file-path="${cssEscape(target)}"]`)
+        if (el && typeof (el as HTMLElement).scrollIntoView === 'function') {
+          ;(el as HTMLElement).scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+        }
+      })
+    }
+    window.addEventListener('vibe:reveal-file', onReveal)
+    return () => window.removeEventListener('vibe:reveal-file', onReveal)
+  }, [root])
+
+  const fileCount = useMemo(() => countFiles(root), [root])
+  const trimmed = query.trim().toLowerCase()
+  const matches = useMemo(() => {
+    if (!trimmed || !root) return null
+    const out: FileTreeNode[] = []
+    flattenMatches(root, trimmed, out)
+    return out
+  }, [root, trimmed])
 
   const toggle = (p: string) => {
     setExpanded(prev => {
@@ -79,19 +148,35 @@ export function FileExplorer({ root, activeFilePath, onOpenFile, onRefresh, onCo
     } catch (e) {
       console.error('copy failed:', e)
     }
-    // Keep menu open briefly to show "已复制"
     setTimeout(() => setCtxMenu(null), 600)
   }
 
+  function relativeName(p: string): string {
+    if (!root) return p
+    const rootP = root.path
+    if (p.startsWith(rootP)) {
+      const rel = p.slice(rootP.length).replace(/^[\\/]/, '')
+      const parts = rel.split(/[\\/]/)
+      parts.pop()
+      return parts.join('/') || ''
+    }
+    return ''
+  }
+
   return (
-    <div className="flex flex-col h-full">
-      <div className="flex items-center justify-between px-3 py-2 border-b border-border/60 shrink-0">
-        <span className="text-[10px] uppercase text-muted-foreground/60 font-semibold">文件</span>
-        <div className="flex gap-0.5">
+    <div className="flex flex-col h-full bg-card">
+      {/* Header */}
+      <div className="flex items-center justify-between px-3 pt-3 pb-2 shrink-0">
+        <div className="flex items-center gap-2 min-w-0">
+          <FolderTree size={13} className="text-amber-500 shrink-0" />
+          <span className="text-[12px] font-semibold tracking-tight">文件</span>
+          <span className="text-[11px] text-muted-foreground tabular-nums">{fileCount}</span>
+        </div>
+        <div className="flex items-center gap-0.5 shrink-0">
           {root && (
             <button
               onClick={async () => { try { await window.api.showItemInFolder?.(root.path) } catch {} }}
-              className="p-0.5 rounded text-muted-foreground hover:text-foreground hover:bg-accent"
+              className="p-1 rounded text-muted-foreground/70 hover:text-foreground hover:bg-accent/60 transition-colors"
               title="在文件管理器中打开项目"
             >
               <ExternalLink size={11} />
@@ -99,7 +184,7 @@ export function FileExplorer({ root, activeFilePath, onOpenFile, onRefresh, onCo
           )}
           <button
             onClick={onRefresh}
-            className="p-0.5 rounded text-muted-foreground hover:text-foreground hover:bg-accent"
+            className="p-1 rounded text-muted-foreground/70 hover:text-foreground hover:bg-accent/60 transition-colors"
             title="刷新文件树"
           >
             <RefreshCw size={11} />
@@ -107,7 +192,7 @@ export function FileExplorer({ root, activeFilePath, onOpenFile, onRefresh, onCo
           {onCollapse && (
             <button
               onClick={onCollapse}
-              className="p-0.5 rounded text-muted-foreground hover:text-foreground hover:bg-accent"
+              className="p-1 rounded text-muted-foreground/70 hover:text-foreground hover:bg-accent/60 transition-colors"
               title="折叠文件浏览器"
             >
               <ChevronsDown size={11} />
@@ -115,8 +200,67 @@ export function FileExplorer({ root, activeFilePath, onOpenFile, onRefresh, onCo
           )}
         </div>
       </div>
-      <div className="flex-1 overflow-y-auto py-1 text-xs font-mono">
-        {root ? (
+
+      {/* Search */}
+      {root && (
+        <div className="px-3 pb-2 shrink-0">
+          <div className="relative">
+            <SearchIcon size={11} className="absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground/60 pointer-events-none" />
+            <input
+              value={query}
+              onChange={e => setQuery(e.target.value)}
+              placeholder="按文件名筛选…"
+              className="w-full h-7 pl-7 pr-2 rounded-md bg-background border border-border text-[11px] outline-none focus:ring-1 focus:ring-primary/40 focus:border-primary/40 placeholder:text-muted-foreground/50"
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Body */}
+      <div className="flex-1 overflow-y-auto px-1 pb-2 text-[12px]">
+        {!root ? (
+          <div className="text-[12px] text-muted-foreground text-center py-8 px-3 leading-relaxed">
+            未打开项目
+          </div>
+        ) : trimmed && matches ? (
+          matches.length === 0 ? (
+            <div className="text-[12px] text-muted-foreground text-center py-8 px-3 leading-relaxed">
+              没有匹配「{query}」的文件
+            </div>
+          ) : (
+            <div className="px-1 space-y-px">
+              <div className="text-[11px] text-muted-foreground px-2 pt-1 pb-1.5">
+                {matches.length} 个匹配
+              </div>
+              {matches.map(n => {
+                const isSelected = activeFilePath === n.path
+                const isDirty = dirtyPaths?.has(n.path)
+                const dir = relativeName(n.path)
+                return (
+                  <div
+                    key={n.path}
+                    onClick={() => onOpenFile(n.path)}
+                    onContextMenu={(e) => handleContextMenu(e, n)}
+                    className={cn(
+                      'group flex items-center gap-1.5 px-2 py-1 rounded-md cursor-pointer transition-colors',
+                      isSelected
+                        ? 'bg-primary/10 ring-1 ring-primary/30 text-foreground'
+                        : 'hover:bg-accent/40 text-foreground/85'
+                    )}
+                    title={n.path}
+                  >
+                    <FileIcon size={11} className="shrink-0 text-muted-foreground/70" />
+                    <span className="truncate flex-1">{n.name}</span>
+                    {dir && (
+                      <span className="text-[11px] text-muted-foreground/80 truncate max-w-[40%]">{dir}</span>
+                    )}
+                    {isDirty && <span className="w-1.5 h-1.5 rounded-full bg-primary shrink-0" />}
+                  </div>
+                )
+              })}
+            </div>
+          )
+        ) : (
           <TreeNode
             node={root}
             depth={0}
@@ -128,8 +272,6 @@ export function FileExplorer({ root, activeFilePath, onOpenFile, onRefresh, onCo
             onContextMenu={handleContextMenu}
             isRoot
           />
-        ) : (
-          <div className="text-muted-foreground/60 text-center py-6 px-3">未打开项目</div>
         )}
       </div>
 
@@ -197,9 +339,12 @@ function TreeNode({
         onClick={() => node.isDir ? onToggle(node.path) : onOpenFile(node.path)}
         onDoubleClick={() => !node.isDir && onOpenFile(node.path)}
         onContextMenu={(e) => onContextMenu(e, node)}
+        data-file-path={node.path}
         className={cn(
-          'flex items-center gap-1 px-2 py-0.5 cursor-pointer hover:bg-accent/60 rounded',
-          isSelected && !node.isDir && 'bg-primary/10 text-primary'
+          'group flex items-center gap-1 px-2 py-1 mx-0.5 cursor-pointer rounded-md transition-colors',
+          isSelected && !node.isDir
+            ? 'bg-primary/10 ring-1 ring-primary/30 text-foreground'
+            : 'hover:bg-accent/50 text-foreground/85'
         )}
         style={{ paddingLeft: `${8 + indent}px` }}
         title={node.path}
@@ -221,7 +366,7 @@ function TreeNode({
             <FileIcon size={11} className="shrink-0 text-muted-foreground/60" />
           </>
         )}
-        <span className={cn('truncate flex-1', isRoot && 'font-semibold')}>{node.name}</span>
+        <span className={cn('truncate flex-1 leading-tight', isRoot && 'font-semibold')}>{node.name}</span>
         {isDirty && <span className="w-1.5 h-1.5 rounded-full bg-primary shrink-0" />}
       </div>
 

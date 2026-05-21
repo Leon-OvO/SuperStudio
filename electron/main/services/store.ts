@@ -33,6 +33,8 @@ const defaults: StoreSchema = {
     autoModelSmartModel: '',
     buildRecentProjectDirs: [],
     vibeAutoApply: false,
+    autoLaunch: false,
+    shellIntegrationEnabled: true,
   }
 }
 
@@ -180,7 +182,9 @@ export function deleteProvider(id: string): void {
 
 export function getSettings(): AppSettings {
   const raw = getStore().get('settings') as AppSettings
-  return { ...raw, searchApiKey: decryptString(raw.searchApiKey || '') }
+  // Merge defaults so newly-added keys (autoLaunch, shellIntegrationEnabled, …)
+  // surface as their declared default on installs upgraded from older versions.
+  return { ...defaults.settings, ...raw, searchApiKey: decryptString(raw.searchApiKey || '') }
 }
 
 export function saveSettings(settings: Partial<AppSettings>): void {

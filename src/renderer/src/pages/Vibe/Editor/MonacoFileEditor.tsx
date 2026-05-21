@@ -3,6 +3,8 @@ import Editor, { type Monaco } from '@monaco-editor/react'
 import type * as MonacoNS from 'monaco-editor'
 // Side-effect: configures monaco loader to use the bundled module + Vite workers
 import './setup'
+import { setActiveEditor, getActiveEditor } from './active-editor'
+import { useVibeStore } from '../store'
 
 interface Props {
   /** Absolute file path — used to derive Monaco language */
@@ -40,11 +42,47 @@ export function MonacoFileEditor({ filePath, value, onChange, onSave, theme = 'v
 
   function handleMount(editor: MonacoNS.editor.IStandaloneCodeEditor, monaco: Monaco) {
     editorRef.current = editor
+    setActiveEditor(editor)
     // Ctrl+S / Cmd+S → onSave
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
       saveRef.current()
     })
+    // Report cursor + language to the Vibe store so the bottom status bar can
+    // render "Ln X, Col Y · TypeScript". onDidChangeCursorPosition fires on
+    // every keystroke / arrow key — Zustand handles the equality short-circuit.
+    const store = useVibeStore.getState()
+    const pos = editor.getPosition()
+    if (pos) store.setCursor(pos.lineNumber, pos.column)
+    const lang = editor.getModel()?.getLanguageId() ?? ''
+    store.setCursorLanguage(lang)
+    editor.onDidChangeCursorPosition((e) => {
+      useVibeStore.getState().setCursor(e.position.lineNumber, e.position.column)
+    })
+    editor.onDidFocusEditorWidget(() => {
+      setActiveEditor(editor)
+      const m = editor.getModel()
+      if (m) useVibeStore.getState().setCursorLanguage(m.getLanguageId())
+    })
   }
+
+  // When the file path changes, the language inferred here may differ from
+  // Monaco's model language briefly during swap — push our own detection so
+  // the status bar updates immediately on tab switch.
+  useEffect(() => {
+    useVibeStore.getState().setCursorLanguage(detectLanguage(filePath))
+  }, [filePath])
+
+  // Drop the active-editor pointer when this editor unmounts (tab close /
+  // page leave) — leaving a stale ref would let menu commands target an
+  // already-disposed editor and throw. Only clear if WE're still the
+  // registered active editor — don't stomp on a sibling tab that took over.
+  useEffect(() => {
+    return () => {
+      if (editorRef.current && getActiveEditor() === editorRef.current) {
+        setActiveEditor(null)
+      }
+    }
+  }, [])
 
   return (
     <Editor

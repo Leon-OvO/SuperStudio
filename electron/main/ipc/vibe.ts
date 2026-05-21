@@ -38,7 +38,7 @@ import {
 } from '../services/vibe-projects'
 import { registerApprovedRoot } from '../services/path-allow'
 import {
-  upsertProject, getProject, setProjectModel,
+  upsertProject, setProjectModel,
   createRequest, listRequests, getRequest, updateRequestStatus, updateRequestSummary,
   deleteRequest, deleteTasksForRequest, slugify,
   createTask, listTasks, updateTaskStatus,
@@ -48,6 +48,7 @@ import {
 import { dbRun } from '../db/sqlite'
 import { writeProposalMd, writeTasksMd } from '../services/vibe-spec'
 import { getActiveSkillsForScenario, type InstalledSkill } from '../services/skills-db'
+import { computeCost } from '../services/model-pricing'
 
 /**
  * Build a system-prompt fragment from the skills the user enabled for the
@@ -156,6 +157,16 @@ function resolveInRoot(projectRoot: string, relOrAbs: string): string {
 // ---------------------------------------------------------------------------
 
 const activeRuns = new Map<string, AbortController>()
+
+/**
+ * Coerce a possibly-NaN-or-undefined usage value to a finite number or null.
+ * Some upstream providers resolve `result.usage` with NaN when they don't
+ * track tokens — NaN slips past `??` and would otherwise be written to the DB,
+ * surfacing later as "— → — tok · —" chips with NaN in the tooltip.
+ */
+function finiteUsage(n: number | undefined | null): number | null {
+  return n != null && Number.isFinite(n) ? n : null
+}
 
 // ---------------------------------------------------------------------------
 // Tools (reused by APPLY phase)
@@ -438,7 +449,9 @@ function toMessageInfo(m: VibeMessageRow): VibeMessageInfo {
   return {
     id: m.id, requestId: m.request_id, role: m.role, content: m.content,
     toolName: m.tool_name, toolArgs: m.tool_args, isError: m.is_error === 1,
-    taskId: m.task_id, createdAt: m.created_at
+    taskId: m.task_id, createdAt: m.created_at,
+    inputTokens: m.input_tokens, outputTokens: m.output_tokens,
+    costUsd: m.cost_usd, model: m.model
   }
 }
 function toProjectInfo(p: VibeProjectRow): VibeProjectInfo {
@@ -872,6 +885,7 @@ export function vibeHandlers(): void {
 
         let accumulated = ''
         let runError: Error | null = null
+        let usage: { promptTokens?: number; completionTokens?: number } | null = null
         try {
           const result = streamText({
             model,
@@ -894,6 +908,7 @@ export function vibeHandlers(): void {
             }
           }
           await result.finishReason.catch(() => null)
+          usage = await result.usage.catch(() => null)
         } catch (err) {
           runError = err as Error
         }
@@ -907,7 +922,15 @@ export function vibeHandlers(): void {
           return
         }
         if (accumulated.trim()) {
-          appendMessage({ requestId, role: 'assistant', content: accumulated.trim() })
+          const inTok = finiteUsage(usage?.promptTokens)
+          const outTok = finiteUsage(usage?.completionTokens)
+          const cost = inTok != null && outTok != null && (inTok > 0 || outTok > 0)
+            ? computeCost(modelInfo.modelId, inTok, outTok)
+            : null
+          appendMessage({
+            requestId, role: 'assistant', content: accumulated.trim(),
+            inputTokens: inTok, outputTokens: outTok, costUsd: cost, model: modelInfo.modelId
+          })
         }
         win.webContents.send(IPC.VIBE_DONE, { projectPath, requestId })
       } catch (err) {
@@ -1022,6 +1045,7 @@ export function vibeHandlers(): void {
 
         let accumulated = ''
         let runError: Error | null = null
+        let usage: { promptTokens?: number; completionTokens?: number } | null = null
         try {
           const result = streamText({
             model,
@@ -1044,6 +1068,7 @@ export function vibeHandlers(): void {
             }
           }
           await result.finishReason.catch(() => null)
+          usage = await result.usage.catch(() => null)
         } catch (err) {
           runError = err as Error
         }
@@ -1058,7 +1083,15 @@ export function vibeHandlers(): void {
         }
 
         if (accumulated.trim()) {
-          appendMessage({ requestId, role: 'assistant', content: accumulated.trim() })
+          const inTok = finiteUsage(usage?.promptTokens)
+          const outTok = finiteUsage(usage?.completionTokens)
+          const cost = inTok != null && outTok != null && (inTok > 0 || outTok > 0)
+            ? computeCost(modelInfo.modelId, inTok, outTok)
+            : null
+          appendMessage({
+            requestId, role: 'assistant', content: accumulated.trim(),
+            inputTokens: inTok, outputTokens: outTok, costUsd: cost, model: modelInfo.modelId
+          })
         }
         win.webContents.send(IPC.VIBE_DONE, { projectPath, requestId })
       } catch (err) {
@@ -1163,6 +1196,7 @@ export function vibeHandlers(): void {
           if (chunk) emit({ type: 'text', text: chunk })
         }
         await result.finishReason.catch(() => null)
+        const proposeUsage = await result.usage.catch(() => null)
 
         if (ctl.signal.aborted) {
           win.webContents.send(IPC.VIBE_DONE, { projectPath, cancelled: true })
@@ -1206,11 +1240,15 @@ export function vibeHandlers(): void {
         if (!isPromotion) {
           appendMessage({ requestId: targetRequest.id, role: 'user', content: args.prompt })
         }
+        const inTok = proposeUsage?.promptTokens ?? null
+        const outTok = proposeUsage?.completionTokens ?? null
+        const cost = inTok != null && outTok != null ? computeCost(modelInfo.modelId, inTok, outTok) : null
         appendMessage({
           requestId: targetRequest.id, role: 'assistant',
           content: isPromotion
             ? `已根据上面的对话拆解为 ${object.tasks.length} 个任务，请审查后点「执行剩余任务」开始实施。`
-            : `已生成提议「${object.title}」，包含 ${object.tasks.length} 个任务`
+            : `已生成提议「${object.title}」，包含 ${object.tasks.length} 个任务`,
+          inputTokens: inTok, outputTokens: outTok, costUsd: cost, model: modelInfo.modelId
         })
 
         emit({
@@ -1326,6 +1364,7 @@ export function vibeHandlers(): void {
           const otherTasks = allTasks.filter(t => t.id !== nextTask.id)
           let accumulated = ''
           let runError: Error | null = null
+          let usage: { promptTokens?: number; completionTokens?: number } | null = null
           try {
             const result = streamText({
               model,
@@ -1348,6 +1387,7 @@ export function vibeHandlers(): void {
               }
             }
             await result.finishReason.catch(() => null)
+            usage = await result.usage.catch(() => null)
           } catch (err) {
             runError = err as Error
           }
@@ -1375,9 +1415,15 @@ export function vibeHandlers(): void {
           writeTasksMd({ projectPath, slug: request.slug, tasks: listTasks(request.id) })
           emit({ type: 'task_status', taskId: nextTask.id, taskStatus: 'done' })
           if (accumulated.trim()) {
+            const inTok = finiteUsage(usage?.promptTokens)
+            const outTok = finiteUsage(usage?.completionTokens)
+            const cost = inTok != null && outTok != null && (inTok > 0 || outTok > 0)
+              ? computeCost(modelInfo.modelId, inTok, outTok)
+              : null
             appendMessage({
               requestId: request.id, role: 'assistant', taskId: nextTask.id,
-              content: accumulated.trim()
+              content: accumulated.trim(),
+              inputTokens: inTok, outputTokens: outTok, costUsd: cost, model: modelInfo.modelId
             })
           }
         }

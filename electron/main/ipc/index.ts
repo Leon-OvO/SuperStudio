@@ -14,6 +14,7 @@ import { dashboardHandlers } from './dashboard'
 import { vibeHandlers } from './vibe'
 import { skillsHandlers } from './skills'
 import { terminalHandlers } from './terminal'
+import { systemHandlers } from './system'
 import { logEntry, getEntriesFromDisk, clearEntries } from '../services/error-log'
 
 export function registerIpcHandlers(): void {
@@ -31,6 +32,7 @@ export function registerIpcHandlers(): void {
   vibeHandlers()
   skillsHandlers()
   terminalHandlers()
+  systemHandlers()
 
   ipcMain.handle(IPC.APP_VERSION, () => app.getVersion())
 

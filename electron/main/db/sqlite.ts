@@ -209,6 +209,17 @@ function applyMigrations(): void {
   // v4: mark built-in skills that ship with the app — they auto-install on
   // first launch and can't be uninstalled (only disabled).
   try { db.run(`ALTER TABLE skills ADD COLUMN builtin INTEGER NOT NULL DEFAULT 0`) } catch { /* already exists */ }
+  // v5: per-message token + cost accounting. Lets the UI surface "this request
+  // cost $0.0023" and aggregate per-session totals. Nullable everywhere
+  // because old rows pre-date this feature.
+  try { db.run(`ALTER TABLE messages ADD COLUMN input_tokens INTEGER`) } catch { /* already exists */ }
+  try { db.run(`ALTER TABLE messages ADD COLUMN output_tokens INTEGER`) } catch { /* already exists */ }
+  try { db.run(`ALTER TABLE messages ADD COLUMN cost_usd REAL`) } catch { /* already exists */ }
+  try { db.run(`ALTER TABLE messages ADD COLUMN model TEXT`) } catch { /* already exists */ }
+  try { db.run(`ALTER TABLE vibe_messages ADD COLUMN input_tokens INTEGER`) } catch { /* already exists */ }
+  try { db.run(`ALTER TABLE vibe_messages ADD COLUMN output_tokens INTEGER`) } catch { /* already exists */ }
+  try { db.run(`ALTER TABLE vibe_messages ADD COLUMN cost_usd REAL`) } catch { /* already exists */ }
+  try { db.run(`ALTER TABLE vibe_messages ADD COLUMN model TEXT`) } catch { /* already exists */ }
 }
 
 // Helper: run a query and save
