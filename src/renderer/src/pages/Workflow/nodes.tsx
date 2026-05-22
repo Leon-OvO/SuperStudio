@@ -292,8 +292,8 @@ export const NODE_DEFINITIONS: Record<NodeKind, NodeDef> = {
     }
   },
   gallery_save: {
-    label: '保存到画廊',
-    description: '把上游的图片/视频写入画廊（含来源标签）。',
+    label: '保存到素材库',
+    description: '把上游的图片/视频写入素材库（含来源标签）。',
     color: 'bg-emerald-50 border-emerald-300',
     inputs: [{ type: 'any', label: '内容' }],
     outputs: [],
@@ -446,7 +446,7 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
         { id: 'n2', type: 'llm', position: { x: 250, y: 100 }, data: { label: '撰写文章', systemPrompt: '你是一名资深编辑。', prompt: '根据主题写一篇 500 字的文章：\n{{input}}', providerModel: '', temperature: 0.7 } },
         { id: 'n3', type: 'llm', position: { x: 250, y: 220 }, data: { label: '生成图片提示词', systemPrompt: '', prompt: '为以下主题生成一段详细的图片生成提示词（英文）：\n{{input}}', providerModel: '', temperature: 0.7 } },
         { id: 'n4', type: 'image_generate', position: { x: 480, y: 220 }, data: { label: '生成配图', prompt: '', size: '1024x1024', n: 1, quality: 'standard', providerModel: '' } },
-        { id: 'n5', type: 'gallery_save', position: { x: 700, y: 220 }, data: { label: '保存到画廊', prompt: '' } },
+        { id: 'n5', type: 'gallery_save', position: { x: 700, y: 220 }, data: { label: '保存到素材库', prompt: '' } },
         { id: 'n6', type: 'output', position: { x: 480, y: 100 }, data: { label: '文章输出' } }
       ],
       edges: [

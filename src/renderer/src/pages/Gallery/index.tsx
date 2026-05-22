@@ -2,7 +2,7 @@ import { useEffect, useState, useMemo, useCallback, useRef } from 'react'
 import {
   Trash2, Image as ImageIcon, Video as VideoIcon, X, CheckSquare, Square, Search,
   ChevronLeft, ChevronRight, Copy, Download, FolderOpen, Check, ImagePlus, Wand2,
-  FolderDown
+  FolderDown, Upload, Music
 } from 'lucide-react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import type { GalleryItem } from '../../../../shared/ipc-types'
@@ -14,14 +14,19 @@ import { Select } from '../../components/ui/Select'
 import { ImageEditor } from '../../components/ui/ImageEditor'
 import { useConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { toast } from '../../components/ui/Toast'
+import { useT } from '../../lib/i18n'
 
 function toLocalUrl(p: string): string {
   const fwd = p.replace(/\\/g, '/').replace(/^\//, '')
   return `local-file:///${fwd}`
 }
 
-type Filter = 'all' | 'image' | 'video'
-type Source = 'all' | 'chat' | 'workflow'
+type Filter = 'all' | 'image' | 'video' | 'audio'
+type Source = 'all' | 'chat' | 'workflow' | 'import'
+
+function sourceLabel(s: GalleryItem['source']): string {
+  return s === 'chat' ? '对话' : s === 'workflow' ? '工作流' : '本地导入'
+}
 
 function getDateGroup(ts: number): string {
   const now = Date.now()
@@ -44,9 +49,11 @@ export function GalleryPage() {
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [previewIndex, setPreviewIndex] = useState<number | null>(null)
   const [loading, setLoading] = useState(false)
+  const [importing, setImporting] = useState(false)
   const [editorItem, setEditorItem] = useState<GalleryItem | null>(null)
   const ctxMenu = useImageContextMenu()
   const dlg = useConfirmDialog()
+  const t = useT()
   const { setPendingChatAttachments, setPendingChatImageMode, setPage: setUIPage } = useUIStore()
 
   const useAsReference = useCallback((item: GalleryItem) => {
@@ -62,19 +69,42 @@ export function GalleryPage() {
     setUIPage('chat')
   }, [setPendingChatAttachments, setPendingChatImageMode, setUIPage])
 
-  useEffect(() => { reload() }, [filter, source])
+  useEffect(() => { reload() }, [source])  // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { setSelected(new Set()) }, [filter])
 
   async function reload() {
     setLoading(true)
     try {
+      // Type filtering happens client-side so category tabs switch instantly
+      // and per-category counts stay available without extra round-trips.
       const filters: Record<string, string> = {}
-      if (filter !== 'all') filters.type = filter
       if (source !== 'all') filters.source = source
       const data = await window.api.listGallery(filters)
       setItems(data)
       setSelected(new Set())
     } finally {
       setLoading(false)
+    }
+  }
+
+  async function handleImport() {
+    setImporting(true)
+    try {
+      const result = await window.api.importGallery()
+      if (result.canceled) return
+      const failed = result.failures.length
+      if (result.imported > 0) {
+        await reload()
+        toast.success(failed > 0
+          ? `已导入 ${result.imported} 个文件，${failed} 个失败（格式不支持）`
+          : `已导入 ${result.imported} 个文件`)
+      } else if (failed > 0) {
+        toast.error(`导入失败：${failed} 个文件格式不支持`)
+      }
+    } catch (e) {
+      toast.error('导入失败：' + (e as Error).message)
+    } finally {
+      setImporting(false)
     }
   }
 
@@ -131,10 +161,19 @@ export function GalleryPage() {
   }
 
   const filtered = useMemo(() => {
-    if (!query.trim()) return items
-    const q = query.toLowerCase()
-    return items.filter(i => i.prompt.toLowerCase().includes(q))
-  }, [items, query])
+    let out = items
+    if (filter !== 'all') out = out.filter(i => i.type === filter)
+    const q = query.trim().toLowerCase()
+    if (q) out = out.filter(i => i.prompt.toLowerCase().includes(q))
+    return out
+  }, [items, filter, query])
+
+  const counts = useMemo(() => ({
+    all: items.length,
+    image: items.filter(i => i.type === 'image').length,
+    video: items.filter(i => i.type === 'video').length,
+    audio: items.filter(i => i.type === 'audio').length,
+  }), [items])
 
   function toggleAll() {
     if (selected.size === filtered.length) setSelected(new Set())
@@ -162,17 +201,25 @@ export function GalleryPage() {
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
-      <header className="px-6 py-3.5 border-b border-border flex items-center gap-3 shrink-0">
-        <h2 className="text-base font-semibold">画廊</h2>
+      <header className="px-6 py-3 border-b border-border flex items-center gap-3 shrink-0">
+        <h2 className="text-base font-semibold shrink-0">{t('nav.gallery')}</h2>
+
+        {/* Category tabs */}
+        <div className="flex items-center gap-1 text-xs">
+          <FilterBtn active={filter === 'all'} count={counts.all} onClick={() => setFilter('all')}>全部</FilterBtn>
+          <FilterBtn active={filter === 'image'} count={counts.image} onClick={() => setFilter('image')}>图片</FilterBtn>
+          <FilterBtn active={filter === 'video'} count={counts.video} onClick={() => setFilter('video')}>视频</FilterBtn>
+          <FilterBtn active={filter === 'audio'} count={counts.audio} onClick={() => setFilter('audio')}>音频</FilterBtn>
+        </div>
 
         {/* Search */}
-        <div className="relative flex items-center ml-2 flex-1 max-w-xs">
+        <div className="relative flex items-center ml-auto flex-1 max-w-xs">
           <Search size={12} className="absolute left-2.5 text-muted-foreground/50 pointer-events-none" />
           <input
             type="text"
             value={query}
             onChange={e => setQuery(e.target.value)}
-            placeholder="搜索提示词…"
+            placeholder="搜索素材…"
             className="w-full pl-8 pr-3 py-1.5 text-xs rounded-lg bg-muted/60 border border-transparent focus:border-border focus:bg-background outline-none placeholder:text-muted-foreground/40 transition-all"
           />
           {query && (
@@ -182,22 +229,27 @@ export function GalleryPage() {
           )}
         </div>
 
-        <div className="flex items-center gap-1 ml-auto text-xs">
-          <FilterBtn active={filter === 'all'} onClick={() => setFilter('all')}>全部</FilterBtn>
-          <FilterBtn active={filter === 'image'} onClick={() => setFilter('image')}>图片</FilterBtn>
-          <FilterBtn active={filter === 'video'} onClick={() => setFilter('video')}>视频</FilterBtn>
-        </div>
         <Select<Source>
           value={source}
           onChange={setSource}
           options={[
             { value: 'all', label: '全部来源' },
             { value: 'chat', label: '对话' },
-            { value: 'workflow', label: '工作流' }
+            { value: 'workflow', label: '工作流' },
+            { value: 'import', label: '导入' }
           ]}
           size="sm"
           title="按来源筛选"
         />
+
+        <button
+          onClick={handleImport}
+          disabled={importing}
+          title="从本地导入图片 / 视频 / 音频"
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50 transition-opacity shrink-0"
+        >
+          <Upload size={12} /> {importing ? '导入中…' : '导入'}
+        </button>
       </header>
 
       {/* Toolbar */}
@@ -245,8 +297,20 @@ export function GalleryPage() {
       ) : filtered.length === 0 ? (
         <div className="flex-1 flex items-center justify-center">
           <div className="text-center text-muted-foreground text-sm">
-            <p className="text-3xl mb-3">🖼️</p>
-            <p>{query ? '未找到匹配的内容' : '暂无内容，去「对话」或「工作流」生成一些试试。'}</p>
+            <p className="text-3xl mb-3">
+              {filter === 'video' ? '🎬' : filter === 'audio' ? '🎵' : '🖼️'}
+            </p>
+            <p>
+              {query
+                ? '未找到匹配的内容'
+                : filter === 'audio'
+                ? '暂无音频，点击「导入」添加，或用支持音频的工具生成。'
+                : filter === 'video'
+                ? '暂无视频，去「对话」「工作流」生成，或点击「导入」添加。'
+                : filter === 'image'
+                ? '暂无图片，去「对话」「工作流」生成，或点击「导入」添加。'
+                : '暂无素材，去「对话」「工作流」生成，或点击「导入」添加本地文件。'}
+            </p>
           </div>
         </div>
       ) : (
@@ -292,7 +356,12 @@ export function GalleryPage() {
   )
 }
 
-function FilterBtn({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
+function FilterBtn({ active, onClick, count, children }: {
+  active: boolean
+  onClick: () => void
+  count?: number
+  children: React.ReactNode
+}) {
   return (
     <button
       onClick={onClick}
@@ -302,6 +371,11 @@ function FilterBtn({ active, onClick, children }: { active: boolean; onClick: ()
       )}
     >
       {children}
+      {count !== undefined && count > 0 && (
+        <span className={cn('ml-1.5 text-[10px]', active ? 'text-primary/60' : 'text-muted-foreground/50')}>
+          {count}
+        </span>
+      )}
     </button>
   )
 }
@@ -487,7 +561,7 @@ function GalleryCard({ item, selected, onToggle, onPreview, onDelete, onUseAsRef
             className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
             loading="lazy"
           />
-        ) : (
+        ) : item.type === 'video' ? (
           <div className="w-full h-full flex items-center justify-center bg-muted">
             {item.thumbnailPath ? (
               <img src={toLocalUrl(item.thumbnailPath!)} alt="" className="w-full h-full object-cover" />
@@ -495,6 +569,12 @@ function GalleryCard({ item, selected, onToggle, onPreview, onDelete, onUseAsRef
               <VideoIcon size={36} className="text-muted-foreground" />
             )}
             <div className="absolute bottom-2 left-2 px-1.5 py-0.5 rounded-md bg-black/60 text-white text-[10px] font-medium">视频</div>
+          </div>
+        ) : (
+          <div className="w-full h-full flex flex-col items-center justify-center gap-2 p-3 bg-gradient-to-br from-primary/10 to-primary/5">
+            <Music size={32} className="text-primary/60" />
+            <p className="text-[10px] text-muted-foreground text-center line-clamp-2 leading-snug">{item.prompt}</p>
+            <div className="absolute bottom-2 left-2 px-1.5 py-0.5 rounded-md bg-black/60 text-white text-[10px] font-medium">音频</div>
           </div>
         )}
       </div>
@@ -675,7 +755,7 @@ function PreviewModal({ items, index, onIndexChange, onClose, onDelete, onUseAsR
             alt={item.prompt}
             className="max-h-[72vh] rounded-xl shadow-2xl object-contain"
           />
-        ) : (
+        ) : item.type === 'video' ? (
           <video
             key={item.id}
             src={toLocalUrl(item.filePath)}
@@ -683,6 +763,19 @@ function PreviewModal({ items, index, onIndexChange, onClose, onDelete, onUseAsR
             autoPlay
             className="max-h-[72vh] rounded-xl shadow-2xl"
           />
+        ) : (
+          <div className="flex flex-col items-center gap-6 py-8">
+            <div className="w-32 h-32 rounded-2xl bg-gradient-to-br from-primary/25 to-primary/5 flex items-center justify-center shadow-2xl">
+              <Music size={56} className="text-primary/70" />
+            </div>
+            <audio
+              key={item.id}
+              src={toLocalUrl(item.filePath)}
+              controls
+              autoPlay
+              className="w-[420px] max-w-full"
+            />
+          </div>
         )}
 
         {/* Action toolbar */}
@@ -702,12 +795,14 @@ function PreviewModal({ items, index, onIndexChange, onClose, onDelete, onUseAsR
         {/* Metadata panel */}
         <div className="bg-card/90 backdrop-blur border border-border/60 rounded-xl p-4 max-w-2xl w-full text-sm space-y-1.5">
           <p className="text-xs text-muted-foreground flex items-center gap-2 flex-wrap">
-            {item.type === 'image' ? <ImageIcon size={12} /> : <VideoIcon size={12} />}
-            <span>{item.modelName || '未知模型'}</span>
+            {item.type === 'image' ? <ImageIcon size={12} />
+              : item.type === 'video' ? <VideoIcon size={12} />
+              : <Music size={12} />}
+            <span>{item.modelName || (item.source === 'import' ? '本地文件' : '未知模型')}</span>
             <span>·</span>
             <span>{formatDate(item.createdAt)}</span>
             <span>·</span>
-            <span>{item.source === 'chat' ? '对话' : '工作流'}</span>
+            <span>{sourceLabel(item.source)}</span>
           </p>
           <p className="whitespace-pre-wrap break-words text-foreground/80">{item.prompt}</p>
         </div>

@@ -36,6 +36,11 @@ let mainWindow: BrowserWindow | null = null
  *  the renderer once it signals ready — we can't send before the first window
  *  exists. */
 let pendingShellPath: ShellOpenTarget | null = null
+/** Flips to true only after the first window is created AND all IPC handlers
+ *  are registered. `second-instance` checks this before recreating a window —
+ *  painting a window onto a process that failed/hung during startup yields a
+ *  UI where every ipcRenderer.invoke fails with "No handler registered". */
+let startupComplete = false
 
 // Single-instance lock — Explorer's right-click "用 SuperStudio 打开" should
 // FOCUS the existing window and forward the path, NOT spawn a second app
@@ -45,18 +50,36 @@ if (!gotSingleInstanceLock) {
   app.quit()
 } else {
   app.on('second-instance', async (_event, argv) => {
-    // Restore + focus existing window
-    if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore()
-      mainWindow.show()
-      mainWindow.focus()
+    // Restore + focus existing window — or recreate it if the previous window
+    // was destroyed (defense-in-depth: a relaunch must always bring the UI back,
+    // even if an old process is somehow still holding the single-instance lock).
+    const hadWindow = !!mainWindow && !mainWindow.isDestroyed()
+    if (hadWindow) {
+      if (mainWindow!.isMinimized()) mainWindow!.restore()
+      mainWindow!.show()
+      mainWindow!.focus()
+    } else if (startupComplete) {
+      createWindow()
+    } else {
+      // Startup never finished — this process has no IPC handlers wired up, so
+      // a window here would be dead (every invoke → "No handler registered").
+      // Quit and release the single-instance lock; the user's next launch then
+      // becomes a fresh, fully-initialized primary.
+      console.error('[main] second-instance before startup completed — quitting so a clean instance can take over')
+      app.quit()
+      return
     }
     // Forward the path the user right-clicked on to the renderer
     try {
       const { findPathArg } = await import('./services/system-integration')
       const target = findPathArg(argv)
-      if (target && mainWindow) {
-        mainWindow.webContents.send(IPC.APP_OPEN_PATH_FROM_SHELL, target)
+      if (target) {
+        if (hadWindow) {
+          mainWindow!.webContents.send(IPC.APP_OPEN_PATH_FROM_SHELL, target)
+        } else {
+          // Renderer just spun up — stash the path; ready-to-show forwards it.
+          pendingShellPath = target
+        }
       }
     } catch (e) {
       console.warn('[main] second-instance arg parse failed:', (e as Error).message)
@@ -127,7 +150,26 @@ function createWindow(): void {
 }
 
 app.whenReady().then(async () => {
+  // Second-instance branch: we already called app.quit() above. Skip all
+  // startup — protocol.handle / initDb in a quitting process throws spurious
+  // errors ("Failed to register protocol: local-file") that mask real failures
+  // in the primary's log.
+  if (!gotSingleInstanceLock) return
+
   electronApp.setAppUserModelId('com.superstudio.app')
+
+  // Startup watchdog — if init hangs (e.g. initDb on an unreachable data
+  // directory, or a SQLite file locked by a lingering process) the primary
+  // would sit here forever holding the single-instance lock, blocking every
+  // relaunch. Force-exit after 20s so the next launch starts clean. unref()
+  // keeps a normal fast startup unaffected.
+  const startupWatchdog = setTimeout(() => {
+    if (!startupComplete) {
+      console.error('[startup] watchdog: startup did not complete within 20s — force-exiting')
+      app.exit(1)
+    }
+  }, 20000)
+  startupWatchdog.unref()
 
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window)
@@ -139,8 +181,11 @@ app.whenReady().then(async () => {
     // Images
     png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
     gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml', ico: 'image/x-icon',
+    bmp: 'image/bmp', avif: 'image/avif',
     // Video / audio
-    mp4: 'video/mp4', webm: 'video/webm', mp3: 'audio/mpeg', wav: 'audio/wav', ogg: 'audio/ogg',
+    mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime',
+    mp3: 'audio/mpeg', wav: 'audio/wav', ogg: 'audio/ogg',
+    m4a: 'audio/mp4', aac: 'audio/aac', flac: 'audio/flac',
     // Web assets (Vibe iframe preview)
     html: 'text/html; charset=utf-8',
     htm: 'text/html; charset=utf-8',
@@ -263,14 +308,34 @@ app.whenReady().then(async () => {
   }
 
   createWindow()
+  // Startup reached the end successfully — IPC handlers are registered and the
+  // first window exists. Safe now for second-instance to recreate a window.
+  startupComplete = true
+  clearTimeout(startupWatchdog)
 
   // System tray — quick window-restore + quit. Notifications also live in this module.
   const { initTray } = await import('./services/tray')
   initTray(() => mainWindow)
 
+  // Background update check (Gitee). Silent unless a new version is found —
+  // then the renderer's UpdateNotifier listener shows a toast.
+  try {
+    const { scheduleStartupCheck } = await import('./services/updater')
+    scheduleStartupCheck(() => mainWindow)
+  } catch (e) {
+    console.warn('[startup] updater schedule failed:', (e as Error).message)
+  }
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
+}).catch((e) => {
+  // Startup threw before completing. A half-initialized primary that lingers
+  // would hold the single-instance lock (so relaunch can't get a fresh
+  // process) and could get a dead window painted onto it by second-instance.
+  // Quit to release the lock — the next launch then starts from a clean slate.
+  console.error('[startup] fatal error — quitting so the next launch starts clean:', e)
+  app.quit()
 })
 
 app.on('window-all-closed', () => {
@@ -278,11 +343,18 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', async () => {
+  // Force-exit watchdog: a hung tool promise or an unresponsive MCP stdio child
+  // can keep the event loop alive so graceful quit never completes — the process
+  // then lingers as a zombie and blocks the next launch. unref() keeps the
+  // normal fast path instant; the timer only bites when something else is still
+  // holding the loop open.
+  setTimeout(() => app.exit(0), 3000).unref()
+  // Remove the tray icon first so it disappears even if MCP cleanup stalls.
+  const { destroyTray } = await import('./services/tray')
+  destroyTray()
   // Shut down any spawned MCP subprocesses cleanly
   const { mcpManager } = await import('./services/mcp')
   await mcpManager.disconnectAll().catch(() => {})
-  const { destroyTray } = await import('./services/tray')
-  destroyTray()
 })
 
 export function getMainWindow(): BrowserWindow | null {

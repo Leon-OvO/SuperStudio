@@ -45,23 +45,31 @@ function isTransientNetworkError(err: unknown): boolean {
   )
 }
 
-export async function generateImage(params: GenerateImageParams): Promise<GenerateImageResult> {
-  const { prompt, n = 1, size = '1024x1024', quality, settings, referenceImagePaths, maskPath, noFallback } = params
+/**
+ * Issue ONE image request (either /v1/images/generations or /v1/images/edits)
+ * and persist every returned image to disk. `requestedN` is the value sent in
+ * the request body — `/v1/images/edits` ignores it and always returns 1, but
+ * some text-to-image providers honor it. The outer `generateImage` is
+ * responsible for compensating when fewer images come back than requested.
+ */
+async function doOneRequest(
+  params: GenerateImageParams,
+  requestedN: number
+): Promise<GenerateImageResult> {
+  const { prompt, size = '1024x1024', quality, settings, referenceImagePaths, maskPath, noFallback } = params
   const providers = getProviders()
   const provider = providers.find(p => p.id === settings.defaultImageProviderId)
   if (!provider) throw new Error('Image provider not configured')
 
-  // Strip trailing /v1 so users can configure baseUrl with or without it
   const baseUrl = (provider.baseUrl || 'https://api.openai.com').replace(/\/v1\/?$/, '')
   const modelName = settings.defaultImageModel || ''
-  const isDallE = modelName.startsWith('dall-e')
 
   let res: Response | undefined
   let referencesIgnored = false
 
   if (referenceImagePaths?.length) {
-    // Build a fresh FormData per attempt — undici consumes the body stream on
-    // failed requests, so reusing a single FormData across retries can hang.
+    // /v1/images/edits — OpenAI spec only accepts n=1, so the outer loop is
+    // what produces multiple variants.
     const buildForm = () => {
       const fd = new FormData()
       fd.append('model', modelName)
@@ -90,7 +98,6 @@ export async function generateImage(params: GenerateImageParams): Promise<Genera
     console.log('[image] edits request', `${baseUrl}/v1/images/edits`,
       `prompt=${prompt.slice(0, 60)} size=${size} refs=${referenceImagePaths.length}${maskPath ? ' +mask' : ''} noFallback=${!!noFallback}`)
 
-    // Try once + one retry on transient network error (ECONNRESET etc.)
     const MAX_ATTEMPTS = 2
     let editsOk = false
     let lastNetworkErr: Error | null = null
@@ -114,7 +121,6 @@ export async function generateImage(params: GenerateImageParams): Promise<Genera
         lastHttpStatus = res.status
         try { lastHttpBody = (await res.text()).slice(0, 400) } catch { /* ignore */ }
         console.warn('[image] edits HTTP', res.status, lastHttpBody.slice(0, 200))
-        // Server-side errors aren't retryable in a useful way; stop here
         break
       } catch (networkErr) {
         lastNetworkErr = networkErr as Error
@@ -135,7 +141,7 @@ export async function generateImage(params: GenerateImageParams): Promise<Genera
           `请稍后重试，或检查图片代理是否支持编辑功能。`
         )
       }
-      // Legacy fallback path (chat reference-image flow): degrade to text-to-image
+      // Legacy fallback (chat reference-image flow): degrade to text-to-image
       // and let the UI inform the user via `referencesIgnored`.
       console.warn('[image] edits failed — falling back to text-to-image (legacy chat flow)')
       referencesIgnored = true
@@ -146,11 +152,13 @@ export async function generateImage(params: GenerateImageParams): Promise<Genera
       })
     }
   } else {
-    // Text-to-image: standard JSON body → /v1/images/generations
-    const body: Record<string, unknown> = { model: modelName, prompt, size }
-    body.n = isDallE ? n : 1
+    // Text-to-image: ask the provider for `requestedN` images in one go.
+    // Providers that don't honor `n` will simply return 1; the outer
+    // generateImage loop will then top up with extra single-image requests.
+    const body: Record<string, unknown> = { model: modelName, prompt, size, n: requestedN }
     if (quality) body.quality = quality
-    console.log('[image] generate request', `${baseUrl}/v1/images/generations`, `prompt=${prompt.slice(0, 60)} size=${size}`)
+    console.log('[image] generate request', `${baseUrl}/v1/images/generations`,
+      `prompt=${prompt.slice(0, 60)} size=${size} n=${requestedN}`)
     res = await fetch(`${baseUrl}/v1/images/generations`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${provider.apiKey}` },
@@ -192,4 +200,24 @@ export async function generateImage(params: GenerateImageParams): Promise<Genera
     images.push({ path: filePath, url: item.url })
   }
   return { images, referencesIgnored }
+}
+
+export async function generateImage(params: GenerateImageParams): Promise<GenerateImageResult> {
+  const requestedTotal = Math.min(Math.max(params.n ?? 1, 1), 4)
+  const isEditFlow = !!params.referenceImagePaths?.length
+
+  // First attempt: edits flow always sends n=1; text flow asks for the full count
+  // (providers that honor `n` finish here in one round-trip).
+  const first = await doOneRequest(params, isEditFlow ? 1 : requestedTotal)
+  const collected: GeneratedImage[] = [...first.images]
+
+  // Top up with single-image requests if the provider ignored `n` or the edits
+  // endpoint capped at 1. Each loop iteration issues exactly one fresh request.
+  while (collected.length < requestedTotal) {
+    const more = await doOneRequest(params, 1)
+    if (more.images.length === 0) break // guard against pathological providers
+    collected.push(...more.images.slice(0, requestedTotal - collected.length))
+  }
+
+  return { images: collected, referencesIgnored: first.referencesIgnored }
 }

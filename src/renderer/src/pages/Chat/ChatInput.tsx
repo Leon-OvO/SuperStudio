@@ -231,8 +231,23 @@ export function ChatInput({
               placement="top"
             />
 
+            <Select
+              value={String(imageParams.count)}
+              onChange={v => onImageParamsChange({ ...imageParams, count: Number(v) as ImageParams['count'] })}
+              options={[
+                { value: '1', label: '×1' },
+                { value: '2', label: '×2' },
+                { value: '3', label: '×3' },
+                { value: '4', label: '×4' }
+              ]}
+              size="sm"
+              title="数量"
+              placement="top"
+            />
+
             <span className="text-muted-foreground/60 text-[10px] ml-auto">
               {computeImageSize(imageParams.resolution, imageParams.ratio)}
+              {imageParams.count > 1 ? ` · ${imageParams.count} 张` : ''}
             </span>
           </div>
         )}

@@ -14,8 +14,7 @@
 import { ipcMain } from 'electron'
 import fs from 'fs'
 import path from 'path'
-import { spawn } from 'child_process'
-import { streamText, tool } from 'ai'
+import { streamText, tool, type Tool } from 'ai'
 import { z } from 'zod'
 import { IPC } from '../../../src/shared/ipc-types'
 import type {
@@ -48,6 +47,8 @@ import {
 import { dbRun } from '../db/sqlite'
 import { writeProposalMd, writeTasksMd } from '../services/vibe-spec'
 import { getActiveSkillsForScenario, type InstalledSkill } from '../services/skills-db'
+import { buildSkillTools } from '../agent/skill-tools'
+import { runShell } from '../services/shell'
 import { computeCost } from '../services/model-pricing'
 
 /**
@@ -59,16 +60,69 @@ function buildVibeSkillsSection(): { section: string; skills: InstalledSkill[] }
   try { skills = getActiveSkillsForScenario('vibe') }
   catch (e) { console.warn('[vibe] failed to load active skills:', (e as Error).message) }
   if (!skills.length) return { section: '', skills: [] }
-  const blocks = skills.map(s => {
-    const header = `### ${s.name}${s.version ? ` (v${s.version})` : ''}`
-    const body = (s.systemPrompt || '').trim() || `(${s.description || 'no prompt provided'})`
-    return `${header}\n${body}`
-  }).join('\n\n')
-  const section =
-    `\n\n## Active Skills (user-enabled)\n` +
-    `The user has enabled the following skills for this workspace. Follow each skill's guidance ` +
-    `where it applies; they are additive on top of your base behavior.\n\n${blocks}`
-  return { section, skills }
+
+  // Legacy skills inject their full prompt; runtime skills only list name +
+  // description and load their body on demand via load_skill.
+  const legacy = skills.filter(s => !s.runtime)
+  const runtime = skills.filter(s => s.runtime)
+  const parts: string[] = []
+
+  if (legacy.length) {
+    const blocks = legacy.map(s => {
+      const header = `### ${s.name}${s.version ? ` (v${s.version})` : ''}`
+      const body = (s.systemPrompt || '').trim() || `(${s.description || 'no prompt provided'})`
+      return `${header}\n${body}`
+    }).join('\n\n')
+    parts.push(
+      `## Active Skills (user-enabled)\n` +
+      `The user has enabled the following skills for this workspace. Follow each skill's guidance ` +
+      `where it applies; they are additive on top of your base behavior.\n\n${blocks}`
+    )
+  }
+
+  if (runtime.length) {
+    const lines = runtime.map(s => `- ${s.name}: ${s.description || '(no description)'}`)
+    parts.push(
+      `## Available Skills\n` +
+      `The user has enabled the following Agent Skills — each is a self-contained bundle of ` +
+      `instructions + resources on disk. Only the name + a one-line description is shown here.\n` +
+      `When a request matches one of these skills, FIRST call \`load_skill(name)\` to load its ` +
+      `full instructions, then follow them. Use \`read_skill_file\` to read bundled reference files; ` +
+      `run any bundled scripts through \`code_bash\`.\n\n${lines.join('\n')}`
+    )
+  }
+
+  return { section: parts.length ? '\n\n' + parts.join('\n\n') : '', skills }
+}
+
+/**
+ * Progressive-disclosure tools (load_skill / read_skill_file) for the runtime
+ * skills enabled in the vibe scenario. No `bash` — vibe already exposes
+ * `code_bash`, through which bundled scripts run. Returns {} when none apply.
+ */
+function buildVibeSkillTools(
+  projectRoot: string,
+  runtimeSkills: InstalledSkill[],
+  emit: (e: Omit<VibeProgressEvent, 'projectPath'>) => void,
+  abortSignal: AbortSignal
+): Record<string, Tool> {
+  if (!runtimeSkills.length) return {}
+  return buildSkillTools({
+    activeSkills: runtimeSkills,
+    cwd: projectRoot,
+    abortSignal,
+    includeBash: false,
+    hooks: {
+      onUse: (toolName, args) => {
+        const label = typeof args.name === 'string' ? args.name
+          : typeof args.path === 'string' ? args.path : ''
+        emit({ type: 'tool_use', toolName, toolArgsPreview: label })
+      },
+      onResult: (toolName, _args, _result, isError) => {
+        emit({ type: 'tool_result', toolName, toolResultPreview: isError ? '失败' : '完成', isError })
+      }
+    }
+  })
 }
 
 /**
@@ -373,30 +427,6 @@ function globToRegex(glob: string): RegExp {
     else re += c
   }
   return new RegExp('^' + re + '$')
-}
-
-function runShell(command: string, cwd: string, abortSignal: AbortSignal): Promise<{ code: number; stdout: string; stderr: string; timedOut: boolean }> {
-  return new Promise((resolve) => {
-    const isWin = process.platform === 'win32'
-    const proc = spawn(isWin ? 'cmd.exe' : '/bin/sh', isWin ? ['/c', command] : ['-c', command], {
-      cwd, env: process.env, windowsHide: true
-    })
-    let stdout = ''; let stderr = ''; let timedOut = false
-    proc.stdout.on('data', (d: Buffer) => { stdout += d.toString() })
-    proc.stderr.on('data', (d: Buffer) => { stderr += d.toString() })
-    const timeout = setTimeout(() => { timedOut = true; proc.kill('SIGKILL') }, 30_000)
-    const onAbort = () => proc.kill('SIGKILL')
-    abortSignal.addEventListener('abort', onAbort, { once: true })
-    proc.on('exit', (code) => {
-      clearTimeout(timeout)
-      abortSignal.removeEventListener('abort', onAbort)
-      resolve({ code: code ?? -1, stdout: stdout.slice(0, 50_000), stderr: stderr.slice(0, 50_000), timedOut })
-    })
-    proc.on('error', (err) => {
-      clearTimeout(timeout)
-      resolve({ code: -1, stdout, stderr: err.message, timedOut })
-    })
-  })
 }
 
 // ---------------------------------------------------------------------------
@@ -857,27 +887,34 @@ export function vibeHandlers(): void {
     ;(async () => {
       try {
         const model = createLLMClient(modelInfo.providerId, modelInfo.modelId)
+        const toolEmit = (e: Omit<VibeProgressEvent, 'projectPath'>) => {
+          emit(e)
+          if (e.type === 'tool_use') {
+            appendMessage({
+              requestId, role: 'tool',
+              content: e.toolArgsPreview ?? '',
+              toolName: e.toolName, isError: false
+            })
+          } else if (e.type === 'tool_result') {
+            appendMessage({
+              requestId, role: 'tool',
+              content: e.toolResultPreview ?? '',
+              toolName: e.toolName, isError: !!e.isError
+            })
+          }
+        }
         const rawTools = opts.buildTools
-          ? opts.buildTools(projectPath, (e) => {
-              emit(e)
-              if (e.type === 'tool_use') {
-                appendMessage({
-                  requestId, role: 'tool',
-                  content: e.toolArgsPreview ?? '',
-                  toolName: e.toolName, isError: false
-                })
-              } else if (e.type === 'tool_result') {
-                appendMessage({
-                  requestId, role: 'tool',
-                  content: e.toolResultPreview ?? '',
-                  toolName: e.toolName, isError: !!e.isError
-                })
-              }
-            }, ctl.signal)
+          ? opts.buildTools(projectPath, toolEmit, ctl.signal)
           : undefined
 
         const { section: skillsSection, skills: activeSkills } = buildVibeSkillsSection()
-        const tools = rawTools ? applyVibeSkillsFilter(rawTools, activeSkills) : undefined
+        let tools: Record<string, Tool> | undefined =
+          rawTools ? applyVibeSkillsFilter(rawTools, activeSkills) : undefined
+        // Merge progressive-disclosure skill tools when this mode has tools.
+        const runtimeSkills = activeSkills.filter(s => s.runtime)
+        if (tools && runtimeSkills.length) {
+          tools = { ...tools, ...buildVibeSkillTools(projectPath, runtimeSkills, toolEmit, ctl.signal) }
+        }
 
         const history = listMessages(requestId)
           .filter(m => m.role === 'user' || m.role === 'assistant')
@@ -1018,7 +1055,7 @@ export function vibeHandlers(): void {
     ;(async () => {
       try {
         const model = createLLMClient(modelInfo.providerId, modelInfo.modelId)
-        const rawTools = buildReadOnlyVibeTools(projectPath, (e) => {
+        const toolEmit = (e: Omit<VibeProgressEvent, 'projectPath'>) => {
           emit(e)
           if (e.type === 'tool_use') {
             appendMessage({
@@ -1033,10 +1070,15 @@ export function vibeHandlers(): void {
               toolName: e.toolName, isError: !!e.isError
             })
           }
-        }, ctl.signal)
+        }
+        const rawTools = buildReadOnlyVibeTools(projectPath, toolEmit, ctl.signal)
 
         const { section: skillsSection, skills: activeSkills } = buildVibeSkillsSection()
-        const tools = applyVibeSkillsFilter(rawTools, activeSkills)
+        let tools: Record<string, Tool> = applyVibeSkillsFilter(rawTools, activeSkills)
+        const runtimeSkills = activeSkills.filter(s => s.runtime)
+        if (runtimeSkills.length) {
+          tools = { ...tools, ...buildVibeSkillTools(projectPath, runtimeSkills, toolEmit, ctl.signal) }
+        }
 
         // Reuse existing conversation history as context
         const history = listMessages(requestId)
@@ -1340,7 +1382,7 @@ export function vibeHandlers(): void {
             content: `开始任务：${nextTask.title}`
           })
 
-          const rawTools = buildVibeTools(projectPath, (e) => {
+          const taskToolEmit = (e: Omit<VibeProgressEvent, 'projectPath'>) => {
             emit({ ...e, taskId: nextTask.id })
             // Persist tool events to message log (skip the raw text streams — those go to vibe_messages assistant role below)
             if (e.type === 'tool_use') {
@@ -1356,10 +1398,15 @@ export function vibeHandlers(): void {
                 toolName: e.toolName, isError: !!e.isError
               })
             }
-          }, ctl.signal)
+          }
+          const rawTools = buildVibeTools(projectPath, taskToolEmit, ctl.signal)
 
           const { section: applySkillsSection, skills: applySkills } = buildVibeSkillsSection()
-          const tools = applyVibeSkillsFilter(rawTools, applySkills)
+          let tools: Record<string, Tool> = applyVibeSkillsFilter(rawTools, applySkills)
+          const applyRuntimeSkills = applySkills.filter(s => s.runtime)
+          if (applyRuntimeSkills.length) {
+            tools = { ...tools, ...buildVibeSkillTools(projectPath, applyRuntimeSkills, taskToolEmit, ctl.signal) }
+          }
 
           const otherTasks = allTasks.filter(t => t.id !== nextTask.id)
           let accumulated = ''

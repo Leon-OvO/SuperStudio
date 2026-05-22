@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Sparkles, Download, Trash2, ToggleLeft, ToggleRight, RefreshCw, Plus, Link2,
   MessageSquare, Code2, Video, Loader2, ExternalLink, X, AlertCircle, Globe, Package,
-  Search, ChevronLeft, ChevronRight, Shield
+  Search, ChevronLeft, ChevronRight, ChevronDown, Shield, FileText
 } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { toast } from '../../components/ui/Toast'
@@ -166,6 +166,39 @@ export function SkillsPage() {
     }
   }
 
+  // Re-install a hollow legacy SkillHub skill as a real runtime skill.
+  // SkillHub uses the slug as the id, so the slug is recoverable from the id —
+  // passing `slug` routes SKILLS_INSTALL down the bundle-download path.
+  async function upgradeToRuntime(s: InstalledSkillInfo) {
+    if (!s.sourceUrl) {
+      toast.error('无法升级：缺少来源信息')
+      return
+    }
+    setInstalling(s.id)
+    try {
+      await window.api.installSkill({
+        sourceUrl: s.sourceUrl,
+        entry: {
+          id: s.id,
+          slug: s.id,
+          name: s.name,
+          description: s.description,
+          icon: s.icon,
+          version: s.version,
+          author: s.author,
+          homepage: s.homepage,
+          suggestedScenarios: s.suggestedScenarios
+        }
+      })
+      toast.success(`已升级「${s.name}」为运行时技能`)
+      refreshInstalled()
+    } catch (e) {
+      toast.error('升级失败：' + (e as Error).message)
+    } finally {
+      setInstalling(null)
+    }
+  }
+
   // ---- sources actions ----
 
   async function addSource() {
@@ -257,9 +290,12 @@ export function SkillsPage() {
         {tab === 'installed' && (
           <InstalledTab
             list={installed}
+            installing={installing}
             onToggle={toggleEnabled}
             onToggleScenario={toggleScenario}
             onUninstall={uninstall}
+            onUpgrade={upgradeToRuntime}
+            onRefresh={refreshInstalled}
           />
         )}
         {tab === 'browse' && (
@@ -298,12 +334,15 @@ export function SkillsPage() {
 // ============================================================================
 
 function InstalledTab({
-  list, onToggle, onToggleScenario, onUninstall
+  list, installing, onToggle, onToggleScenario, onUninstall, onUpgrade, onRefresh
 }: {
   list: InstalledSkillInfo[]
+  installing: string | null
   onToggle: (s: InstalledSkillInfo) => void
   onToggleScenario: (s: InstalledSkillInfo, scn: SkillScenario) => void
   onUninstall: (s: InstalledSkillInfo) => void
+  onUpgrade: (s: InstalledSkillInfo) => void
+  onRefresh: () => void
 }) {
   const [page, setPage] = useState(1)
   const [keyword, setKeyword] = useState('')
@@ -403,9 +442,12 @@ function InstalledTab({
               <SkillCard
                 key={s.id}
                 skill={s}
+                installing={installing === s.id}
                 onToggle={() => onToggle(s)}
                 onToggleScenario={(scn) => onToggleScenario(s, scn)}
                 onUninstall={() => onUninstall(s)}
+                onUpgrade={() => onUpgrade(s)}
+                onRefresh={onRefresh}
               />
             ))}
           </div>
@@ -424,18 +466,25 @@ function InstalledTab({
 }
 
 function SkillCard({
-  skill, onToggle, onToggleScenario, onUninstall
+  skill, installing, onToggle, onToggleScenario, onUninstall, onUpgrade, onRefresh
 }: {
   skill: InstalledSkillInfo
+  installing: boolean
   onToggle: () => void
   onToggleScenario: (scn: SkillScenario) => void
   onUninstall: () => void
+  onUpgrade: () => void
+  onRefresh: () => void
 }) {
   const [expanded, setExpanded] = useState(false)
   // Built-in skills are mandatory: the app relies on them (e.g. opsx workflow).
   // We hide the disable toggle for them entirely and show a 始终启用 badge so
   // it's clear they're always active.
   const canDisable = !skill.builtin
+  // A hollow legacy SkillHub skill — installed before the runtime rewrite, so
+  // its body is just the seeded description. Offer a one-click re-download
+  // into a real runtime bundle (SkillHub uses slug as id → slug recoverable).
+  const canUpgrade = !skill.runtime && !skill.builtin && !!skill.sourceUrl && /skillhub/i.test(skill.sourceUrl)
   return (
     <div
       className={cn(
@@ -455,6 +504,14 @@ function SkillCard({
                 title="内置技能，App 的部分功能依赖它，因此不可禁用"
               >
                 <Shield size={9} /> 内置
+              </span>
+            )}
+            {skill.runtime && (
+              <span
+                className="text-[9px] uppercase font-semibold px-1.5 py-px rounded bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
+                title="运行时技能：完整 SKILL.md 与资源文件已下载到本地，由模型按需加载"
+              >
+                运行时
               </span>
             )}
             <span className="text-[10px] text-muted-foreground/60 font-mono">v{skill.version}</span>
@@ -530,6 +587,17 @@ function SkillCard({
           </a>
         )}
         <div className="flex-1" />
+        {canUpgrade && (
+          <button
+            onClick={onUpgrade}
+            disabled={installing}
+            className="text-primary hover:opacity-80 inline-flex items-center gap-1 transition-colors disabled:opacity-50"
+            title="重新从 SkillHub 下载完整 SKILL.md 与资源文件"
+          >
+            {installing ? <Loader2 size={10} className="animate-spin" /> : <RefreshCw size={10} />}
+            升级为运行时
+          </button>
+        )}
         {!skill.builtin && (
           <button
             onClick={onUninstall}
@@ -542,44 +610,163 @@ function SkillCard({
 
       {expanded && (
         <div className="mt-3 pt-3 border-t border-border/60 space-y-3 text-xs">
-          <div>
-            <div className="text-[10px] uppercase text-muted-foreground/60 font-semibold mb-1">系统提示词</div>
-            <pre className="whitespace-pre-wrap font-mono text-[11px] bg-muted/30 rounded-md p-2 max-h-40 overflow-y-auto scrollbar-prominent">
-              {skill.systemPrompt || '(空)'}
-            </pre>
+          {skill.runtime
+            ? <RuntimeSkillDetails skill={skill} onRefresh={onRefresh} />
+            : <LegacySkillDetails skill={skill} />}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** Expanded-card body for legacy (runtime=0) prompt-only skills — unchanged. */
+function LegacySkillDetails({ skill }: { skill: InstalledSkillInfo }) {
+  return (
+    <>
+      <div>
+        <div className="text-[10px] uppercase text-muted-foreground/60 font-semibold mb-1">系统提示词</div>
+        <pre className="whitespace-pre-wrap font-mono text-[11px] bg-muted/30 rounded-md p-2 max-h-40 overflow-y-auto scrollbar-prominent">
+          {skill.systemPrompt || '(空)'}
+        </pre>
+      </div>
+      <div>
+        <div className="text-[10px] uppercase text-muted-foreground/60 font-semibold mb-1">
+          工具白名单 {skill.toolWhitelist === null && <span className="font-normal normal-case text-muted-foreground/50">(不限制)</span>}
+        </div>
+        {skill.toolWhitelist === null ? (
+          <div className="text-muted-foreground/70 italic">允许使用全部工具</div>
+        ) : skill.toolWhitelist.length === 0 ? (
+          <div className="text-muted-foreground/70 italic">禁用所有工具（纯对话）</div>
+        ) : (
+          <div className="flex flex-wrap gap-1">
+            {skill.toolWhitelist.map(t => (
+              <span key={t} className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-muted/50">{t}</span>
+            ))}
           </div>
-          <div>
-            <div className="text-[10px] uppercase text-muted-foreground/60 font-semibold mb-1">
-              工具白名单 {skill.toolWhitelist === null && <span className="font-normal normal-case text-muted-foreground/50">(不限制)</span>}
-            </div>
-            {skill.toolWhitelist === null ? (
-              <div className="text-muted-foreground/70 italic">允许使用全部工具</div>
-            ) : skill.toolWhitelist.length === 0 ? (
-              <div className="text-muted-foreground/70 italic">禁用所有工具（纯对话）</div>
-            ) : (
-              <div className="flex flex-wrap gap-1">
-                {skill.toolWhitelist.map(t => (
-                  <span key={t} className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-muted/50">{t}</span>
-                ))}
+        )}
+      </div>
+      {skill.starterPrompts.length > 0 && (
+        <div>
+          <div className="text-[10px] uppercase text-muted-foreground/60 font-semibold mb-1">起始模板</div>
+          <div className="space-y-1.5">
+            {skill.starterPrompts.map((p, i) => (
+              <div key={i} className="rounded-md bg-muted/30 p-2">
+                <div className="font-medium text-[11px] mb-0.5">{p.label}</div>
+                <div className="text-[10px] text-muted-foreground whitespace-pre-wrap line-clamp-3">{p.prompt}</div>
               </div>
-            )}
+            ))}
           </div>
-          {skill.starterPrompts.length > 0 && (
-            <div>
-              <div className="text-[10px] uppercase text-muted-foreground/60 font-semibold mb-1">起始模板</div>
-              <div className="space-y-1.5">
-                {skill.starterPrompts.map((p, i) => (
-                  <div key={i} className="rounded-md bg-muted/30 p-2">
-                    <div className="font-medium text-[11px] mb-0.5">{p.label}</div>
-                    <div className="text-[10px] text-muted-foreground whitespace-pre-wrap line-clamp-3">{p.prompt}</div>
-                  </div>
-                ))}
-              </div>
+        </div>
+      )}
+    </>
+  )
+}
+
+/**
+ * Expanded-card body for runtime (runtime=1) skills: the downloaded SKILL.md
+ * body, a per-skill allow-scripts toggle, and a browsable list of bundled
+ * resource files (clicking one previews it via readSkillFile).
+ */
+function RuntimeSkillDetails({ skill, onRefresh }: { skill: InstalledSkillInfo; onRefresh: () => void }) {
+  const [resourcesOpen, setResourcesOpen] = useState(false)
+  const [previewPath, setPreviewPath] = useState<string | null>(null)
+  const [previewContent, setPreviewContent] = useState('')
+  const [previewLoading, setPreviewLoading] = useState(false)
+
+  async function openFile(p: string) {
+    // Toggle off if the same file is clicked again.
+    if (previewPath === p) {
+      setPreviewPath(null)
+      setPreviewContent('')
+      return
+    }
+    setPreviewPath(p)
+    setPreviewContent('')
+    setPreviewLoading(true)
+    try {
+      const res = await window.api.readSkillFile({ id: skill.id, path: p }) as { content?: string; error?: string }
+      setPreviewContent(res.error ? `读取失败：${res.error}` : (res.content ?? ''))
+    } catch (e) {
+      setPreviewContent('读取失败：' + (e as Error).message)
+    } finally {
+      setPreviewLoading(false)
+    }
+  }
+
+  async function toggleScripts() {
+    await window.api.setSkillAllowScripts({ id: skill.id, allow: !skill.allowScripts })
+    onRefresh()
+  }
+
+  return (
+    <>
+      <div>
+        <div className="text-[10px] uppercase text-muted-foreground/60 font-semibold mb-1">SKILL.md</div>
+        <pre className="whitespace-pre-wrap font-mono text-[11px] bg-muted/30 rounded-md p-2 max-h-60 overflow-y-auto scrollbar-prominent">
+          {skill.skillBody || '(空)'}
+        </pre>
+      </div>
+
+      <div className="flex items-start gap-2 rounded-md bg-muted/30 p-2">
+        <button
+          onClick={toggleScripts}
+          className={cn(
+            'p-0.5 rounded shrink-0 transition-colors',
+            skill.allowScripts ? 'text-primary hover:bg-primary/10' : 'text-muted-foreground hover:bg-accent'
+          )}
+          title={skill.allowScripts ? '点击禁止脚本' : '点击允许脚本'}
+        >
+          {skill.allowScripts ? <ToggleRight size={20} /> : <ToggleLeft size={20} />}
+        </button>
+        <div className="flex-1 min-w-0">
+          <div className="font-medium text-[11px]">允许运行脚本</div>
+          <div className="text-[10px] text-muted-foreground/70 leading-relaxed">
+            允许此技能运行其自带脚本（通过 bash 执行命令）。关闭后模型仍可加载技能说明，但不会执行其脚本。
+          </div>
+        </div>
+      </div>
+
+      {skill.resourceFiles.length > 0 && (
+        <div>
+          <button
+            onClick={() => setResourcesOpen(o => !o)}
+            className="inline-flex items-center gap-1 text-[10px] uppercase text-muted-foreground/60 font-semibold mb-1 hover:text-foreground transition-colors"
+          >
+            {resourcesOpen ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+            资源文件 ({skill.resourceFiles.length})
+          </button>
+          {resourcesOpen && (
+            <div className="space-y-1">
+              {skill.resourceFiles.map(f => (
+                <div key={f}>
+                  <button
+                    onClick={() => openFile(f)}
+                    className={cn(
+                      'w-full text-left font-mono text-[10px] px-1.5 py-1 rounded flex items-center gap-1.5 transition-colors',
+                      previewPath === f ? 'bg-accent' : 'hover:bg-accent'
+                    )}
+                  >
+                    <FileText size={10} className="shrink-0 text-muted-foreground/60" />
+                    <span className="truncate">{f}</span>
+                  </button>
+                  {previewPath === f && (
+                    <pre className="whitespace-pre-wrap font-mono text-[10px] bg-muted/30 rounded-md p-2 mt-1 max-h-48 overflow-y-auto scrollbar-prominent">
+                      {previewLoading ? '加载中…' : previewContent}
+                    </pre>
+                  )}
+                </div>
+              ))}
             </div>
           )}
         </div>
       )}
-    </div>
+
+      {skill.installPath && (
+        <div className="text-[10px] text-muted-foreground/50 font-mono truncate" title={skill.installPath}>
+          安装位置：{skill.installPath}
+        </div>
+      )}
+    </>
   )
 }
 

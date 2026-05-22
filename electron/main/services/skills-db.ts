@@ -1,4 +1,5 @@
 import { dbAll, dbGet, dbRun } from '../db/sqlite'
+import { removeSkillDir } from './skill-files'
 
 // ============================================================================
 // Types — mirrors src/shared/ipc-types Skill* types but kept main-side too
@@ -31,6 +32,20 @@ export interface InstalledSkill extends SkillManifest {
   installedAt: number
   /** True if shipped with the app — cannot be uninstalled, only disabled. */
   builtin: boolean
+  // --- Runtime-skill fields (runtime=true) ---
+  /** True = downloaded SKILL.md bundle, loaded progressively. False = legacy
+   *  prompt-only skill whose systemPrompt is always injected. */
+  runtime: boolean
+  /** SkillHub slug — canonical id used to re-fetch / upgrade. */
+  slug: string | null
+  /** Absolute dir on disk holding the downloaded bundle. */
+  installPath: string | null
+  /** Cached SKILL.md body (frontmatter stripped). Loaded on demand by load_skill. */
+  skillBody: string
+  /** Bundle-relative paths of all downloaded files. */
+  resourceFiles: string[]
+  /** Whether this skill is allowed to run its bundled scripts. */
+  allowScripts: boolean
 }
 
 export interface SkillSource {
@@ -61,6 +76,12 @@ interface SkillRow {
   source_url: string | null
   installed_at: number
   builtin: number
+  runtime: number
+  slug: string | null
+  install_path: string | null
+  skill_body: string | null
+  resource_files: string | null
+  allow_scripts: number
 }
 
 function rowToSkill(r: SkillRow): InstalledSkill {
@@ -72,6 +93,10 @@ function rowToSkill(r: SkillRow): InstalledSkill {
   try { starterPrompts = JSON.parse(r.starter_prompts) } catch { /* keep empty */ }
   let enabledScenarios: SkillScenario[] = []
   try { enabledScenarios = JSON.parse(r.enabled_scenarios) } catch { /* keep empty */ }
+  let resourceFiles: string[] = []
+  if (r.resource_files) {
+    try { resourceFiles = JSON.parse(r.resource_files) } catch { /* keep empty */ }
+  }
   return {
     id: r.id,
     name: r.name,
@@ -90,7 +115,13 @@ function rowToSkill(r: SkillRow): InstalledSkill {
     builtin: !!r.builtin,
     // No suggested-scenario column at row level — the registry tells us this
     // at install time; we mirror it into enabledScenarios as the default.
-    suggestedScenarios: enabledScenarios
+    suggestedScenarios: enabledScenarios,
+    runtime: !!r.runtime,
+    slug: r.slug,
+    installPath: r.install_path,
+    skillBody: r.skill_body ?? '',
+    resourceFiles,
+    allowScripts: r.allow_scripts == null ? true : !!r.allow_scripts
   }
 }
 
@@ -150,6 +181,60 @@ export function installSkill(manifest: SkillManifest, sourceUrl: string, builtin
   return after
 }
 
+export interface RuntimeSkillParams {
+  id: string
+  slug: string
+  name: string
+  description: string
+  icon: string
+  version: string
+  author: string
+  homepage?: string
+  /** SKILL.md body with frontmatter stripped. */
+  skillBody: string
+  /** Bundle-relative file paths. */
+  resourceFiles: string[]
+  /** Absolute install dir on disk. */
+  installPath: string
+  sourceUrl: string
+  suggestedScenarios: SkillScenario[]
+}
+
+/**
+ * Install or upgrade a runtime skill (downloaded SKILL.md bundle). Like
+ * installSkill it upserts and preserves the user's enable / scenario /
+ * allow-scripts choices on upgrade.
+ */
+export function installRuntimeSkill(p: RuntimeSkillParams): InstalledSkill {
+  const existing = getInstalledSkill(p.id)
+  const enabled = existing ? (existing.enabled ? 1 : 0) : 1
+  const enabledScenarios = existing
+    ? JSON.stringify(existing.enabledScenarios)
+    : JSON.stringify(p.suggestedScenarios)
+  const installedAt = existing ? existing.installedAt : Date.now()
+  const builtinFlag = existing?.builtin ? 1 : 0
+  // First install defaults allow_scripts ON (user opted into script execution);
+  // upgrades preserve whatever the user set.
+  const allowScripts = existing ? (existing.allowScripts ? 1 : 0) : 1
+  dbRun(
+    `INSERT OR REPLACE INTO skills
+       (id, name, description, icon, version, author, system_prompt,
+        tool_whitelist, starter_prompts, homepage, enabled, enabled_scenarios,
+        source_url, installed_at, builtin,
+        runtime, slug, install_path, skill_body, resource_files, allow_scripts)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      p.id, p.name, p.description, p.icon, p.version, p.author, '',
+      null, '[]', p.homepage ?? null, enabled, enabledScenarios,
+      p.sourceUrl, installedAt, builtinFlag,
+      1, p.slug, p.installPath, p.skillBody, JSON.stringify(p.resourceFiles), allowScripts
+    ]
+  )
+  const after = getInstalledSkill(p.id)
+  if (!after) throw new Error(`installRuntimeSkill: row missing after insert for ${p.id}`)
+  return after
+}
+
 export function uninstallSkill(id: string): void {
   // Refuse to delete built-in skills — they're shipped with the app and the
   // UI hides the uninstall button for them, so reaching this is either a bug
@@ -157,6 +242,8 @@ export function uninstallSkill(id: string): void {
   const existing = getInstalledSkill(id)
   if (existing?.builtin) throw new Error('内置技能不可卸载，仅可禁用')
   dbRun('DELETE FROM skills WHERE id = ?', [id])
+  // Drop the on-disk bundle for runtime skills (no-op for legacy skills).
+  if (existing?.runtime) removeSkillDir(id)
 }
 
 export function setSkillEnabled(id: string, enabled: boolean): void {
@@ -173,6 +260,10 @@ export function setSkillEnabled(id: string, enabled: boolean): void {
 
 export function setSkillScenarios(id: string, scenarios: SkillScenario[]): void {
   dbRun('UPDATE skills SET enabled_scenarios = ? WHERE id = ?', [JSON.stringify(scenarios), id])
+}
+
+export function setSkillAllowScripts(id: string, allow: boolean): void {
+  dbRun('UPDATE skills SET allow_scripts = ? WHERE id = ?', [allow ? 1 : 0, id])
 }
 
 /**

@@ -4,11 +4,11 @@ import type { GalleryItem } from '../../../src/shared/ipc-types'
 import { invalidateDbCache, registerApproved } from './path-allow'
 
 interface SaveParams {
-  type: 'image' | 'video'
+  type: 'image' | 'video' | 'audio'
   filePath: string
   thumbnailPath?: string
   prompt: string
-  source: 'chat' | 'workflow'
+  source: 'chat' | 'workflow' | 'import'
   sessionId?: string
   workflowId?: string
   modelName?: string

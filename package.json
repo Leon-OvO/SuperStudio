@@ -1,6 +1,6 @@
 {
   "name": "superstudio",
-  "version": "0.2.8",
+  "version": "0.2.9",
   "description": "AI Productivity Suite - One tool for all your AI work",
   "main": "./out/main/index.js",
   "scripts": {
@@ -75,6 +75,7 @@
     "appId": "com.superstudio.app",
     "productName": "SuperStudio",
     "copyright": "Copyright © 2025 SuperStudio",
+    "npmRebuild": false,
     "publish": [
       {
         "provider": "github",

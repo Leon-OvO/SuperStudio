@@ -145,7 +145,7 @@ function resolveOutputPath(kind: 'image' | 'video' | 'audio', mime: string): str
   const baseDir = settings.dataDirectory || app.getPath('userData')
   const subdir = kind === 'image' ? 'gallery/images'
               : kind === 'video' ? 'gallery/videos'
-              : 'mcp/audio'
+              : 'gallery/audio'
   const dir = path.join(baseDir, subdir)
   fs.mkdirSync(dir, { recursive: true })
   const ext = extForMime(mime, kind === 'image' ? 'png' : kind === 'video' ? 'mp4' : 'mp3')
@@ -477,7 +477,7 @@ async function registerArtifact(
   ctx: McpCallContext
 ): Promise<McpArtifact> {
   let galleryId: number | undefined
-  if (kind === 'image' || kind === 'video') {
+  if (kind === 'image' || kind === 'video' || kind === 'audio') {
     try {
       galleryId = await saveGalleryItem({
         type: kind,

@@ -18,6 +18,7 @@ import { ToastHost } from './components/ui/Toast'
 import { LoginScreen } from './pages/Login'
 import { DataDirectorySetup } from './components/DataDirectorySetup'
 import { ChatModelSetup } from './components/ChatModelSetup'
+import { UpdateNotifier } from './components/UpdateNotifier'
 
 type PageId = 'dashboard' | 'chat' | 'workflow' | 'gallery' | 'knowledge' | 'vibe' | 'skills' | 'settings'
 
@@ -265,6 +266,7 @@ export default function App() {
       <ShortcutsHelp open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
       <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
       <ToastHost />
+      <UpdateNotifier />
     </div>
   )
 }

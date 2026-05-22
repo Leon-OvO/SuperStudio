@@ -212,6 +212,7 @@ export function ChatPage() {
     const imgParams = imageParamsMap[sessionId] || DEFAULT_IMAGE_PARAMS
     const imageSize = computeImageSize(imgParams.resolution, imgParams.ratio)
     const imageQuality = imgParams.quality
+    const imageCount = imgParams.count
     await window.api.runAgent(
       sessionId,
       text,
@@ -220,7 +221,8 @@ export function ChatPage() {
         ...(override ? { providerId: override.providerId, model: override.model } : {}),
         mountedSpaceIds: mountedSpaceIds.length ? mountedSpaceIds : undefined,
         imageSize,
-        imageQuality
+        imageQuality,
+        imageCount
       }
     )
   }
@@ -263,9 +265,13 @@ export function ChatPage() {
   }
 
   async function handleStop() {
-    if (activeSessionId) {
-      await window.api.stopAgent(activeSessionId)
-    }
+    if (!activeSessionId) return
+    // Unblock the UI immediately — the engine may still be stuck awaiting a
+    // hung tool call, in which case no AGENT_DONE/AGENT_ERROR would ever
+    // arrive to clear isRunning. The engine discards its (now stale) result.
+    setRunning(false)
+    clearSteps()
+    await window.api.stopAgent(activeSessionId)
   }
 
   /** Delete a single message (both DB + store). No cascade. */

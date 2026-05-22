@@ -16,7 +16,8 @@ export function agentHandlers(): void {
       overrideModel: overrides?.model,
       mountedSpaceIds: overrides?.mountedSpaceIds,
       imageSize: overrides?.imageSize,
-      imageQuality: overrides?.imageQuality
+      imageQuality: overrides?.imageQuality,
+      imageCount: overrides?.imageCount
     }, win).catch(err => {
       console.error('[IPC] runAgent crashed', err)
       win.webContents.send(IPC.AGENT_ERROR, { sessionId, error: (err as Error)?.message || String(err) })

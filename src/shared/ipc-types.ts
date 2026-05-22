@@ -54,6 +54,7 @@ export const IPC = {
   GALLERY_DELETE: 'gallery:delete',
   GALLERY_BATCH_DELETE: 'gallery:batch-delete',
   GALLERY_BATCH_SAVE: 'gallery:batch-save',
+  GALLERY_IMPORT: 'gallery:import',
 
   // Knowledge base
   KB_SPACES_LIST: 'kb:spaces-list',
@@ -77,6 +78,11 @@ export const IPC = {
 
   // App-level (version)
   APP_VERSION: 'app:version',
+
+  // Updater (Gitee-backed manual + startup version check)
+  UPDATER_CHECK: 'updater:check',           // renderer → main (manual button)
+  UPDATER_OPEN_RELEASE: 'updater:open',     // renderer → main (open Gitee release page in browser)
+  UPDATER_AVAILABLE: 'updater:available',   // main → renderer (event — fires only when remote > current)
 
   // System integration — OS-level settings (auto-launch + Explorer context menu)
   APP_SET_AUTO_LAUNCH: 'app:set-auto-launch',
@@ -179,6 +185,8 @@ export const IPC = {
   SKILLS_SOURCES_DELETE: 'skills:sources-delete',
   SKILLS_SOURCES_SET_ENABLED: 'skills:sources-set-enabled',
   SKILLS_BROWSE: 'skills:browse',
+  SKILLS_SET_ALLOW_SCRIPTS: 'skills:set-allow-scripts',
+  SKILLS_READ_FILE: 'skills:read-file',
 
   // Terminal (PTY-backed shell in Vibe page)
   TERMINAL_CREATE: 'terminal:create',
@@ -212,11 +220,11 @@ export interface AgentProgressEvent {
 // Gallery item
 export interface GalleryItem {
   id: number
-  type: 'image' | 'video'
+  type: 'image' | 'video' | 'audio'
   filePath: string
   thumbnailPath?: string
   prompt: string
-  source: 'chat' | 'workflow'
+  source: 'chat' | 'workflow' | 'import'
   sessionId?: string
   workflowId?: string
   modelName?: string
@@ -462,6 +470,19 @@ export interface InstalledSkillInfo extends SkillManifestInfo {
   installedAt: number
   /** True for skills that ship with the app — UI hides the uninstall action. */
   builtin: boolean
+  /** True = downloaded SKILL.md bundle, loaded progressively. False = legacy
+   *  prompt-only skill whose systemPrompt is always injected. */
+  runtime: boolean
+  /** SkillHub slug — canonical id used to re-fetch / upgrade. */
+  slug: string | null
+  /** Absolute dir on disk holding the downloaded bundle. */
+  installPath: string | null
+  /** Cached SKILL.md body (frontmatter stripped). */
+  skillBody: string
+  /** Bundle-relative paths of all downloaded files. */
+  resourceFiles: string[]
+  /** Whether this skill is allowed to run its bundled scripts. */
+  allowScripts: boolean
 }
 
 export interface SkillSourceInfo {
@@ -483,6 +504,8 @@ export interface SkillRegistryEntryInfo {
   suggestedScenarios?: SkillScenario[]
   manifestUrl?: string
   manifest?: SkillManifestInfo
+  /** SkillHub slug — present → install as a runtime skill (download bundle). */
+  slug?: string
 }
 
 export interface FetchedRegistryInfo {

@@ -7,12 +7,14 @@ export interface ImageParams {
   resolution: '1K' | '2K' | '4K'
   quality: 'standard' | 'hd'
   ratio: string
+  count: 1 | 2 | 3 | 4
 }
 
 export const DEFAULT_IMAGE_PARAMS: ImageParams = {
   resolution: '1K',
   quality: 'standard',
   ratio: '1:1',
+  count: 1,
 }
 
 export const IMAGE_RATIOS = [

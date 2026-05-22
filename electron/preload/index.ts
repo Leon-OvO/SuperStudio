@@ -104,7 +104,7 @@ const api = {
     sessionId: string,
     message: string,
     attachments?: unknown[],
-    overrides?: { providerId?: string; model?: string; mountedSpaceIds?: string[] }
+    overrides?: { providerId?: string; model?: string; mountedSpaceIds?: string[]; imageSize?: string; imageQuality?: string; imageCount?: number }
   ) => ipcRenderer.invoke(IPC.AGENT_RUN, sessionId, message, attachments, overrides),
   stopAgent: (sessionId: string) => ipcRenderer.invoke(IPC.AGENT_STOP, sessionId),
   onAgentProgress: (cb: (event: unknown) => void) => {
@@ -159,6 +159,11 @@ const api = {
   deleteGalleryItem: (id: number) => ipcRenderer.invoke(IPC.GALLERY_DELETE, id),
   batchDeleteGallery: (ids: number[]) => ipcRenderer.invoke(IPC.GALLERY_BATCH_DELETE, ids),
   batchSaveGallery: (ids: number[]) => ipcRenderer.invoke(IPC.GALLERY_BATCH_SAVE, ids),
+  importGallery: () => ipcRenderer.invoke(IPC.GALLERY_IMPORT) as Promise<{
+    canceled: boolean
+    imported: number
+    failures: string[]
+  }>,
 
   // --- Knowledge Base ---
   listSpaces: () => ipcRenderer.invoke(IPC.KB_SPACES_LIST),
@@ -190,6 +195,23 @@ const api = {
 
   // --- App version ---
   appVersion: () => ipcRenderer.invoke(IPC.APP_VERSION),
+
+  // --- Updater (Gitee-backed manual check; toast on startup if outdated) ---
+  checkForUpdate: () => ipcRenderer.invoke(IPC.UPDATER_CHECK) as Promise<{
+    hasUpdate: boolean
+    currentVersion: string
+    remoteVersion: string | null
+    remoteName: string | null
+    body: string | null
+    releaseUrl: string
+    error?: string
+  }>,
+  openReleasePage: (url?: string) => ipcRenderer.send(IPC.UPDATER_OPEN_RELEASE, url),
+  onUpdateAvailable: (cb: (info: unknown) => void) => {
+    const listener = (_e: unknown, info: unknown) => cb(info)
+    ipcRenderer.on(IPC.UPDATER_AVAILABLE, listener)
+    return () => ipcRenderer.removeListener(IPC.UPDATER_AVAILABLE, listener)
+  },
 
   // --- System integration (auto-launch + Explorer right-click menu) ---
   setAutoLaunch: (enabled: boolean) => ipcRenderer.invoke(IPC.APP_SET_AUTO_LAUNCH, enabled) as Promise<{ ok: boolean; error?: string }>,
@@ -242,6 +264,10 @@ const api = {
   setSkillEnabled: (args: { id: string; enabled: boolean }) => ipcRenderer.invoke(IPC.SKILLS_SET_ENABLED, args),
   setSkillScenarios: (args: { id: string; scenarios: ('chat' | 'vibe' | 'video')[] }) =>
     ipcRenderer.invoke(IPC.SKILLS_SET_SCENARIOS, args),
+  setSkillAllowScripts: (args: { id: string; allow: boolean }) =>
+    ipcRenderer.invoke(IPC.SKILLS_SET_ALLOW_SCRIPTS, args),
+  readSkillFile: (args: { id: string; path: string }) =>
+    ipcRenderer.invoke(IPC.SKILLS_READ_FILE, args),
   listSkillSources: () => ipcRenderer.invoke(IPC.SKILLS_SOURCES_LIST),
   addSkillSource: (args: { url: string; name: string }) => ipcRenderer.invoke(IPC.SKILLS_SOURCES_ADD, args),
   deleteSkillSource: (url: string) => ipcRenderer.invoke(IPC.SKILLS_SOURCES_DELETE, url),

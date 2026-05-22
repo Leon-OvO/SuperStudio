@@ -1,4 +1,4 @@
-import { streamText, tool, jsonSchema } from 'ai'
+import { streamText, tool, jsonSchema, type Tool } from 'ai'
 import { z } from 'zod'
 import { BrowserWindow } from 'electron'
 import { IPC, AgentProgressEvent } from '../../../src/shared/ipc-types'
@@ -11,11 +11,13 @@ import { searchWeb } from '../services/search'
 import { saveGalleryItem } from '../services/gallery'
 import { mcpManager, type McpTool } from '../services/mcp'
 import { getActiveSkillsForScenario, type InstalledSkill } from '../services/skills-db'
+import { buildSkillTools } from './skill-tools'
 import { notifyTaskComplete } from '../services/tray'
 import { dbRun, dbAll, dbGet } from '../db/sqlite'
 import { computeCost } from '../services/model-pricing'
 import { randomUUID } from 'crypto'
 import path from 'path'
+import fs from 'fs'
 import { app } from 'electron'
 
 interface RunParams {
@@ -27,6 +29,7 @@ interface RunParams {
   mountedSpaceIds?: string[]
   imageSize?: string
   imageQuality?: string
+  imageCount?: number
 }
 
 const runningAgents = new Map<string, AbortController>()
@@ -54,11 +57,17 @@ export async function runAgent(
   params: RunParams,
   win: BrowserWindow
 ): Promise<void> {
-  const { sessionId, message, attachments = [], overrideProviderId, overrideModel, mountedSpaceIds = [], imageSize, imageQuality } = params
+  const { sessionId, message, attachments = [], overrideProviderId, overrideModel, mountedSpaceIds = [], imageSize, imageQuality, imageCount } = params
   const runStartTime = Date.now()
   console.log('[Agent] runAgent called', { sessionId, msgLen: message.length, atts: attachments.length, overrideProviderId, overrideModel })
   const abort = new AbortController()
   runningAgents.set(sessionId, abort)
+
+  /** True once this run has been stopped or superseded by a newer run for the
+   *  same session — its results must be discarded, not pushed to the renderer
+   *  (which handleStop has already unblocked). */
+  const isStaleRun = (): boolean =>
+    abort.signal.aborted || runningAgents.get(sessionId) !== abort
 
   const settings = getSettings()
   const effectiveProviderId = overrideProviderId || settings.defaultChatProviderId
@@ -68,6 +77,7 @@ export async function runAgent(
   console.log('[Agent] resolved model', { provider: effectiveProviderId, model: effectiveModel })
 
   const emit = (event: Omit<AgentProgressEvent, 'sessionId'>) => {
+    if (isStaleRun()) return
     win.webContents.send(IPC.AGENT_PROGRESS, { ...event, sessionId })
   }
 
@@ -125,8 +135,7 @@ export async function runAgent(
     // Direct image generation mode: if the selected model is the configured image model,
     // bypass the chat completions flow and call the image API directly.
     if (effectiveModel === settings.defaultImageModel && settings.defaultImageModel) {
-      await runDirectImageGeneration({ message, sessionId, settings, emit, win, toolCallLog, providerId: effectiveProviderId, providerName: effectiveProviderName, model: effectiveModel, imageSize, imageQuality, attachments, runStartTime })
-      runningAgents.delete(sessionId)
+      await runDirectImageGeneration({ message, sessionId, settings, emit, win, toolCallLog, providerId: effectiveProviderId, providerName: effectiveProviderName, model: effectiveModel, imageSize, imageQuality, imageCount, attachments, runStartTime, isStale: isStaleRun })
       return
     }
 
@@ -216,8 +225,8 @@ export async function runAgent(
     if (mcpHasWebSearch) console.log('[Agent] builtin web_search suppressed — MCP equivalent available')
     if (mcpHasVision) console.log('[Agent] builtin vision_analyze suppressed — MCP equivalent available')
 
-    const allTools: Record<string, ReturnType<typeof tool>> = {
-        ...(mcpToolEntries as Record<string, ReturnType<typeof tool>>),
+    const allTools: Record<string, Tool> = {
+        ...(mcpToolEntries as Record<string, Tool>),
         ...(mcpHasWebSearch ? {} : {
         web_search: tool({
           description: 'Fallback generic web search (Tavily/Serper). If an MCP web_search tool is available, that one is richer and should be preferred.',
@@ -232,10 +241,10 @@ export async function runAgent(
         }),
         }),
         image_generate: tool({
-          description: 'Generate an image from a text prompt. For n and size, pass null to use defaults (1 image at 1024x1024).',
+          description: 'Generate one or more images from a text prompt. Pass null for n/size to use defaults (1 image at 1024x1024). n is clamped to 1-4.',
           parameters: z.object({
             prompt: z.string().describe('Detailed image generation prompt'),
-            n: z.number().nullable().describe('Number of images (1-4). Pass null for default 1.'),
+            n: z.number().nullable().describe('Number of images, 1-4 (clamped). Pass null for default 1.'),
             size: z.string().nullable().describe('Image size like 1024x1024. Pass null for default.')
           }),
           execute: async ({ prompt, n, size }) => {
@@ -344,9 +353,10 @@ export async function runAgent(
         // skip it (missing entries) or double-call it (duplicate entries).
       }
 
-    // Apply skill tool whitelist (union across skills; null = unrestricted)
+    // Apply skill tool whitelist (union across skills; null = unrestricted).
+    // Only legacy skills carry whitelists — runtime skills are always null.
     const allowSet = computeToolAllowSet(activeSkills)
-    const tools: Record<string, ReturnType<typeof tool>> = allowSet
+    let tools: Record<string, Tool> = allowSet
       ? Object.fromEntries(Object.entries(allTools).filter(([name]) => allowSet.has(name)))
       : allTools
     if (allowSet) {
@@ -354,12 +364,42 @@ export async function runAgent(
       if (dropped.length) console.log(`[Agent] skills filtered tools, dropped: ${dropped.join(', ')}`)
     }
 
+    // Runtime skills (downloaded SKILL.md bundles) get progressive-disclosure
+    // tools: load_skill / read_skill_file / (gated) bash. Merged AFTER the
+    // whitelist filter so they're never accidentally dropped.
+    const runtimeSkills = activeSkills.filter(s => s.runtime)
+    if (runtimeSkills.length) {
+      const includeBash = runtimeSkills.some(s => s.allowScripts)
+      const skillWorkspace = path.join(app.getPath('userData'), 'skill-workspace')
+      try { fs.mkdirSync(skillWorkspace, { recursive: true }) } catch { /* ignore */ }
+      const skillTools = buildSkillTools({
+        activeSkills: runtimeSkills,
+        cwd: skillWorkspace,
+        abortSignal: abort.signal,
+        includeBash,
+        hooks: {
+          onUse: (toolName, args) => {
+            const label = typeof args.name === 'string' ? args.name
+              : typeof args.command === 'string' ? args.command
+              : typeof args.path === 'string' ? args.path : undefined
+            emit({ stepIndex: stepIndex++, stepName: 'Skill', toolName, status: 'running', message: label })
+          },
+          onResult: (toolName, args, result, isError) => {
+            emit({ stepIndex: stepIndex - 1, stepName: 'Skill', toolName, status: isError ? 'error' : 'done' })
+            toolCallLog.push({ toolName, args, result })
+          }
+        }
+      })
+      tools = { ...tools, ...skillTools }
+      console.log(`[Agent] merged skill tools (${Object.keys(skillTools).join(', ')}) for ${runtimeSkills.length} runtime skill(s), bash=${includeBash}`)
+    }
+
     const result = streamText({
       model,
       system: systemPrompt,
       messages: await buildMessageHistory(sessionId, message, attachments),
       abortSignal: abort.signal,
-      maxSteps: 20,
+      maxSteps: 30,
       maxRetries: 5,
       onError: ({ error }) => {
         console.error('[Agent] streamText onError', error)
@@ -391,6 +431,11 @@ export async function runAgent(
       usage,
       usageRaw: JSON.stringify(usage)
     })
+
+    // Stopped or superseded mid-stream — discard the result quietly. This early
+    // return also covers the success-path AGENT_DONE / notifyTaskComplete below
+    // (no awaits between here and there can re-enter a stale state).
+    if (isStaleRun()) return
 
     if (streamErr && !fullText) {
       throw streamErr
@@ -470,7 +515,9 @@ export async function runAgent(
     })
   } catch (err: unknown) {
     console.error('[Agent] error', err)
-    if ((err as Error)?.name === 'AbortError') {
+    if (isStaleRun()) {
+      // Run was stopped/superseded — the renderer is already unblocked; stay silent.
+    } else if ((err as Error)?.name === 'AbortError') {
       win.webContents.send(IPC.AGENT_DONE, { sessionId, content: '任务已中断', cancelled: true })
     } else {
       const e = err as Error
@@ -480,7 +527,8 @@ export async function runAgent(
       win.webContents.send(IPC.AGENT_ERROR, { sessionId, error: detail })
     }
   } finally {
-    runningAgents.delete(sessionId)
+    // Only evict our own entry — a newer run for this session must survive.
+    if (runningAgents.get(sessionId) === abort) runningAgents.delete(sessionId)
   }
 }
 
@@ -616,16 +664,35 @@ function buildSystemPrompt(kbContext: string, mcpTools: McpTool[] = [], skills: 
   }
 
   if (skills.length) {
-    const skillBlocks = skills.map(s => {
-      const header = `### ${s.name}${s.version ? ` (v${s.version})` : ''}`
-      const body = (s.systemPrompt || '').trim() || `(${s.description || 'no prompt provided'})`
-      return `${header}\n${body}`
-    }).join('\n\n')
-    sections.push(
-      `## Active Skills (user-enabled)\n` +
-      `The user has enabled the following skills for chat. Follow each skill's guidance below where it applies; ` +
-      `they are additive on top of your base behavior.\n\n${skillBlocks}`
-    )
+    // Legacy skills inject their full prompt; runtime skills only list name +
+    // description and load their body on demand via load_skill.
+    const legacySkills = skills.filter(s => !s.runtime)
+    const runtimeSkills = skills.filter(s => s.runtime)
+
+    if (legacySkills.length) {
+      const skillBlocks = legacySkills.map(s => {
+        const header = `### ${s.name}${s.version ? ` (v${s.version})` : ''}`
+        const body = (s.systemPrompt || '').trim() || `(${s.description || 'no prompt provided'})`
+        return `${header}\n${body}`
+      }).join('\n\n')
+      sections.push(
+        `## Active Skills (user-enabled)\n` +
+        `The user has enabled the following skills for chat. Follow each skill's guidance below where it applies; ` +
+        `they are additive on top of your base behavior.\n\n${skillBlocks}`
+      )
+    }
+
+    if (runtimeSkills.length) {
+      const lines = runtimeSkills.map(s => `- ${s.name}: ${s.description || '(no description)'}`)
+      sections.push(
+        `## Available Skills\n` +
+        `The user has enabled the following Agent Skills — each is a self-contained bundle of ` +
+        `instructions + resources on disk. Only the name + a one-line description is shown here.\n` +
+        `When a user request matches one of these skills, FIRST call \`load_skill(name)\` to load ` +
+        `its full instructions, then follow them. Use \`read_skill_file\` to read bundled reference ` +
+        `files and \`bash\` to run bundled scripts where permitted.\n\n${lines.join('\n')}`
+      )
+    }
   }
 
   if (kbContext) {
@@ -697,20 +764,25 @@ async function runDirectImageGeneration(opts: {
   model: string
   imageSize?: string
   imageQuality?: string
+  imageCount?: number
   attachments?: Array<{ name: string; path: string; mimeType: string }>
   runStartTime: number
+  isStale: () => boolean
 }): Promise<void> {
-  const { message, sessionId, settings, emit, win, toolCallLog, providerId, providerName, model, imageSize, imageQuality, attachments, runStartTime } = opts
+  const { message, sessionId, settings, emit, win, toolCallLog, providerId, providerName, model, imageSize, imageQuality, imageCount, attachments, runStartTime, isStale } = opts
   const size = imageSize || parseSizeFromMessage(message)
+  const actualN = Math.min(Math.max(imageCount ?? 1, 1), 4)
   const referenceImagePaths = attachments?.filter(a => a.mimeType.startsWith('image/')).map(a => a.path)
   const refCount = referenceImagePaths?.length ?? 0
   emit({ stepIndex: 0, stepName: 'Image Generation', toolName: 'image_generate', status: 'running',
-    message: refCount ? `Generating image (${size}, ${refCount} reference${refCount > 1 ? 's' : ''})…` : `Generating image (${size})…` })
+    message: refCount
+      ? `Generating ${actualN} image${actualN > 1 ? 's' : ''} (${size}, ${refCount} reference${refCount > 1 ? 's' : ''})…`
+      : `Generating ${actualN} image${actualN > 1 ? 's' : ''} (${size})…` })
   try {
     // Use the provider selected in ChatHeader, not the global default image provider
     const imageSettings = { ...settings, defaultImageProviderId: providerId }
     const result = await generateImage({
-      prompt: message, n: 1, size, quality: imageQuality, settings: imageSettings,
+      prompt: message, n: actualN, size, quality: imageQuality, settings: imageSettings,
       referenceImagePaths: refCount ? referenceImagePaths : undefined
     })
     for (const img of result.images) {
@@ -721,11 +793,16 @@ async function runDirectImageGeneration(opts: {
       emit({ stepIndex: 0, stepName: 'Image Generation', toolName: 'image_generate', status: 'done',
         artifact: { type: 'image', path: img.path } })
     }
-    toolCallLog.push({ toolName: 'image_generate', args: { prompt: message, n: 1, size }, result })
+    toolCallLog.push({ toolName: 'image_generate', args: { prompt: message, n: actualN, size }, result })
 
+    const gotCount = result.images.length
+    const noun = gotCount > 1 ? `${gotCount} 张图片` : '图片'
     const replyText = result.referencesIgnored
-      ? `已为你生成图片：${message}\n\n> ⚠️ 当前 API 不支持参考图功能，已按文本提示直接生成。`
-      : `已为你生成图片：${message}`
+      ? `已为你生成${noun}：${message}\n\n> ⚠️ 当前 API 不支持参考图功能，已按文本提示直接生成。`
+      : `已为你生成${noun}：${message}`
+
+    // Run was stopped — drop the generated result quietly.
+    if (isStale()) return
 
     // Save assistant message with metadata
     const asstMsgId = randomUUID()
@@ -755,7 +832,7 @@ async function runDirectImageGeneration(opts: {
     })
   } catch (err) {
     const msg = (err as Error)?.message || String(err)
-    win.webContents.send(IPC.AGENT_ERROR, { sessionId, error: `图片生成失败：${msg}` })
+    if (!isStale()) win.webContents.send(IPC.AGENT_ERROR, { sessionId, error: `图片生成失败：${msg}` })
   }
 }
 

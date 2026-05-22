@@ -13,7 +13,14 @@ export function getDb(): Database {
 
 export async function initDb(dataDir?: string): Promise<void> {
   const baseDir = dataDir || app.getPath('userData')
-  fs.mkdirSync(baseDir, { recursive: true })
+  // mkdirSync({ recursive: true }) on an EXISTING drive root (e.g. "D:\") still
+  // throws EPERM on Windows — a Node quirk; the recursive flag only no-ops for
+  // existing non-root directories. Skip the mkdir entirely when the path
+  // already exists so users who picked a drive root as their data directory
+  // don't crash startup.
+  if (!fs.existsSync(baseDir)) {
+    fs.mkdirSync(baseDir, { recursive: true })
+  }
   dbPath = path.join(baseDir, 'superstudio.db')
   console.log('[db] using database at', dbPath)
 
@@ -220,6 +227,16 @@ function applyMigrations(): void {
   try { db.run(`ALTER TABLE vibe_messages ADD COLUMN output_tokens INTEGER`) } catch { /* already exists */ }
   try { db.run(`ALTER TABLE vibe_messages ADD COLUMN cost_usd REAL`) } catch { /* already exists */ }
   try { db.run(`ALTER TABLE vibe_messages ADD COLUMN model TEXT`) } catch { /* already exists */ }
+  // v6: runtime skills — a skill is now a downloaded SKILL.md bundle on disk,
+  // loaded progressively (name+description always in context, full body on
+  // demand) instead of a single always-injected prompt string. Legacy
+  // prompt-only skills keep runtime=0 and behave exactly as before.
+  try { db.run(`ALTER TABLE skills ADD COLUMN runtime INTEGER NOT NULL DEFAULT 0`) } catch { /* already exists */ }
+  try { db.run(`ALTER TABLE skills ADD COLUMN slug TEXT`) } catch { /* already exists */ }
+  try { db.run(`ALTER TABLE skills ADD COLUMN install_path TEXT`) } catch { /* already exists */ }
+  try { db.run(`ALTER TABLE skills ADD COLUMN skill_body TEXT`) } catch { /* already exists */ }
+  try { db.run(`ALTER TABLE skills ADD COLUMN resource_files TEXT`) } catch { /* already exists */ }
+  try { db.run(`ALTER TABLE skills ADD COLUMN allow_scripts INTEGER NOT NULL DEFAULT 1`) } catch { /* already exists */ }
 }
 
 // Helper: run a query and save

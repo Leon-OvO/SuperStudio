@@ -41,7 +41,10 @@ export function About({
       <section className="space-y-1.5">
         <div className="grid grid-cols-[120px_1fr] gap-y-2 text-sm">
           <span className="text-muted-foreground">{t('about.version')}</span>
-          <span className="font-mono">{version || t('about.loading')}</span>
+          <span className="font-mono flex items-center gap-2">
+            {version || t('about.loading')}
+            <UpdateCheckButton currentVersion={version} />
+          </span>
           <span className="text-muted-foreground">{t('about.platform')}</span>
           <span className="font-mono text-xs">{window.api.platform ?? 'unknown'}</span>
           <span className="text-muted-foreground">{t('about.website')}</span>
@@ -139,6 +142,58 @@ export function About({
 
       <ResetSection />
     </div>
+  )
+}
+
+interface UpdateInfo {
+  hasUpdate: boolean
+  currentVersion: string
+  remoteVersion: string | null
+  remoteName: string | null
+  body: string | null
+  releaseUrl: string
+  error?: string
+}
+
+function UpdateCheckButton({ currentVersion }: { currentVersion: string }) {
+  const [checking, setChecking] = useState(false)
+  async function check() {
+    if (checking) return
+    setChecking(true)
+    try {
+      const info = await window.api.checkForUpdate?.() as UpdateInfo | undefined
+      if (!info) { toast.error('检查更新失败：接口未就绪'); return }
+      if (info.error) {
+        toast.error('检查更新失败：' + info.error)
+        return
+      }
+      if (!info.remoteVersion) {
+        toast.info('尚未发布任何版本')
+        return
+      }
+      if (info.hasUpdate) {
+        toast.info(`发现新版本 v${info.remoteVersion}（当前 v${info.currentVersion}）`, { duration: 4000 })
+        // Open release page right away so the user can see the changelog
+        window.api.openReleasePage?.(info.releaseUrl)
+      } else {
+        toast.success(`已是最新版本 (v${currentVersion || info.currentVersion})`)
+      }
+    } catch (e) {
+      toast.error('检查更新失败：' + (e as Error).message)
+    } finally {
+      setChecking(false)
+    }
+  }
+  return (
+    <button
+      onClick={check}
+      disabled={checking || !currentVersion}
+      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md border border-border text-[11px] text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors disabled:opacity-50"
+      title="到 Gitee 检查是否有新版本"
+    >
+      {checking ? <Loader2 size={10} className="animate-spin" /> : <RefreshCw size={10} />}
+      检查更新
+    </button>
   )
 }
 

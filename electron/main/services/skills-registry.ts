@@ -21,6 +21,9 @@ export interface RegistryEntry {
   author?: string
   suggestedScenarios?: SkillScenario[]
   homepage?: string
+  /** SkillHub slug. Present → install as a runtime skill (download SKILL.md
+   *  bundle); absent → legacy prompt-only skill via manifest/manifestUrl. */
+  slug?: string
 }
 
 export interface FetchedRegistry {
@@ -181,6 +184,7 @@ function normalizeEntry(raw: unknown): RegistryEntry | null {
     icon,
     version: typeof r.version === 'string' ? r.version : undefined,
     author,
+    slug: typeof r.slug === 'string' && r.slug ? r.slug : undefined,
     homepage: typeof r.homepage === 'string' ? r.homepage : undefined,
     suggestedScenarios: Array.isArray(r.suggestedScenarios)
       ? (r.suggestedScenarios.filter((s): s is SkillScenario => typeof s === 'string' && VALID_SCENARIOS.has(s as SkillScenario)))

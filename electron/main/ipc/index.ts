@@ -15,24 +15,40 @@ import { vibeHandlers } from './vibe'
 import { skillsHandlers } from './skills'
 import { terminalHandlers } from './terminal'
 import { systemHandlers } from './system'
+import { updaterHandlers } from './updater'
 import { logEntry, getEntriesFromDisk, clearEntries } from '../services/error-log'
 
 export function registerIpcHandlers(): void {
-  authHandlers()
-  dashboardHandlers()
-  settingsHandlers()
-  sessionHandlers()
-  agentHandlers()
-  fileHandlers()
-  galleryHandlers()
-  kbHandlers()
-  workflowHandlers()
-  imageEditHandlers()
-  mcpHandlers()
-  vibeHandlers()
-  skillsHandlers()
-  terminalHandlers()
-  systemHandlers()
+  // Register each handler group independently. If one group throws (a bad
+  // import, a future duplicate channel, …) the others — crucially the auth
+  // handlers — must still register. Without isolation a single failure aborts
+  // the whole function, and every later group's invoke then fails at runtime
+  // with "No handler registered for …".
+  const groups: ReadonlyArray<readonly [string, () => void]> = [
+    ['auth', authHandlers],
+    ['dashboard', dashboardHandlers],
+    ['settings', settingsHandlers],
+    ['sessions', sessionHandlers],
+    ['agent', agentHandlers],
+    ['files', fileHandlers],
+    ['gallery', galleryHandlers],
+    ['knowledge', kbHandlers],
+    ['workflows', workflowHandlers],
+    ['imageEdit', imageEditHandlers],
+    ['mcp', mcpHandlers],
+    ['vibe', vibeHandlers],
+    ['skills', skillsHandlers],
+    ['terminal', terminalHandlers],
+    ['system', systemHandlers],
+    ['updater', updaterHandlers],
+  ]
+  for (const [name, register] of groups) {
+    try {
+      register()
+    } catch (e) {
+      console.error(`[ipc] handler group "${name}" failed to register:`, (e as Error)?.message ?? e)
+    }
+  }
 
   ipcMain.handle(IPC.APP_VERSION, () => app.getVersion())
 
