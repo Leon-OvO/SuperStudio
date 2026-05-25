@@ -5,6 +5,7 @@ import { cn } from '../../lib/utils'
 import type { Session } from '../../../../shared/ipc-types'
 import { DateRangeFilter, resolveDateRange, type DateFilter } from './DateRangeFilter'
 import { formatCostUsd } from '../../lib/format-cost'
+import { useUIStore } from '../../stores/ui'
 
 interface Props {
   sessions: Session[]
@@ -29,7 +30,7 @@ function bucketSession(ts: number, now: number): { label: string; rank: number }
   return { label: '更早', rank: 4 }
 }
 
-// Flat row representation for the virtualizer — alternates between section
+// Flat row representation for the virtualizer — alternates between date-bucket
 // headers and session items so we can pump everything through a single
 // useVirtualizer with row-type-aware height estimation.
 type Row =
@@ -40,6 +41,7 @@ const HEADER_HEIGHT = 30
 const SESSION_HEIGHT = 38
 
 export function SessionList({ sessions, activeId, isRunning, onSelect, onNew, onDelete, onArchive }: Props) {
+  const width = useUIStore(u => u.chatSidebarWidth)
   const [query, setQuery] = useState('')
   const [dateFilter, setDateFilter] = useState<DateFilter>({ kind: 'all' })
   const [contentMatchedIds, setContentMatchedIds] = useState<Set<string> | null>(null)
@@ -72,6 +74,9 @@ export function SessionList({ sessions, activeId, isRunning, onSelect, onNew, on
     const range = resolveDateRange(dateFilter, now)
     const q = query.trim().toLowerCase()
     const matched = sessions
+      // Scheduled-task dedicated sessions live in the Scheduler page, not the
+      // chat list. Filter them out unconditionally.
+      .filter(s => s.isScheduled !== 1)
       .filter(s => showArchived || s.archived !== 1)
       .filter(s => {
         if (!q) return true
@@ -88,7 +93,7 @@ export function SessionList({ sessions, activeId, isRunning, onSelect, onNew, on
       })
       .sort((a, b) => (b.updatedAt ?? b.createdAt) - (a.updatedAt ?? a.createdAt))
 
-    // Group → emit header + session rows in order
+    const out: Row[] = []
     const groups: Array<{ label: string; rank: number; items: Session[] }> = []
     const map = new Map<string, { label: string; rank: number; items: Session[] }>()
     for (const s of matched) {
@@ -103,26 +108,29 @@ export function SessionList({ sessions, activeId, isRunning, onSelect, onNew, on
       }
     }
     groups.sort((a, b) => a.rank - b.rank)
-
-    const out: Row[] = []
     for (const g of groups) {
       out.push({ kind: 'header', label: g.label, count: g.items.length })
       for (const s of g.items) out.push({ kind: 'session', session: s })
     }
+
     return out
   }, [sessions, query, dateFilter, showArchived, contentMatchedIds])
 
   const virtualizer = useVirtualizer({
     count: rows.length,
     getScrollElement: () => scrollRef.current,
-    estimateSize: (index) => rows[index]?.kind === 'header' ? HEADER_HEIGHT : SESSION_HEIGHT,
+    estimateSize: (index) => {
+      const row = rows[index]
+      if (row?.kind === 'header') return HEADER_HEIGHT
+      return SESSION_HEIGHT
+    },
     overscan: 6
   })
 
   const total = rows.filter(r => r.kind === 'session').length
 
   return (
-    <aside className="w-56 flex flex-col border-r border-border bg-sidebar shrink-0">
+    <aside style={{ width }} className="flex flex-col border-r border-border bg-sidebar shrink-0">
       {/* New chat button */}
       <div className="p-2.5 border-b border-border/60">
         <button

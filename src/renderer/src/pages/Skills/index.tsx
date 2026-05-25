@@ -57,7 +57,7 @@ function SkillIcon({ icon, size = 'md' }: { icon?: string; size?: 'sm' | 'md' })
 }
 
 const BROWSE_PAGE_SIZE = 24
-const INSTALLED_PAGE_SIZE = 8
+const INSTALLED_PAGE_SIZE = 12
 const INSTALLED_KEYWORD_DEBOUNCE_MS = 200
 const KEYWORD_DEBOUNCE_MS = 300
 
@@ -399,7 +399,7 @@ function InstalledTab({
   }
 
   return (
-    <div className="max-w-3xl mx-auto px-6 py-6 space-y-4">
+    <div className="max-w-4xl mx-auto px-6 py-6 space-y-4">
       <div className="flex items-center gap-2 flex-wrap">
         <h2 className="text-sm font-semibold whitespace-nowrap">我的技能</h2>
         <span className="text-[11px] text-muted-foreground/60 whitespace-nowrap">
@@ -437,7 +437,7 @@ function InstalledTab({
         />
       ) : (
         <>
-          <div className="space-y-3">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 items-start">
             {pageItems.map(s => (
               <SkillCard
                 key={s.id}

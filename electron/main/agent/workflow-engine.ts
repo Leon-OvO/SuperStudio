@@ -190,9 +190,9 @@ async function executeNode(
     case 'web_search': {
       const query = upstreamText || (d.query as string) || ''
       if (!query.trim()) throw new Error('搜索节点缺少查询内容')
-      const provider = ((d.provider as string) || settings.searchProvider) as 'tavily' | 'serper'
+      const provider = ((d.provider as string) || settings.searchProvider) as 'tavily' | 'serper' | 'searxng' | 'bing' | 'baidu' | 'sogou' | 'ddg'
       const maxResults = (d.maxResults as number) || 5
-      const result = await searchWeb(query, settings.searchApiKey, provider, maxResults)
+      const result = await searchWeb(query, settings.searchApiKey, provider, maxResults, { searxngUrl: settings.searxngUrl, browserVisible: settings.searchBrowserVisible })
       return result.results.map(r => `${r.title}: ${r.snippet}`).join('\n')
     }
 

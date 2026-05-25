@@ -8,6 +8,7 @@ import { generateImage } from '../services/image'
 import { generateVideo } from '../services/video'
 import { readFile, writeFile } from '../services/fileops'
 import { searchWeb } from '../services/search'
+import { openPage } from '../services/web-browse'
 import { saveGalleryItem } from '../services/gallery'
 import { mcpManager, type McpTool } from '../services/mcp'
 import { getActiveSkillsForScenario, type InstalledSkill } from '../services/skills-db'
@@ -30,6 +31,11 @@ interface RunParams {
   imageSize?: string
   imageQuality?: string
   imageCount?: number
+  /** Set by the scheduler when this run is an automatic timed firing (not a
+   *  user-typed chat). Adds a system-prompt note telling the model the schedule
+   *  is already handled and NOW is execution time, so it runs the task with its
+   *  tools instead of replying "I can't run on a timer / I'm passive". */
+  scheduledContext?: boolean
 }
 
 const runningAgents = new Map<string, AbortController>()
@@ -57,7 +63,7 @@ export async function runAgent(
   params: RunParams,
   win: BrowserWindow
 ): Promise<void> {
-  const { sessionId, message, attachments = [], overrideProviderId, overrideModel, mountedSpaceIds = [], imageSize, imageQuality, imageCount } = params
+  const { sessionId, message, attachments = [], overrideProviderId, overrideModel, mountedSpaceIds = [], imageSize, imageQuality, imageCount, scheduledContext = false } = params
   const runStartTime = Date.now()
   console.log('[Agent] runAgent called', { sessionId, msgLen: message.length, atts: attachments.length, overrideProviderId, overrideModel })
   const abort = new AbortController()
@@ -121,7 +127,7 @@ export async function runAgent(
   } catch (e) {
     console.warn('[Agent] failed to load active skills:', (e as Error).message)
   }
-  const systemPrompt = buildSystemPrompt(kbContext, mcpTools, activeSkills)
+  const systemPrompt = buildSystemPrompt(kbContext, mcpTools, activeSkills, scheduledContext)
 
   const toolCallLog: Array<{ toolName: string; args: unknown; result: unknown }> = []
   let stepIndex = 0
@@ -229,16 +235,56 @@ export async function runAgent(
         ...(mcpToolEntries as Record<string, Tool>),
         ...(mcpHasWebSearch ? {} : {
         web_search: tool({
-          description: 'Fallback generic web search (Tavily/Serper). If an MCP web_search tool is available, that one is richer and should be preferred.',
+          description:
+            'Web search across configured providers. Zero-config scraped engines (Bing / Baidu / Sogou / DuckDuckGo) ' +
+            'and hosted APIs (Tavily / Serper / self-hosted SearXNG). If the chosen provider fails it auto-cascades ' +
+            'through the scraped engines. Returns { query, source, results: [{ title, url, snippet }], fallbackReason? }. ' +
+            'Use this when the user asks about current events, recent docs, prices, or anything that may ' +
+            'have changed since training. Cite results by URL in your reply. If an MCP web_search tool is ' +
+            'available, that one is preferred over this builtin.',
           parameters: z.object({ query: z.string().describe('Search query') }),
           execute: async ({ query }) => {
             emit({ stepIndex: stepIndex++, stepName: 'Web Search', toolName: 'web_search', status: 'running', message: `Searching: ${query}` })
-            const result = await searchWeb(query, settings.searchApiKey, settings.searchProvider)
-            emit({ stepIndex: stepIndex - 1, stepName: 'Web Search', toolName: 'web_search', status: 'done', message: `Found ${result.results.length} results` })
+            const result = await searchWeb(query, settings.searchApiKey, settings.searchProvider, 5, { searxngUrl: settings.searxngUrl, browserVisible: settings.searchBrowserVisible })
+            const doneMsg = result.fallbackReason
+              ? `Found ${result.results.length} via ${result.source} (fallback: ${result.fallbackReason})`
+              : `Found ${result.results.length} via ${result.source}`
+            emit({ stepIndex: stepIndex - 1, stepName: 'Web Search', toolName: 'web_search', status: 'done', message: doneMsg })
             toolCallLog.push({ toolName: 'web_search', args: { query }, result })
             return result
           }
         }),
+        }),
+        web_open: tool({
+          description:
+            'Open a URL in a REAL browser and read its fully-rendered content (title, readable text, links). ' +
+            'Not a plain HTML fetch: it waits for JS to render, auto-scrolls to trigger lazy-loaded content ' +
+            '(comment sections, infinite feeds), and reads text inside Web Components / Shadow DOM ' +
+            '(e.g. bilibili 评论区 <bili-comments>). So dynamic content like comment threads IS captured — ' +
+            'do NOT assume "comments are JS-loaded so I can\'t read them"; just open the page and look in `text`. ' +
+            'Use for a specific page that plain search can\'t cover — a given article, a listing page, ' +
+            'a site\'s "popular/hot" page, a video\'s comment section, etc. Returns { finalUrl, title, text, links, needsLogin, loginHint }. ' +
+            'If the page requires login, the browser window is shown to the user and needsLogin is true; in that ' +
+            'case tell the user to log in in the opened window, then call web_open again to retry — do NOT pretend ' +
+            'you got the data. Prefer web_search for open-ended "find me X" queries.',
+          parameters: z.object({ url: z.string().describe('Absolute http(s) URL to open') }),
+          execute: async ({ url }) => {
+            emit({ stepIndex: stepIndex++, stepName: 'Browser Open', toolName: 'web_open', status: 'running', message: url })
+            try {
+              const result = await openPage(url, { browserVisible: !!settings.searchBrowserVisible })
+              const doneMsg = result.needsLogin
+                ? '需要登录 — 已弹出浏览器窗口，请用户登录后重试'
+                : `已读取页面（${result.text.length} 字 · ${result.links.length} 链接）`
+              emit({ stepIndex: stepIndex - 1, stepName: 'Browser Open', toolName: 'web_open', status: 'done', message: doneMsg })
+              toolCallLog.push({ toolName: 'web_open', args: { url }, result })
+              return result
+            } catch (err) {
+              const msg = (err as Error).message || String(err)
+              emit({ stepIndex: stepIndex - 1, stepName: 'Browser Open', toolName: 'web_open', status: 'error', message: msg })
+              toolCallLog.push({ toolName: 'web_open', args: { url }, result: { error: msg } })
+              return `[web_open error] ${msg}`
+            }
+          }
         }),
         image_generate: tool({
           description: 'Generate one or more images from a text prompt. Pass null for n/size to use defaults (1 image at 1024x1024). n is clamped to 1-4.',
@@ -364,6 +410,39 @@ export async function runAgent(
       if (dropped.length) console.log(`[Agent] skills filtered tools, dropped: ${dropped.join(', ')}`)
     }
 
+    // ask_user — in-chat "pick one option" interaction. Merged AFTER the
+    // whitelist filter (like skill tools) so it's never dropped: a skill such
+    // as 网页浏览 carries a whitelist (['web_open','web_search']) that would
+    // otherwise strip it. There is no engine-side pause — the tool just records
+    // the choices and tells the model to stop; the user's click comes back as
+    // the next message (two-turn dance).
+    tools = {
+      ...tools,
+      ask_user: tool({
+        description:
+          'Ask the user to pick ONE option among a few discrete choices when you genuinely need their ' +
+          'decision to proceed (e.g. which file / which style / confirm an ambiguous intent). ' +
+          'Renders clickable buttons in the chat. After calling this, STOP — do not keep generating or ' +
+          'decide for the user; the user\'s click arrives as their next message. ' +
+          'Do NOT use for yes/no you can infer, or when you should just proceed.',
+        parameters: z.object({
+          question: z.string().describe('The single question to ask'),
+          options: z.array(z.object({
+            label: z.string().describe('Short button text'),
+            description: z.string().nullable().describe('Optional one-line clarification, or null')
+          })).describe('2-4 mutually-exclusive options'),
+          allowCustom: z.boolean().nullable().describe('Also show a free-text "其他…" input. Pass null = true.')
+        }),
+        execute: async ({ question, options, allowCustom }) => {
+          const payload = { question, options, allowCustom: allowCustom ?? true }
+          emit({ stepIndex: stepIndex++, stepName: '等待选择', toolName: 'ask_user', status: 'running', message: question })
+          emit({ stepIndex: stepIndex - 1, stepName: '等待选择', toolName: 'ask_user', status: 'done' })
+          toolCallLog.push({ toolName: 'ask_user', args: payload, result: payload })
+          return '已把选项以可点击卡片的形式展示给用户。请立即停止输出，不要替用户做决定，也不要继续生成后续内容——等待用户点击后的下一条消息。'
+        }
+      })
+    }
+
     // Runtime skills (downloaded SKILL.md bundles) get progressive-disclosure
     // tools: load_skill / read_skill_file / (gated) bash. Merged AFTER the
     // whitelist filter so they're never accidentally dropped.
@@ -443,6 +522,16 @@ export async function runAgent(
     if (streamErr && fullText) {
       fullText += `\n\n⚠️ 流式响应中途出错：${(streamErr as Error).message || String(streamErr)}`
     }
+    // ask_user safety net: the model may legitimately call ask_user and then
+    // stop with NO prose at all. That would leave fullText empty and trip the
+    // empty-response guard below (→ AGENT_ERROR, choice card never renders).
+    // When ask_user was the (last) call, fall back to its question as the
+    // bubble text so the turn completes and the card shows.
+    if (!fullText.trim()) {
+      const lastAsk = [...toolCallLog].reverse().find(t => t.toolName === 'ask_user')
+      if (lastAsk) fullText = String((lastAsk.args as { question?: string }).question || '请选择：')
+    }
+
     if (!fullText && chunkCount === 0) {
       // Model returned nothing — try to get response metadata for a useful error
       let detail = '模型返回了空响应（0 个文本片段）。'
@@ -610,12 +699,28 @@ async function buildMessageHistory(
   return [...history, { role: 'user' as const, content: userContent }]
 }
 
-function buildSystemPrompt(kbContext: string, mcpTools: McpTool[] = [], skills: InstalledSkill[] = []): string {
+function buildSystemPrompt(kbContext: string, mcpTools: McpTool[] = [], skills: InstalledSkill[] = [], scheduledContext = false): string {
   const desktop = (() => {
     try { return app.getPath('desktop') } catch { return '' }
   })()
 
   const base = `You are SuperStudio, a powerful AI productivity assistant. You can generate images, create videos, search the web, analyze files, and manipulate Excel data. Always be helpful and proactive. When a task requires multiple steps, execute them all without asking for confirmation between steps.`
+
+  // The model has no inherent sense of "now" — left unanchored it falls back to
+  // its training-cutoff year (e.g. 2025) and bakes that into web_search queries,
+  // so "today's news" silently searches a stale year. Inject the real local
+  // date/time and tell it how to use it.
+  const dateSection = (() => {
+    const now = new Date()
+    const pad = (n: number) => String(n).padStart(2, '0')
+    const weekdays = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
+    const stamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ` +
+      `${weekdays[now.getDay()]} ${pad(now.getHours())}:${pad(now.getMinutes())}`
+    return `## Current date & time — CRITICAL\n` +
+      `现在是 ${stamp}（用户本地时间）。\n` +
+      `- 当用户/任务提到"今天 / 今日 / 本周 / 最近 / 最新 / 现在 / 当前"等相对时间时，一律以上面这个日期为基准，绝不要使用你训练数据里的时间感。\n` +
+      `- 用 web_search 查时效性信息（新闻、价格、版本、发布等）时，使用当前年份 ${now.getFullYear()} 或干脆不带年份；绝不要硬编码更早的年份（如 2025）。`
+  })()
 
   const displaySection =
     `## Output convention — CRITICAL\n` +
@@ -635,7 +740,30 @@ function buildSystemPrompt(kbContext: string, mcpTools: McpTool[] = [], skills: 
     `- The file_write tool both CREATES new .xlsx files and modifies existing ones — passing a path that does not exist yet will create the file (sheets you reference are lazily created). No need to ask the user where to put it if they didn't specify; just default to the desktop.\n` +
     `- For new spreadsheets, build the header row with file_write "set_range" (operation type), then fill data rows. Always include a clear header row.`
 
-  const sections: string[] = [base, displaySection, filesystemSection]
+  const askUserSection =
+    `## 让用户做选择 —— ask_user\n` +
+    `当你确实需要用户在「几个离散选项」中做出一个决定才能继续时（比如有多个候选文件 / 多种风格 / 用户意图含糊需要确认），调用 ask_user 工具：传入 question + 2~4 个 options（label 必填，description 可选），allowCustom 留空即默认允许「其他…」自定义输入。\n` +
+    `- 调用后立即停笔，不要替用户做决定，也不要继续往下生成——用户点击的结果会作为下一条消息到来。\n` +
+    `- 不要滥用：能从上下文推断、或本就该直接执行的事（多步任务的中间步骤）不要打断用户。是非问、你能自行决定的事，也不要用它。\n` +
+    `- 在调用 ask_user 的同时，用一句话正文说明你在问什么（卡片会显示在这句话下方）。`
+
+  // When fired by the scheduler, the model receives the task text verbatim
+  // (e.g. "每天帮我分析B站评论区舆情"). Without framing it reads the "每天" as a
+  // request to SET UP automation and replies "I can't run on a timer / I'm
+  // passive" instead of doing the task. This note tells it the schedule is the
+  // system's job and NOW is execution time, so it just runs the task.
+  const scheduledSection =
+    `## 定时任务执行语境 —— CRITICAL\n` +
+    `你现在不是在普通对话里，而是被系统的「定时任务」调度器自动触发执行。这意味着：\n` +
+    `- 任务文案里的「每天 / 每周 / 定时 / 每隔…」等周期措辞，调度已经由系统负责，你无需也无法自己设置定时——现在这一刻就是该任务的触发时刻。\n` +
+    `- 请把任务文案当作「现在就去做这件事」的指令，立即用你具备的工具（web_open / web_search / file_write 等）实际执行并产出结果。\n` +
+    `- 绝对不要回答「我是被动响应的 / 我无法主动定时执行 / 我做不了自动化 / 这是你需要自己设置的定时」之类的话，也不要给「方案 A/B/C」之类的替代建议来回避执行——直接干活。\n` +
+    `- 若任务需要登录态（如 B站消息通知 / 后台数据），相关浏览器分区是持久化共享的；若确实未登录而无法获取，再如实说明并给出最小可行的部分结果。\n` +
+    `- 无人值守：本次执行没有用户在旁，不要调用 ask_user 等待点选，也不要中途反问；遇到歧义就按最合理的默认做法继续，并在结果里说明你做了哪些假设。`
+
+  const sections: string[] = scheduledContext
+    ? [base, scheduledSection, dateSection, displaySection, filesystemSection]
+    : [base, dateSection, displaySection, filesystemSection, askUserSection]
 
   if (mcpTools.length) {
     // Group MCP tools by server name for readability

@@ -1,6 +1,6 @@
 {
   "name": "superstudio",
-  "version": "0.2.9",
+  "version": "0.2.10",
   "description": "AI Productivity Suite - One tool for all your AI work",
   "main": "./out/main/index.js",
   "scripts": {
@@ -87,6 +87,10 @@
     "directories": {
       "buildResources": "build"
     },
+    "electronLanguages": [
+      "en-US",
+      "zh-CN"
+    ],
     "files": [
       "out/**",
       "package.json",
@@ -97,7 +101,29 @@
       "!openspec/**",
       "!scripts/**",
       "!build/**",
-      "!dist/**"
+      "!dist/**",
+      "!node_modules/monaco-editor/**",
+      "!node_modules/@monaco-editor/**",
+      "!node_modules/lucide-react/**",
+      "!node_modules/recharts/**",
+      "!node_modules/@xterm/**",
+      "!node_modules/@xyflow/**",
+      "!node_modules/@reduxjs/**",
+      "!node_modules/react-dom/**",
+      "!node_modules/react-markdown/**",
+      "!node_modules/remark-gfm/**",
+      "!node_modules/@tanstack/**",
+      "!node_modules/@napi-rs/**",
+      "!node_modules/pdfjs-dist/legacy/**",
+      "!node_modules/pdfjs-dist/image_decoders/**",
+      "!node_modules/pdfjs-dist/web/**",
+      "!node_modules/sql.js/dist/sql-asm*",
+      "!node_modules/sql.js/dist/worker.sql-asm*",
+      "!node_modules/sql.js/dist/*-debug*",
+      "!node_modules/sql.js/dist/*-browser*",
+      "!node_modules/**/*.map",
+      "!node_modules/**/*.d.ts",
+      "!node_modules/**/*.d.mts"
     ],
     "asarUnpack": [
       "resources/**",

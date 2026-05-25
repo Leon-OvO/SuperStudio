@@ -3,6 +3,7 @@ import { useChatStore } from '../../stores/chat'
 import { useUIStore } from '../../stores/ui'
 import { resolveModel } from '../../lib/auto-router'
 import { SessionList } from './SessionList'
+import { SessionListResizer } from './SessionListResizer'
 import { MessageList } from './MessageList'
 import { ChatInput } from './ChatInput'
 import { AgentProgress } from './AgentProgress'
@@ -164,9 +165,16 @@ export function ChatPage() {
   async function loadSessions() {
     const data = await window.api.listSessions()
     setSessions(data)
-    if (data.length > 0 && !activeSessionId) {
-      setActiveSession(data[0].id)
-      loadMessages(data[0].id)
+    // Default-pick must skip scheduled-task sessions: they're hidden from the
+    // sidebar (SessionList filters isScheduled), but they bubble to the top of
+    // this list by updated_at right after a task fires — picking data[0] blindly
+    // would show the task's conversation with nothing selected in the sidebar.
+    if (!activeSessionId) {
+      const firstNormal = data.find(s => s.isScheduled !== 1)
+      if (firstNormal) {
+        setActiveSession(firstNormal.id)
+        loadMessages(firstNormal.id)
+      }
     }
   }
 
@@ -387,6 +395,7 @@ export function ChatPage() {
         onArchive={handleArchiveSession}
         isRunning={isRunning}
       />
+      <SessionListResizer />
       <div className="flex-1 flex flex-col min-w-0">
         <ChatHeader
           sessionId={activeSessionId}
@@ -409,6 +418,7 @@ export function ChatPage() {
           onRegenerate={handleRegenerate}
           onEditUserMessage={handleEditUserMessage}
           isRunning={isRunning}
+          onChoose={(value) => handleSend(value)}
         />
         <AgentProgress />
         <ChatInput

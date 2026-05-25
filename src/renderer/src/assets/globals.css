@@ -3,8 +3,9 @@
 @tailwind utilities;
 
 @layer base {
+  /* Default fallback (used when no skin class has been applied yet, e.g. very
+   * brief paint before App.tsx's useLayoutEffect runs). Matches .skin-classic. */
   :root {
-    /* Light — indigo primary, warm off-white background */
     --background: 220 20% 98%;
     --foreground: 222 39% 11%;
     --card: 0 0% 100%;
@@ -30,30 +31,135 @@
     --sidebar-border: 220 13% 91%;
   }
 
-  .dark {
-    /* Dark — deep blue-gray, same indigo primary */
-    --background: 222 25% 9%;
-    --foreground: 210 20% 92%;
-    --card: 222 22% 12%;
-    --card-foreground: 210 20% 92%;
-    --popover: 222 22% 13%;
-    --popover-foreground: 210 20% 92%;
-    --primary: 243 72% 67%;
+  /* ── 经典 (default light) — indigo primary, off-white background ───────── */
+  .skin-classic {
+    --background: 220 20% 98%;
+    --foreground: 222 39% 11%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 39% 11%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 39% 11%;
+    --primary: 243 75% 59%;
     --primary-foreground: 0 0% 100%;
-    --secondary: 217 19% 17%;
-    --secondary-foreground: 210 20% 92%;
-    --muted: 217 19% 17%;
-    --muted-foreground: 215 16% 57%;
-    --accent: 217 19% 20%;
-    --accent-foreground: 210 20% 92%;
-    --destructive: 0 62% 50%;
+    --secondary: 220 14% 95%;
+    --secondary-foreground: 222 39% 11%;
+    --muted: 220 14% 95%;
+    --muted-foreground: 217 16% 50%;
+    --accent: 220 14% 93%;
+    --accent-foreground: 222 39% 11%;
+    --destructive: 0 72% 51%;
     --destructive-foreground: 0 0% 100%;
-    --border: 217 19% 20%;
-    --input: 217 19% 20%;
-    --ring: 243 72% 67%;
-    --sidebar: 222 27% 7%;
-    --sidebar-foreground: 210 20% 92%;
-    --sidebar-border: 217 19% 15%;
+    --border: 220 13% 91%;
+    --input: 220 13% 91%;
+    --ring: 243 75% 59%;
+    --sidebar: 220 16% 97%;
+    --sidebar-foreground: 222 39% 11%;
+    --sidebar-border: 220 13% 91%;
+  }
+
+  /* ── 米黄 / warm parchment — cream paper + terracotta primary ──────────── */
+  .skin-warm {
+    --background: 40 40% 96%;
+    --foreground: 30 22% 18%;
+    --card: 38 50% 99%;
+    --card-foreground: 30 22% 18%;
+    --popover: 38 50% 99%;
+    --popover-foreground: 30 22% 18%;
+    --primary: 22 75% 48%;
+    --primary-foreground: 40 50% 98%;
+    --secondary: 38 30% 91%;
+    --secondary-foreground: 30 22% 18%;
+    --muted: 38 30% 91%;
+    --muted-foreground: 30 12% 42%;
+    --accent: 38 35% 88%;
+    --accent-foreground: 30 22% 18%;
+    --destructive: 0 65% 47%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 38 25% 84%;
+    --input: 38 25% 84%;
+    --ring: 22 75% 48%;
+    --sidebar: 40 45% 93%;
+    --sidebar-foreground: 30 22% 18%;
+    --sidebar-border: 38 25% 82%;
+  }
+
+  /* ── 极地蓝 / cold navy — deep blue + ice-blue primary ─────────────────── */
+  .skin-cold {
+    --background: 222 35% 8%;
+    --foreground: 200 30% 92%;
+    --card: 222 30% 11%;
+    --card-foreground: 200 30% 92%;
+    --popover: 222 30% 12%;
+    --popover-foreground: 200 30% 92%;
+    --primary: 198 90% 60%;
+    --primary-foreground: 222 40% 10%;
+    --secondary: 215 28% 17%;
+    --secondary-foreground: 200 30% 92%;
+    --muted: 215 28% 17%;
+    --muted-foreground: 210 18% 60%;
+    --accent: 215 28% 21%;
+    --accent-foreground: 200 30% 92%;
+    --destructive: 0 65% 52%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 215 28% 22%;
+    --input: 215 28% 22%;
+    --ring: 198 90% 60%;
+    --sidebar: 222 38% 6%;
+    --sidebar-foreground: 200 30% 92%;
+    --sidebar-border: 215 28% 18%;
+  }
+
+  /* ── 暮光紫 / twilight — plum dark + violet primary ────────────────────── */
+  .skin-twilight {
+    --background: 270 25% 10%;
+    --foreground: 280 20% 92%;
+    --card: 270 22% 13%;
+    --card-foreground: 280 20% 92%;
+    --popover: 270 22% 14%;
+    --popover-foreground: 280 20% 92%;
+    --primary: 280 80% 68%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 270 18% 18%;
+    --secondary-foreground: 280 20% 92%;
+    --muted: 270 18% 18%;
+    --muted-foreground: 280 14% 60%;
+    --accent: 270 18% 22%;
+    --accent-foreground: 280 20% 92%;
+    --destructive: 350 65% 55%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 270 18% 22%;
+    --input: 270 18% 22%;
+    --ring: 280 80% 68%;
+    --sidebar: 270 28% 8%;
+    --sidebar-foreground: 280 20% 92%;
+    --sidebar-border: 270 18% 18%;
+  }
+
+  /* ── 终端 / midnight terminal — near-black charcoal + phosphor-green primary,
+     tuned for deep-night / SSH-console sessions ──────────────────────────── */
+  .skin-terminal {
+    --background: 150 10% 6%;
+    --foreground: 150 14% 86%;
+    --card: 152 10% 9%;
+    --card-foreground: 150 14% 86%;
+    --popover: 152 10% 10%;
+    --popover-foreground: 150 14% 86%;
+    --primary: 142 70% 50%;
+    --primary-foreground: 150 45% 7%;
+    --secondary: 152 8% 15%;
+    --secondary-foreground: 150 14% 86%;
+    --muted: 152 8% 15%;
+    --muted-foreground: 150 8% 56%;
+    --accent: 152 9% 19%;
+    --accent-foreground: 150 14% 90%;
+    --destructive: 0 70% 55%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 152 9% 17%;
+    --input: 152 9% 17%;
+    --ring: 142 70% 50%;
+    --sidebar: 150 12% 4%;
+    --sidebar-foreground: 150 14% 84%;
+    --sidebar-border: 152 9% 13%;
   }
 }
 

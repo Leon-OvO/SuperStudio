@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import type { Message, ToolCallRecord } from '../../../../shared/ipc-types'
+import type { Message, ToolCallRecord, AskUserPayload } from '../../../../shared/ipc-types'
 import { cn } from '../../lib/utils'
 import { copyImageToClipboard } from '../../lib/clipboard'
 import { useImageContextMenu } from '../../components/ui/ImageContextMenu'
@@ -13,6 +14,25 @@ function toFileUrl(p: string): string {
   // Three slashes: local-file:///F:/path — empty authority avoids Chromium treating "F:" as host
   const fwd = p.replace(/\\/g, '/').replace(/^\//, '')
   return `local-file:///${fwd}`
+}
+
+/**
+ * Per-message timestamp. Shows bare "HH:MM" for today (the common case in a
+ * live chat), and "MM-DD HH:MM" once the message is from another day — which
+ * is exactly the scheduled-task case, where a conversation can span days. The
+ * tooltip always carries the full second-precision stamp.
+ */
+function formatMsgTime(ts?: number): { short: string; full: string } | null {
+  if (!ts) return null
+  const d = new Date(ts)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  const full = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+  const now = new Date()
+  const sameDay = d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate()
+  const short = sameDay
+    ? `${pad(d.getHours())}:${pad(d.getMinutes())}`
+    : `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+  return { short, full }
 }
 
 /**
@@ -109,11 +129,13 @@ interface Props {
   onEditUserMessage?: (messageId: string, newContent: string) => void
   /** Disable hover actions while the agent is running. */
   isRunning?: boolean
+  /** User picked an option in an ask_user choice card — send it as a new message. */
+  onChoose?: (value: string) => void
 }
 
 export function MessageList({
   messages, onRetry, onEditImage, providersCount, defaultChatModel,
-  onDeleteMessage, onRegenerate, onEditUserMessage, isRunning
+  onDeleteMessage, onRegenerate, onEditUserMessage, isRunning, onChoose
 }: Props) {
   const ctxMenu = useImageContextMenu()
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -241,6 +263,8 @@ export function MessageList({
                 onRegenerate={onRegenerate}
                 onEditUserMessage={onEditUserMessage}
                 isRunning={!!isRunning}
+                isLastMsg={isLastMsg}
+                onChoose={onChoose}
               />
             </div>
           )
@@ -260,11 +284,13 @@ interface BubbleProps {
   onRegenerate?: (assistantMessageId: string) => void
   onEditUserMessage?: (messageId: string, newContent: string) => void
   isRunning: boolean
+  isLastMsg: boolean
+  onChoose?: (value: string) => void
 }
 
 function MessageBubble({
   message, onRetry, openContextMenu, onEditImage,
-  onDeleteMessage, onRegenerate, onEditUserMessage, isRunning
+  onDeleteMessage, onRegenerate, onEditUserMessage, isRunning, isLastMsg, onChoose
 }: BubbleProps) {
   const isUser = message.role === 'user'
   const [lightboxSrc, setLightboxSrc] = useState<{ src: string; filePath: string } | null>(null)
@@ -328,6 +354,7 @@ function MessageBubble({
   const isError = message.content.startsWith('⚠️')
 
   const meta = message.meta
+  const ts = formatMsgTime(message.createdAt)
 
   return (
     <>
@@ -443,6 +470,20 @@ function MessageBubble({
               <FileRevertCard key={i} tc={tc} />
             ) : null
           ))}
+
+          {/* ask_user choice card — interactive only while this is the last
+              message and nothing's running. Once the user picks, their choice
+              becomes a new user message, this stops being last → card locks. */}
+          {message.toolCalls?.map((tc, i) => (
+            tc.toolName === 'ask_user' && tc.result ? (
+              <ChoiceCard
+                key={`ask-${i}`}
+                payload={tc.result as AskUserPayload}
+                interactive={isLastMsg && !isRunning && !!onChoose}
+                onChoose={(value) => onChoose?.(value)}
+              />
+            ) : null
+          ))}
         </div>
 
         {/* Hover-revealed action toolbar — different actions per role */}
@@ -519,16 +560,46 @@ function MessageBubble({
             })()}
           </div>
         )}
+
+        {/* Per-message timestamp (covers regular chat and the scheduled-task
+            conversation, which reuses this component). */}
+        {ts && (
+          <div
+            className="mt-1 px-1 text-[10px] text-muted-foreground/60 select-none tabular-nums"
+            title={ts.full}
+          >
+            {ts.short}
+          </div>
+        )}
       </div>
 
-      {/* Image lightbox */}
-      {lightboxSrc && (
+      {/* Image lightbox — portaled to body because the virtualized row's
+          transform would otherwise become the containing block for `fixed`. */}
+      {lightboxSrc && createPortal(
         <div
-          className="fixed inset-0 z-50 bg-black/85 flex items-center justify-center p-4"
+          className="fixed inset-0 z-50 bg-black/85 flex flex-col p-4 gap-3"
           onClick={() => setLightboxSrc(null)}
         >
-          {/* Toolbar */}
-          <div className="absolute top-4 right-4 flex items-center gap-2" onClick={e => e.stopPropagation()}>
+          {/* Image area — takes remaining vertical space above the toolbar */}
+          <div className="flex-1 min-h-0 flex items-center justify-center">
+            <img
+              src={lightboxSrc.src}
+              alt="Preview"
+              className="max-w-full max-h-full object-contain rounded-xl shadow-2xl"
+              onClick={e => e.stopPropagation()}
+              onContextMenu={e => {
+                e.preventDefault()
+                e.stopPropagation()
+                openContextMenu(e, {
+                  filePath: lightboxSrc.filePath,
+                  src: lightboxSrc.src,
+                  onEdit: () => { onEditImage(lightboxSrc.src); setLightboxSrc(null) }
+                })
+              }}
+            />
+          </div>
+          {/* Toolbar — centered below the image */}
+          <div className="shrink-0 flex items-center justify-center gap-2" onClick={e => e.stopPropagation()}>
             <button
               onClick={handleLightboxCopy}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white text-xs font-medium transition-colors"
@@ -557,22 +628,8 @@ function MessageBubble({
               <X size={16} />
             </button>
           </div>
-          <img
-            src={lightboxSrc.src}
-            alt="Preview"
-            className="max-w-full max-h-full object-contain rounded-xl shadow-2xl"
-            onClick={e => e.stopPropagation()}
-            onContextMenu={e => {
-              e.preventDefault()
-              e.stopPropagation()
-              openContextMenu(e, {
-                filePath: lightboxSrc.filePath,
-                src: lightboxSrc.src,
-                onEdit: () => { onEditImage(lightboxSrc.src); setLightboxSrc(null) }
-              })
-            }}
-          />
-        </div>
+        </div>,
+        document.body
       )}
     </>
   )
@@ -890,6 +947,83 @@ function FileRevertCard({ tc }: { tc: ToolCallRecord }) {
         >
           还原备份
         </button>
+      )}
+    </div>
+  )
+}
+
+/** Renders an ask_user choice as clickable option buttons + an optional
+ *  free-text "其他…" input. Interactive only when `interactive` is true (i.e.
+ *  this is still the last message and the agent isn't running); otherwise it
+ *  shows a disabled, history-only view. */
+function ChoiceCard({
+  payload, interactive, onChoose
+}: { payload: AskUserPayload; interactive: boolean; onChoose: (value: string) => void }) {
+  const [customOpen, setCustomOpen] = useState(false)
+  const [customText, setCustomText] = useState('')
+  const options = Array.isArray(payload.options) ? payload.options : []
+
+  function submitCustom() {
+    const v = customText.trim()
+    if (!v) return
+    onChoose(v)
+  }
+
+  return (
+    <div className="mt-3 flex flex-col gap-1.5">
+      {options.map((opt, i) => (
+        <button
+          key={i}
+          disabled={!interactive}
+          onClick={() => interactive && onChoose(opt.label)}
+          className={cn(
+            'text-left px-3 py-2 rounded-lg border transition-colors',
+            interactive
+              ? 'border-border bg-background hover:bg-primary/10 hover:border-primary/40 cursor-pointer'
+              : 'border-border/50 bg-muted/30 opacity-60 cursor-default'
+          )}
+        >
+          <div className="text-sm font-medium">{opt.label}</div>
+          {opt.description && (
+            <div className="text-xs text-muted-foreground mt-0.5">{opt.description}</div>
+          )}
+        </button>
+      ))}
+
+      {payload.allowCustom && (
+        customOpen ? (
+          <div className="flex items-center gap-1.5 mt-0.5">
+            <input
+              autoFocus
+              value={customText}
+              disabled={!interactive}
+              onChange={e => setCustomText(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); submitCustom() } }}
+              placeholder="输入你的答案…"
+              className="flex-1 px-3 py-2 rounded-lg border border-border bg-background text-sm outline-none focus:border-primary/50"
+            />
+            <button
+              disabled={!interactive || !customText.trim()}
+              onClick={submitCustom}
+              className="px-3 py-2 rounded-lg bg-primary text-primary-foreground text-sm disabled:opacity-50 transition-colors"
+            >
+              发送
+            </button>
+          </div>
+        ) : (
+          <button
+            disabled={!interactive}
+            onClick={() => interactive && setCustomOpen(true)}
+            className={cn(
+              'text-left px-3 py-2 rounded-lg border border-dashed transition-colors',
+              interactive
+                ? 'border-border text-muted-foreground hover:bg-primary/10 hover:border-primary/40 cursor-pointer'
+                : 'border-border/50 text-muted-foreground/60 opacity-60 cursor-default'
+            )}
+          >
+            其他…（自定义输入）
+          </button>
+        )
       )}
     </div>
   )

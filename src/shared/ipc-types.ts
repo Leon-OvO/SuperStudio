@@ -19,6 +19,7 @@ export const IPC = {
   MESSAGES_DELETE: 'messages:delete',          // delete a single message by id
   MESSAGES_DELETE_FROM: 'messages:delete-from', // delete this message + everything created after it (used for regenerate / edit)
   MESSAGES_UPDATE: 'messages:update',           // edit a message's content
+  MESSAGES_CLEAR_SESSION: 'messages:clear-session', // wipe every message of a session, keep the session row
   SESSIONS_SEARCH: 'sessions:search',           // full-text search across titles + message content
   SESSIONS_EXPORT_ALL: 'sessions:export-all',    // dump every session + its messages to a JSON file
   SESSIONS_IMPORT: 'sessions:import',            // load a previously-exported JSON back in
@@ -196,6 +197,18 @@ export const IPC = {
   TERMINAL_DATA: 'terminal:data',    // main → renderer (event)
   TERMINAL_EXIT: 'terminal:exit',    // main → renderer (event)
 
+  // Scheduled prompts
+  SCHEDULER_LIST: 'scheduler:list',
+  SCHEDULER_GET: 'scheduler:get',
+  SCHEDULER_CREATE: 'scheduler:create',
+  SCHEDULER_UPDATE: 'scheduler:update',
+  SCHEDULER_DELETE: 'scheduler:delete',
+  SCHEDULER_SET_ENABLED: 'scheduler:set-enabled',
+  SCHEDULER_TRIGGER_NOW: 'scheduler:trigger-now',
+  SCHEDULER_LIST_RUNS: 'scheduler:list-runs',
+  SCHEDULER_RUN_COMPLETED: 'scheduler:run-completed',   // main → renderer (event)
+  SCHEDULER_FOCUS_TASK: 'scheduler:focus-task',         // main → renderer: notification click → open task detail
+
   // Workflow
   WORKFLOWS_LIST: 'workflows:list',
   WORKFLOWS_SAVE: 'workflows:save',
@@ -301,7 +314,13 @@ export interface AppSettings {
   defaultEmbeddingModel: string
   defaultEmbeddingProviderId: string
   searchApiKey: string
-  searchProvider: 'tavily' | 'serper'
+  searchProvider: 'tavily' | 'serper' | 'searxng' | 'bing' | 'baidu' | 'sogou' | 'ddg' | 'google'
+  /** Self-hosted SearXNG instance URL, e.g. https://searx.example.com.
+   *  Only used when searchProvider === 'searxng'. */
+  searxngUrl?: string
+  /** Show the hidden Chromium window used to scrape search engines. Default
+   *  false; flip on to watch/debug why a scraped engine returns nothing. */
+  searchBrowserVisible?: boolean
   kbGlobalEnabled: boolean
   kbGlobalSpaceIds: string[]
   dataDirectory: string
@@ -324,6 +343,14 @@ export interface AppSettings {
    *  for files and folders. Default true on Windows; no-op on macOS/Linux.
    *  Files open in the editor, folders open as Vibe projects. */
   shellIntegrationEnabled: boolean
+  /** Which page to show on app startup. Applied once per session after login,
+   *  and only if nothing else (e.g. shell-open) has navigated away from the
+   *  hard-coded default first. */
+  startupPage: 'chat' | 'vibe'
+
+  /** Globally-configured notification bots (DingTalk / Feishu / WeChat Work),
+   *  selectable per scheduled task. URLs and secrets are encrypted at rest. */
+  webhookBots: WebhookBot[]
 }
 
 /** Snapshot of OS-level toggle state, read back from the actual platform — so
@@ -576,10 +603,92 @@ export interface Session {
   updatedAt: number
   /** 1 = archived (hidden from default list); 0 / undefined = active */
   archived?: number
+  /** 1 = this session is the dedicated channel for a scheduled task.
+   *  SessionList renders these under a separate "📅 定时" group; deleting
+   *  one auto-pauses the owning task. */
+  isScheduled?: number
   /** Sum of cost_usd across all messages in this session (0 if none priced). */
   totalCostUsd?: number
   totalInputTokens?: number
   totalOutputTokens?: number
+}
+
+// Scheduled prompts
+export type ScheduleKind = 'daily' | 'weekly' | 'monthly'
+
+/** Discriminated union mirroring schedule_kind. Time is always "HH:MM" local. */
+export type ScheduleValue =
+  | { time: string }                                    // daily
+  | { days: number[]; time: string }                    // weekly — days: 0=Sun..6=Sat
+  | { day: number; time: string }                       // monthly — day: 1..31, skip months without it
+
+export type ScheduledRunStatus = 'success' | 'failed' | 'aborted_no_window'
+
+/** Supported group-chat bots for scheduled-task result notifications. */
+export type WebhookBotType = 'dingtalk' | 'feishu' | 'wechat_work'
+
+/** A globally-configured notification bot, reusable across scheduled tasks. */
+export interface WebhookBot {
+  id: string
+  type: WebhookBotType
+  /** User-facing label shown in the task form picker. */
+  name: string
+  /** Full webhook URL including the access_token / key query param. */
+  url: string
+  /** Optional 加签 secret (DingTalk / Feishu "加签" security mode). Empty = off.
+   *  WeChat Work has no signing, so this is ignored there. */
+  secret?: string
+  enabled: boolean
+}
+
+export interface ScheduledTask {
+  id: string
+  name: string
+  prompt: string
+  scheduleKind: ScheduleKind
+  scheduleValue: ScheduleValue
+  sessionId: string | null
+  /** Optional model override — when null, uses the default chat model. */
+  providerId: string | null
+  model: string | null
+  /** When set, the run's result is pushed to this WebhookBot (by id). */
+  webhookBotId: string | null
+  enabled: boolean
+  lastFiredAt: number | null
+  nextFireAt: number
+  consecutiveFailures: number
+  createdAt: number
+  updatedAt: number
+}
+
+export interface ScheduledTaskRun {
+  id: string
+  taskId: string
+  firedAt: number
+  status: ScheduledRunStatus
+  durationMs: number | null
+  cost: number | null
+  error: string | null
+  messageId: string | null
+}
+
+/** Input shape for create / update. Server fills in id / next_fire_at / timestamps. */
+export interface ScheduledTaskInput {
+  name: string
+  prompt: string
+  scheduleKind: ScheduleKind
+  scheduleValue: ScheduleValue
+  providerId?: string | null
+  model?: string | null
+  webhookBotId?: string | null
+  enabled?: boolean
+}
+
+/** Event payload pushed from main to renderer right after a scheduled run finishes. */
+export interface ScheduledRunCompletedEvent {
+  taskId: string
+  sessionId: string | null
+  status: ScheduledRunStatus
 }
 
 export interface MessageMeta {
@@ -612,6 +721,14 @@ export interface ToolCallRecord {
   result?: unknown
   status: 'running' | 'done' | 'error'
   error?: string
+}
+
+/** Payload recorded by the `ask_user` tool (both args and result use this shape).
+ *  Rendered as a clickable choice card in the chat. */
+export interface AskUserPayload {
+  question: string
+  options: Array<{ label: string; description: string | null }>
+  allowCustom: boolean
 }
 
 export interface Attachment {

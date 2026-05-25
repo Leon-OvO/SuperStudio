@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { IPC } from '../../src/shared/ipc-types'
+import { IPC, type ScheduledTask, type ScheduledTaskRun, type ScheduledTaskInput, type ScheduledRunCompletedEvent } from '../../src/shared/ipc-types'
 
 // Expose type-safe IPC bridge to renderer
 const api = {
@@ -93,6 +93,8 @@ const api = {
   listMessages: (sessionId: string) => ipcRenderer.invoke(IPC.MESSAGES_LIST, sessionId),
   deleteMessage: (messageId: string) => ipcRenderer.invoke(IPC.MESSAGES_DELETE, messageId),
   deleteMessagesFrom: (messageId: string) => ipcRenderer.invoke(IPC.MESSAGES_DELETE_FROM, messageId),
+  clearSessionMessages: (sessionId: string) =>
+    ipcRenderer.invoke(IPC.MESSAGES_CLEAR_SESSION, sessionId) as Promise<{ ok: boolean; deleted: number }>,
   updateMessage: (messageId: string, content: string) => ipcRenderer.invoke(IPC.MESSAGES_UPDATE, messageId, content),
   searchSessions: (query: string) => ipcRenderer.invoke(IPC.SESSIONS_SEARCH, query),
   exportAllSessions: () => ipcRenderer.invoke(IPC.SESSIONS_EXPORT_ALL),
@@ -293,6 +295,29 @@ const api = {
     const listener = (_e: unknown, data: { id: string; exitCode: number }) => cb(data)
     ipcRenderer.on(IPC.TERMINAL_EXIT, listener)
     return () => ipcRenderer.removeListener(IPC.TERMINAL_EXIT, listener)
+  },
+
+  // --- Scheduled prompts ---
+  listScheduledTasks: () => ipcRenderer.invoke(IPC.SCHEDULER_LIST) as Promise<ScheduledTask[]>,
+  getScheduledTask: (id: string) => ipcRenderer.invoke(IPC.SCHEDULER_GET, id) as Promise<ScheduledTask | null>,
+  createScheduledTask: (input: ScheduledTaskInput) => ipcRenderer.invoke(IPC.SCHEDULER_CREATE, input) as Promise<ScheduledTask>,
+  updateScheduledTask: (id: string, input: ScheduledTaskInput) =>
+    ipcRenderer.invoke(IPC.SCHEDULER_UPDATE, id, input) as Promise<ScheduledTask>,
+  deleteScheduledTask: (id: string) => ipcRenderer.invoke(IPC.SCHEDULER_DELETE, id) as Promise<{ ok: boolean }>,
+  setScheduledTaskEnabled: (id: string, enabled: boolean) =>
+    ipcRenderer.invoke(IPC.SCHEDULER_SET_ENABLED, id, enabled) as Promise<{ ok: boolean }>,
+  triggerScheduledTaskNow: (id: string) => ipcRenderer.invoke(IPC.SCHEDULER_TRIGGER_NOW, id) as Promise<{ ok: boolean }>,
+  listScheduledTaskRuns: (taskId: string, limit?: number) =>
+    ipcRenderer.invoke(IPC.SCHEDULER_LIST_RUNS, taskId, limit) as Promise<ScheduledTaskRun[]>,
+  onScheduledRunCompleted: (cb: (event: ScheduledRunCompletedEvent) => void) => {
+    const listener = (_e: unknown, data: ScheduledRunCompletedEvent) => cb(data)
+    ipcRenderer.on(IPC.SCHEDULER_RUN_COMPLETED, listener)
+    return () => ipcRenderer.removeListener(IPC.SCHEDULER_RUN_COMPLETED, listener)
+  },
+  onSchedulerFocusTask: (cb: (event: { taskId: string }) => void) => {
+    const listener = (_e: unknown, data: { taskId: string }) => cb(data)
+    ipcRenderer.on(IPC.SCHEDULER_FOCUS_TASK, listener)
+    return () => ipcRenderer.removeListener(IPC.SCHEDULER_FOCUS_TASK, listener)
   },
 
   // --- MCP servers ---

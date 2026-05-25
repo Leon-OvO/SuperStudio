@@ -16,6 +16,7 @@ import { skillsHandlers } from './skills'
 import { terminalHandlers } from './terminal'
 import { systemHandlers } from './system'
 import { updaterHandlers } from './updater'
+import { schedulerHandlers } from './scheduler'
 import { logEntry, getEntriesFromDisk, clearEntries } from '../services/error-log'
 
 export function registerIpcHandlers(): void {
@@ -41,6 +42,7 @@ export function registerIpcHandlers(): void {
     ['terminal', terminalHandlers],
     ['system', systemHandlers],
     ['updater', updaterHandlers],
+    ['scheduler', schedulerHandlers],
   ]
   for (const [name, register] of groups) {
     try {

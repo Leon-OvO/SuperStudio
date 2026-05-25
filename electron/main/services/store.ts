@@ -2,7 +2,7 @@ import Store from 'electron-store'
 import { safeStorage, app } from 'electron'
 import fs from 'fs'
 import path from 'path'
-import { ProviderConfig, AppSettings, McpServerConfig } from '../../../src/shared/ipc-types'
+import { ProviderConfig, AppSettings, McpServerConfig, WebhookBot } from '../../../src/shared/ipc-types'
 
 interface StoreSchema {
   providers: ProviderConfig[]
@@ -23,7 +23,9 @@ const defaults: StoreSchema = {
     defaultEmbeddingModel: 'text-embedding-3-small',
     defaultEmbeddingProviderId: '',
     searchApiKey: '',
-    searchProvider: 'tavily',
+    searchProvider: 'bing',
+    searxngUrl: '',
+    searchBrowserVisible: false,
     kbGlobalEnabled: false,
     kbGlobalSpaceIds: [],
     dataDirectory: '',
@@ -35,6 +37,8 @@ const defaults: StoreSchema = {
     vibeAutoApply: false,
     autoLaunch: false,
     shellIntegrationEnabled: true,
+    startupPage: 'chat',
+    webhookBots: [],
   }
 }
 
@@ -86,6 +90,23 @@ function mapValues<T>(obj: Record<string, T>, fn: (v: T) => T): Record<string, T
   const out: Record<string, T> = {}
   for (const [k, v] of Object.entries(obj)) out[k] = fn(v)
   return out
+}
+
+// Webhook bots carry credentials in their URL (access_token) and optional 加签
+// secret, so both are encrypted at rest just like provider API keys.
+function encryptBots(bots: WebhookBot[]): WebhookBot[] {
+  return (bots ?? []).map(b => ({
+    ...b,
+    url: encryptString(b.url || ''),
+    secret: b.secret ? encryptString(b.secret) : b.secret
+  }))
+}
+function decryptBots(bots: WebhookBot[]): WebhookBot[] {
+  return (bots ?? []).map(b => ({
+    ...b,
+    url: decryptString(b.url || ''),
+    secret: b.secret ? decryptString(b.secret) : b.secret
+  }))
 }
 
 // --- Lazy store + one-shot migration -----------------------------------
@@ -184,7 +205,12 @@ export function getSettings(): AppSettings {
   const raw = getStore().get('settings') as AppSettings
   // Merge defaults so newly-added keys (autoLaunch, shellIntegrationEnabled, …)
   // surface as their declared default on installs upgraded from older versions.
-  return { ...defaults.settings, ...raw, searchApiKey: decryptString(raw.searchApiKey || '') }
+  return {
+    ...defaults.settings,
+    ...raw,
+    searchApiKey: decryptString(raw.searchApiKey || ''),
+    webhookBots: decryptBots(raw.webhookBots ?? [])
+  }
 }
 
 export function saveSettings(settings: Partial<AppSettings>): void {
@@ -194,7 +220,10 @@ export function saveSettings(settings: Partial<AppSettings>): void {
     ...merged,
     searchApiKey: 'searchApiKey' in settings
       ? encryptString(merged.searchApiKey || '')
-      : (current.searchApiKey || '')
+      : (current.searchApiKey || ''),
+    webhookBots: 'webhookBots' in settings
+      ? encryptBots(merged.webhookBots ?? [])
+      : (current.webhookBots ?? [])
   }
   getStore().set('settings', toPersist)
 }

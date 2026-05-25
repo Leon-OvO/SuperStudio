@@ -1,27 +1,26 @@
 /**
- * Gitee-backed update checker.
+ * GitHub-backed update checker.
  *
- * We can't use electron-updater here — Gitee isn't a supported provider, and
- * setting up a generic-provider manifest is overkill for an unsigned desktop
- * app. Instead we hit Gitee's public REST API to fetch the latest release,
- * compare its tag against the running version, and surface a "new version
- * available" toast in the renderer that opens the Gitee release page in the
- * user's browser.
+ * We can't use electron-updater here — the app is unsigned and setting up a
+ * full auto-update manifest is overkill. Instead we hit GitHub's public REST
+ * API to fetch the latest release, compare its tag against the running
+ * version, and surface a "new version available" toast in the renderer that
+ * opens the GitHub release page in the user's browser.
  *
  * No background download, no in-place install — but also no signing
  * requirement, no extra infrastructure, and the user always sees a real
- * Gitee URL before downloading anything.
+ * release URL before downloading anything.
  */
 
 import { app, shell } from 'electron'
 import { BrowserWindow } from 'electron'
 import { IPC } from '../../../src/shared/ipc-types'
 
-const GITEE_OWNER = 'leonops'
-const GITEE_REPO = 'SuperStudio'
-const RELEASES_URL = `https://gitee.com/api/v5/repos/${GITEE_OWNER}/${GITEE_REPO}/releases/latest`
+const GH_OWNER = 'Leon-OvO'
+const GH_REPO = 'SuperStudio'
+const RELEASES_URL = `https://api.github.com/repos/${GH_OWNER}/${GH_REPO}/releases/latest`
 /** Browser-facing page — what we open when the user clicks "下载新版本". */
-const RELEASES_PAGE = `https://gitee.com/${GITEE_OWNER}/${GITEE_REPO}/releases`
+const RELEASES_PAGE = `https://github.com/${GH_OWNER}/${GH_REPO}/releases`
 
 export interface UpdateInfo {
   /** True when remoteVersion > currentVersion. */
@@ -31,7 +30,7 @@ export interface UpdateInfo {
   remoteVersion: string | null
   /** Human-readable release name. */
   remoteName: string | null
-  /** Release notes body (markdown from Gitee). */
+  /** Release notes body (markdown from GitHub). */
   body: string | null
   /** Direct link to open in the browser. */
   releaseUrl: string
@@ -39,7 +38,7 @@ export interface UpdateInfo {
   error?: string
 }
 
-interface GiteeRelease {
+interface GitHubRelease {
   tag_name: string
   name: string
   body?: string
@@ -79,17 +78,20 @@ export async function checkForUpdates(): Promise<UpdateInfo> {
 
   try {
     const res = await fetch(RELEASES_URL, {
-      headers: { Accept: 'application/json', 'User-Agent': `SuperStudio/${currentVersion}` }
+      headers: {
+        Accept: 'application/vnd.github+json',
+        'User-Agent': `SuperStudio/${currentVersion}`
+      }
     })
     if (res.status === 404) {
       // Repository has no releases yet — treat as "up to date" silently.
-      console.log('[updater] no releases published yet on Gitee')
+      console.log('[updater] no releases published yet on GitHub')
       return base
     }
     if (!res.ok) {
-      return { ...base, error: `Gitee API HTTP ${res.status}` }
+      return { ...base, error: `GitHub API HTTP ${res.status}` }
     }
-    const data = await res.json() as GiteeRelease
+    const data = await res.json() as GitHubRelease
     if (data.draft || data.prerelease) {
       // Skip drafts / prereleases — users only want stable.
       return base

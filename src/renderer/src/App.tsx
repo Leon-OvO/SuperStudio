@@ -1,5 +1,5 @@
-import { useEffect, useLayoutEffect, useState } from 'react'
-import { useUIStore } from './stores/ui'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useUIStore, SKIN_IS_DARK } from './stores/ui'
 import { useAuthStore } from './stores/auth'
 import { useVibeStore } from './pages/Vibe/store'
 import { Sidebar } from './components/layout/Sidebar'
@@ -11,6 +11,7 @@ import { GalleryPage } from './pages/Gallery'
 import { KnowledgePage } from './pages/Knowledge'
 import { VibePage } from './pages/Vibe'
 import { SkillsPage } from './pages/Skills'
+import { SchedulerPage } from './pages/Scheduler'
 import { SettingsPage } from './pages/Settings'
 import { ShortcutsHelp } from './components/ui/ShortcutsHelp'
 import { CommandPalette } from './components/ui/CommandPalette'
@@ -19,11 +20,12 @@ import { LoginScreen } from './pages/Login'
 import { DataDirectorySetup } from './components/DataDirectorySetup'
 import { ChatModelSetup } from './components/ChatModelSetup'
 import { UpdateNotifier } from './components/UpdateNotifier'
+import { useScheduledNotifications } from './stores/scheduledNotifications'
 
-type PageId = 'dashboard' | 'chat' | 'workflow' | 'gallery' | 'knowledge' | 'vibe' | 'skills' | 'settings'
+type PageId = 'dashboard' | 'chat' | 'workflow' | 'gallery' | 'knowledge' | 'vibe' | 'skills' | 'scheduler' | 'settings'
 
 export default function App() {
-  const { currentPage, setPage, theme, setPendingWorkflowId } = useUIStore()
+  const { currentPage, setPage, skin, setPendingWorkflowId } = useUIStore()
   const { isLoggedIn, isInitializing, restoreSession } = useAuthStore()
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
   const [paletteOpen, setPaletteOpen] = useState(false)
@@ -37,6 +39,11 @@ export default function App() {
   // other. `true` means either the user has saved a default or they chose to
   // skip (in which case Chat/Vibe will surface the picker on demand).
   const [chatModelReady, setChatModelReady] = useState<boolean | null>(null)
+  // Guard so the configured startupPage is applied at most once per session —
+  // we don't want to yank the user back to the homepage every time settings
+  // reload (e.g. on login/logout cycles), nor override a page that shell-open
+  // already navigated to.
+  const didApplyStartupPageRef = useRef(false)
 
   useEffect(() => {
     restoreSession()
@@ -54,6 +61,15 @@ export default function App() {
         if (!cancelled) {
           setDataDirReady(!!s.dataDirectory)
           setChatModelReady(!!(s.defaultChatProviderId && s.defaultChatModel))
+          // Apply configured startup page once — but skip if something else
+          // (shell-open, prior session) has already moved off the default.
+          if (!didApplyStartupPageRef.current) {
+            didApplyStartupPageRef.current = true
+            const target = s.startupPage === 'vibe' ? 'vibe' : 'chat'
+            if (useUIStore.getState().currentPage === 'chat' && target !== 'chat') {
+              setPage(target)
+            }
+          }
         }
       } catch {
         // If settings can't be read at all, don't lock the user out — fall
@@ -64,12 +80,17 @@ export default function App() {
     return () => { cancelled = true }
   }, [isLoggedIn])
 
-  // Apply dark class before first paint to avoid flash
+  // Apply skin class + .dark before first paint to avoid flash. The `.dark`
+  // class stays in sync so existing `dark:` Tailwind variants keep working on
+  // dark-base skins (cold/twilight).
   useLayoutEffect(() => {
     const root = document.documentElement
-    if (theme === 'dark') root.classList.add('dark')
+    root.classList.remove('skin-classic', 'skin-warm', 'skin-cold', 'skin-twilight', 'skin-terminal')
+    root.classList.add(`skin-${skin}`)
+    const isDark = SKIN_IS_DARK[skin]
+    if (isDark) root.classList.add('dark')
     else root.classList.remove('dark')
-  }, [theme])
+  }, [skin])
 
   // Tag <html> with the OS so platform-specific font-smoothing rules apply
   useLayoutEffect(() => {
@@ -126,8 +147,8 @@ export default function App() {
         return
       }
 
-      // Mod + 0-4 : nav to main pages
-      const pageMap: Record<string, PageId> = { '0': 'dashboard', '1': 'chat', '2': 'workflow', '3': 'gallery', '4': 'knowledge', '5': 'vibe', '6': 'skills' }
+      // Mod + 0-7 : nav to main pages
+      const pageMap: Record<string, PageId> = { '0': 'dashboard', '1': 'chat', '2': 'workflow', '3': 'gallery', '4': 'knowledge', '5': 'vibe', '6': 'skills', '7': 'scheduler' }
       if (pageMap[e.key]) {
         // Don't hijack number input inside text fields
         if (inTextField) return
@@ -169,6 +190,22 @@ export default function App() {
       window.removeEventListener('app:open-shortcuts', onShortcuts)
     }
   }, [])
+
+  // Scheduled-task run signals: mark task as unread + handle notification-click
+  // navigation (open the task's detail view inside the Scheduler page).
+  useEffect(() => {
+    const offRun = window.api.onScheduledRunCompleted?.((e) => {
+      if (e.status === 'success') {
+        useScheduledNotifications.getState().markUnread(e.taskId)
+      }
+    })
+    const offFocus = window.api.onSchedulerFocusTask?.((e) => {
+      if (!e.taskId) return
+      setPage('scheduler')
+      window.dispatchEvent(new CustomEvent('app:scheduler-open-task', { detail: { taskId: e.taskId } }))
+    })
+    return () => { offRun?.(); offFocus?.() }
+  }, [setPage])
 
   // OS-level "用 SuperStudio 打开" — Explorer right-click forwards a path here.
   // We park the target on the Vibe store and switch the active page; VibePage
@@ -259,6 +296,7 @@ export default function App() {
           {currentPage === 'knowledge' && <KnowledgePage />}
           {currentPage === 'vibe' && <VibePage />}
           {currentPage === 'skills' && <SkillsPage />}
+          {currentPage === 'scheduler' && <SchedulerPage />}
           {currentPage === 'settings' && <SettingsPage />}
         </main>
       </div>

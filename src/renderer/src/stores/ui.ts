@@ -1,7 +1,18 @@
 import { create } from 'zustand'
 
-type Page = 'dashboard' | 'chat' | 'workflow' | 'gallery' | 'knowledge' | 'vibe' | 'skills' | 'settings'
+type Page = 'dashboard' | 'chat' | 'workflow' | 'gallery' | 'knowledge' | 'vibe' | 'skills' | 'scheduler' | 'settings'
 type Theme = 'light' | 'dark'
+/** Skin = whole-app color palette. Replaces the old binary light/dark toggle —
+ *  each skin maps to a light-or-dark base so Monaco / xterm can still pick a
+ *  compatible variant via the derived `theme` field. */
+export type Skin = 'classic' | 'warm' | 'cold' | 'twilight' | 'terminal'
+export const SKIN_IS_DARK: Record<Skin, boolean> = {
+  classic: false,
+  warm: false,
+  cold: true,
+  twilight: true,
+  terminal: true
+}
 type VibeActivity = 'requests' | 'files'
 
 export interface PendingChatAttachment {
@@ -13,7 +24,14 @@ export interface PendingChatAttachment {
 interface UIState {
   currentPage: Page
   setPage: (page: Page) => void
+  /** Currently active skin — source of truth for color palette. */
+  skin: Skin
+  setSkin: (s: Skin) => void
+  /** Derived from skin — 'dark' when skin is cold/twilight, 'light' otherwise.
+   *  Kept so legacy consumers (Monaco editor, xterm) don't all need updating. */
   theme: Theme
+  /** Quick-toggle between a light skin and a dark skin. Sidebar / MenuBar use
+   *  this for the one-click "切换主题" button. Cycles classic ↔ twilight. */
   toggleTheme: () => void
   pendingWorkflowId: string | null
   setPendingWorkflowId: (id: string | null) => void
@@ -33,9 +51,22 @@ interface UIState {
   /** Width (px) of the Vibe-page left sidebar (requests / files panel). */
   vibeSidebarWidth: number
   setVibeSidebarWidth: (n: number) => void
+  /** Width (px) of the Chat-page left session list. */
+  chatSidebarWidth: number
+  setChatSidebarWidth: (n: number) => void
+  /** Whether the main left nav rail shows labels (expanded) or icons-only. */
+  sidebarExpanded: boolean
+  setSidebarExpanded: (v: boolean) => void
 }
 
-const savedTheme = (localStorage.getItem('ss-theme') as Theme) || 'light'
+const SKIN_KEYS: Skin[] = ['classic', 'warm', 'cold', 'twilight', 'terminal']
+const savedSkin: Skin = (() => {
+  const raw = localStorage.getItem('ss-skin')
+  if (raw && SKIN_KEYS.includes(raw as Skin)) return raw as Skin
+  // Migrate from pre-skin builds: dark → twilight, anything else → classic.
+  const legacy = localStorage.getItem('ss-theme')
+  return legacy === 'dark' ? 'twilight' : 'classic'
+})()
 const savedTermHeight = (() => {
   const raw = localStorage.getItem('ss-terminal-height')
   const n = raw ? parseInt(raw, 10) : NaN
@@ -48,15 +79,30 @@ const savedVibeSidebarWidth = (() => {
   const n = raw ? parseInt(raw, 10) : NaN
   return Number.isFinite(n) ? Math.max(180, Math.min(560, n)) : 260
 })()
+const savedChatSidebarWidth = (() => {
+  const raw = localStorage.getItem('ss-chat-sidebar-width')
+  const n = raw ? parseInt(raw, 10) : NaN
+  return Number.isFinite(n) ? Math.max(180, Math.min(440, n)) : 224
+})()
+// Default to expanded (labels shown) — only collapse when the user opted in.
+const savedSidebarExpanded = localStorage.getItem('ss-sidebar-expanded') !== '0'
 
 export const useUIStore = create<UIState>((set, get) => ({
   currentPage: 'chat',
   setPage: (page) => set({ currentPage: page }),
-  theme: savedTheme,
+  skin: savedSkin,
+  setSkin: (s) => {
+    localStorage.setItem('ss-skin', s)
+    set({ skin: s, theme: SKIN_IS_DARK[s] ? 'dark' : 'light' })
+  },
+  theme: SKIN_IS_DARK[savedSkin] ? 'dark' : 'light',
   toggleTheme: () => {
-    const next: Theme = get().theme === 'light' ? 'dark' : 'light'
-    localStorage.setItem('ss-theme', next)
-    set({ theme: next })
+    // Light↔dark one-click toggle: cycle classic ↔ twilight. Users who want a
+    // specific skin pick it from Settings → 全局 → 皮肤 instead.
+    const current = get().skin
+    const next: Skin = SKIN_IS_DARK[current] ? 'classic' : 'twilight'
+    localStorage.setItem('ss-skin', next)
+    set({ skin: next, theme: SKIN_IS_DARK[next] ? 'dark' : 'light' })
   },
   pendingWorkflowId: null,
   setPendingWorkflowId: (id) => set({ pendingWorkflowId: id }),
@@ -85,5 +131,16 @@ export const useUIStore = create<UIState>((set, get) => ({
     const clamped = Math.max(180, Math.min(560, Math.floor(n)))
     localStorage.setItem('ss-vibe-sidebar-width', String(clamped))
     set({ vibeSidebarWidth: clamped })
+  },
+  chatSidebarWidth: savedChatSidebarWidth,
+  setChatSidebarWidth: (n) => {
+    const clamped = Math.max(180, Math.min(440, Math.floor(n)))
+    localStorage.setItem('ss-chat-sidebar-width', String(clamped))
+    set({ chatSidebarWidth: clamped })
+  },
+  sidebarExpanded: savedSidebarExpanded,
+  setSidebarExpanded: (v) => {
+    localStorage.setItem('ss-sidebar-expanded', v ? '1' : '0')
+    set({ sidebarExpanded: v })
   }
 }))

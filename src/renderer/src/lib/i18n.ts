@@ -12,10 +12,13 @@ const ZH: Dict = {
   'nav.gallery': '素材库',
   'nav.knowledge': '知识库',
   'nav.skills': '技能',
+  'nav.scheduler': '定时',
   'nav.settings': '设置',
   'nav.themeLight': '切换亮色',
   'nav.themeDark': '切换暗色',
   'nav.languageSwitch': '切换语言',
+  'nav.collapse': '收起菜单',
+  'nav.expand': '展开菜单',
 
   // About
   'about.title': 'SuperStudio',
@@ -56,10 +59,13 @@ const EN: Dict = {
   'nav.gallery': 'Asset Library',
   'nav.knowledge': 'Knowledge',
   'nav.skills': 'Skills',
+  'nav.scheduler': 'Scheduler',
   'nav.settings': 'Settings',
   'nav.themeLight': 'Switch to light',
   'nav.themeDark': 'Switch to dark',
   'nav.languageSwitch': 'Switch language',
+  'nav.collapse': 'Collapse menu',
+  'nav.expand': 'Expand menu',
 
   'about.title': 'SuperStudio',
   'about.tagline': 'A local-first AI desktop workspace',

@@ -200,6 +200,45 @@ function createTables(): void {
       builtin   INTEGER NOT NULL DEFAULT 0,                -- 1 = shipped with app, can't be deleted
       added_at  INTEGER NOT NULL
     );
+
+    -- Scheduled prompts: user-defined daily/weekly/monthly triggers that
+    -- automatically dispatch a prompt to a dedicated chat session while the
+    -- app is running. schedule_value is JSON whose shape depends on
+    -- schedule_kind (daily: {time}, weekly: {days, time}, monthly: {day, time}).
+    CREATE TABLE IF NOT EXISTS scheduled_tasks (
+      id                   TEXT PRIMARY KEY,
+      name                 TEXT NOT NULL,
+      prompt               TEXT NOT NULL,
+      schedule_kind        TEXT NOT NULL,
+      schedule_value       TEXT NOT NULL,
+      session_id           TEXT,
+      provider_id          TEXT,
+      model                TEXT,
+      enabled              INTEGER NOT NULL DEFAULT 1,
+      last_fired_at        INTEGER,
+      next_fire_at         INTEGER NOT NULL,
+      consecutive_failures INTEGER NOT NULL DEFAULT 0,
+      created_at           INTEGER NOT NULL,
+      updated_at           INTEGER NOT NULL,
+      FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE SET NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_enabled ON scheduled_tasks(enabled, next_fire_at);
+
+    -- Per-execution history for scheduled tasks. status:
+    -- 'success' / 'failed' / 'aborted_no_window'. message_id links back to the
+    -- chat messages row produced by the run (null for aborted runs).
+    CREATE TABLE IF NOT EXISTS scheduled_task_runs (
+      id          TEXT PRIMARY KEY,
+      task_id     TEXT NOT NULL,
+      fired_at    INTEGER NOT NULL,
+      status      TEXT NOT NULL,
+      duration_ms INTEGER,
+      cost        REAL,
+      error       TEXT,
+      message_id  TEXT,
+      FOREIGN KEY (task_id) REFERENCES scheduled_tasks(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_scheduled_task_runs_task ON scheduled_task_runs(task_id, fired_at);
   `)
   saveDb()
 }
@@ -237,6 +276,13 @@ function applyMigrations(): void {
   try { db.run(`ALTER TABLE skills ADD COLUMN skill_body TEXT`) } catch { /* already exists */ }
   try { db.run(`ALTER TABLE skills ADD COLUMN resource_files TEXT`) } catch { /* already exists */ }
   try { db.run(`ALTER TABLE skills ADD COLUMN allow_scripts INTEGER NOT NULL DEFAULT 1`) } catch { /* already exists */ }
+  // v7: scheduled prompts — flag dedicated sessions so SessionList can render
+  // them under a separate "📅 定时" group, and so cascade rules (delete
+  // dedicated session → auto-pause owning task) can target them.
+  try { db.run(`ALTER TABLE sessions ADD COLUMN is_scheduled INTEGER NOT NULL DEFAULT 0`) } catch { /* already exists */ }
+  // v8: scheduled-task webhook notification — links a task to a globally
+  // configured bot (DingTalk/Feishu/WeChat Work) by id; null = no notification.
+  try { db.run(`ALTER TABLE scheduled_tasks ADD COLUMN webhook_bot_id TEXT`) } catch { /* already exists */ }
 }
 
 // Helper: run a query and save

@@ -173,32 +173,67 @@ export function GlobalSettings({ tab, settings, providers, onSave, onProvidersRe
   }
 
   if (tab === 'search') {
+    const needsKey = draft.searchProvider === 'tavily' || draft.searchProvider === 'serper'
+    const needsUrl = draft.searchProvider === 'searxng'
+    const isScraped = ['bing', 'baidu', 'sogou', 'ddg', 'google'].includes(draft.searchProvider)
     return (
       <div className="space-y-4 max-w-2xl">
         <h2 className="text-lg font-semibold">网络搜索</h2>
         <div className="space-y-1.5">
           <label className="text-sm font-medium block">搜索引擎</label>
-          <Select<'tavily' | 'serper'>
+          <Select<'tavily' | 'serper' | 'searxng' | 'bing' | 'baidu' | 'sogou' | 'ddg' | 'google'>
             value={draft.searchProvider}
             onChange={v => update('searchProvider', v)}
             options={[
-              { value: 'tavily', label: 'Tavily' },
-              { value: 'serper', label: 'Serper' }
+              { value: 'bing', label: 'Bing（免费、浏览器抓取）' },
+              { value: 'baidu', label: 'Baidu 百度（免费、浏览器抓取）' },
+              { value: 'google', label: 'Google 谷歌（免费、浏览器抓取，可能弹验证码）' },
+              { value: 'sogou', label: 'Sogou 搜狗（免费、浏览器抓取）' },
+              { value: 'ddg', label: 'DuckDuckGo（免费、浏览器抓取）' },
+              { value: 'tavily', label: 'Tavily（需 API 密钥）' },
+              { value: 'serper', label: 'Serper（需 API 密钥）' },
+              { value: 'searxng', label: 'SearXNG（自部署实例）' }
             ]}
             size="md"
             className="w-full [&>span]:w-full"
           />
+          <p className="text-[11px] text-muted-foreground">
+            作为内置 web_search 工具与工作流搜索节点的默认引擎；所选引擎失败时会自动按 Bing → Baidu → DDG → Sogou 顺序串行兜底。
+          </p>
         </div>
-        <div className="space-y-1.5">
-          <label className="text-sm font-medium block">API 密钥</label>
-          <input
-            type="password"
-            value={draft.searchApiKey}
-            onChange={e => update('searchApiKey', e.target.value)}
-            placeholder="tvly-... 或 serper key"
-            className="input"
-          />
-        </div>
+        {needsKey && (
+          <div className="space-y-1.5">
+            <label className="text-sm font-medium block">API 密钥</label>
+            <input
+              type="password"
+              value={draft.searchApiKey}
+              onChange={e => update('searchApiKey', e.target.value)}
+              placeholder={draft.searchProvider === 'tavily' ? 'tvly-...' : 'serper key'}
+              className="input"
+            />
+          </div>
+        )}
+        {needsUrl && (
+          <div className="space-y-1.5">
+            <label className="text-sm font-medium block">SearXNG 实例地址</label>
+            <input
+              type="text"
+              value={draft.searxngUrl || ''}
+              onChange={e => update('searxngUrl', e.target.value)}
+              placeholder="https://searx.example.com"
+              className="input"
+            />
+            <p className="text-[11px] text-muted-foreground">
+              需指向已开启 <code>format=json</code> 的实例。许多公共实例默认禁用 JSON 接口，建议使用自部署节点。
+            </p>
+          </div>
+        )}
+        {isScraped && (
+          <p className="text-xs text-muted-foreground leading-relaxed">
+            该引擎通过一个隐藏的浏览器窗口加载搜索结果页并提取，无需密钥；速度略慢（约 1–3 秒），且可能受引擎改版或反爬影响。
+            想观察抓取过程，可到「全局 → 浏览器」打开抓取窗口。
+          </p>
+        )}
         <button onClick={save} className="btn-primary">保存</button>
       </div>
     )

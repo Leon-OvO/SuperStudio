@@ -73,6 +73,13 @@ SuperStudio 把 LLM 对话 + 多模态生成（文生图、图生图、文生视
 - 大图浏览：键盘左右翻页、复制、另存为、在文件夹中显示
 - **一键作为参考图** —— 直接送到聊天框继续创作
 
+### 📅 定时任务
+- 到点自动跑一段 prompt，结果写进专属对话
+- 每天 / 每周（多选日）/ 每月（指定日）三种触发方式 + 24 小时制时间
+- 4 个开箱即用模板：每日早报 / 工作日计划 / 每晚复盘 / 月度回顾
+- 连续失败 5 次自动暂停 + 桌面通知
+- 应用关闭时错过的任务：< 24h 启动时补跑一次，> 24h 直接跳过
+
 ### 🔌 MCP (Model Context Protocol) 支持
 接入任意外部工具服务器，与 Claude Code / Cursor / OpenCode 协议互通：
 - 支持 stdio（本地子进程）和 SSE（远程 HTTP 端点）两种传输
@@ -118,7 +125,7 @@ SuperStudio 把 LLM 对话 + 多模态生成（文生图、图生图、文生视
 ### 安装与运行
 
 ```bash
-git clone https://gitee.com/leonops/SuperStudio.git
+git clone https://github.com/Leon-OvO/SuperStudio.git
 cd SuperStudio
 npm install
 npm run dev
@@ -168,6 +175,8 @@ npm run dist:mac
 | ⚡ **工作流** (Ctrl+3) | 节点式可视化编排 |
 | 🖼 **画廊** (Ctrl+4) | 生成内容统一管理 |
 | 📚 **知识库** (Ctrl+5) | 多空间向量化知识库 |
+| ✨ **技能** (Ctrl+6) | 提示词 + 工具白名单技能包 |
+| 📅 **定时** (Ctrl+7) | 到点自动跑 prompt 的定时任务 |
 | 📊 **仪表盘** (Ctrl+0) | 用量统计（也在右上角头像里） |
 | ⚙ **设置** | 账号 / 模型 / 网络搜索 / 知识库 / MCP / 关于 |
 

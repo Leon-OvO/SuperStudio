@@ -30,6 +30,15 @@ export class ErrorBoundary extends Component<Props, State> {
   componentDidCatch(error: Error, info: { componentStack?: string }) {
     console.error('[ErrorBoundary] caught render error:', error, info)
     this.setState({ info: info?.componentStack ?? null })
+    // Persist to JSONL so the user can recover details after reload — without
+    // this hook React render errors only live in DevTools, which is useless
+    // in production builds where DevTools isn't open.
+    window.api?.reportError?.({
+      level: 'error',
+      message: 'React render error: ' + error.message,
+      stack: error.stack,
+      context: { componentStack: info?.componentStack }
+    })?.catch(() => {/* nothing else we can do */})
   }
 
   reset = () => this.setState({ error: null, info: null })

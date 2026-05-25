@@ -20,6 +20,12 @@ if (process.platform === 'win32') {
   app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion')
 }
 
+// Force HTTP/1.1+TCP/TLS instead of QUIC/HTTP3. Chromium's QUIC negotiation
+// emits "handshake failed ... net_error -100" (ERR_CONNECTION_CLOSED) stderr
+// noise even when it silently falls back to TCP, and behaves more reliably
+// behind corporate proxies. Cross-platform on purpose.
+app.commandLine.appendSwitch('disable-quic')
+
 // Capture uncaught failures in main before anything else loads
 import('./services/error-log').then(m => m.installMainProcessHooks()).catch(() => {/* ignore */})
 
@@ -120,6 +126,78 @@ function createWindow(): void {
     }
   })
 
+  // First-paint watchdog: if the window doesn't reach ready-to-show within
+  // 15s, the renderer is probably stuck on a bundle/CSS load. Surface that
+  // explicitly instead of leaving the user staring at a black BrowserWindow.
+  let readyToShowFired = false
+  mainWindow.once('ready-to-show', () => { readyToShowFired = true })
+  setTimeout(async () => {
+    if (readyToShowFired) return
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    try {
+      const { logEntry } = await import('./services/error-log')
+      logEntry({ level: 'error', source: 'main', message: '[STARTUP-NO-PAINT] renderer did not signal ready-to-show within 15s' })
+    } catch {/* ignore */}
+    try {
+      const { showFatalErrorWindow } = await import('./services/fatal-window')
+      showFatalErrorWindow({
+        title: '渲染层未启动',
+        reason: '主窗口已经创建，但渲染层在 15 秒内没有完成首屏渲染 —— 通常是前端 bundle 加载失败、CSS 解析报错，或 preload 脚本崩溃。详情请查看日志文件。',
+        error: new Error('Renderer ready-to-show timeout (15s)'),
+        context: {
+          'App version': app.getVersion(),
+          'Window URL': mainWindow.webContents.getURL() || '(none)',
+          'userData': app.getPath('userData')
+        }
+      })
+    } catch {/* ignore */}
+  }, 15000)
+
+  // Catch renderer load / crash signals. Without these, a broken bundle or
+  // a renderer crash leaves the window blank with no surfaced error.
+  mainWindow.webContents.on('did-fail-load', async (_, errorCode, errorDescription, validatedURL) => {
+    // -3 = ABORTED (user navigated away). Anything else is a real failure.
+    if (errorCode === -3) return
+    try {
+      const { logEntry } = await import('./services/error-log')
+      logEntry({
+        level: 'error',
+        source: 'main',
+        message: `[RENDERER-LOAD-FAIL] ${errorDescription} (${errorCode})`,
+        context: { url: validatedURL }
+      })
+    } catch {/* ignore */}
+    try {
+      const { showFatalErrorWindow } = await import('./services/fatal-window')
+      showFatalErrorWindow({
+        title: '页面加载失败',
+        reason: '主窗口尝试加载渲染层 HTML 时失败。常见原因：安装包损坏、磁盘只读、文件被杀毒软件隔离。',
+        error: new Error(`did-fail-load ${errorCode}: ${errorDescription}`),
+        context: { 'URL': validatedURL, 'errorCode': errorCode }
+      })
+    } catch {/* ignore */}
+  })
+
+  mainWindow.webContents.on('render-process-gone', async (_, details) => {
+    try {
+      const { logEntry } = await import('./services/error-log')
+      logEntry({
+        level: 'error',
+        source: 'main',
+        message: `[RENDERER-CRASHED] reason=${details.reason} exitCode=${details.exitCode}`
+      })
+    } catch {/* ignore */}
+    try {
+      const { showFatalErrorWindow } = await import('./services/fatal-window')
+      showFatalErrorWindow({
+        title: '渲染进程崩溃',
+        reason: `渲染进程已退出（${details.reason}）。通常意味着 JavaScript 触发了内存/原生层错误。重启可恢复。`,
+        error: new Error(`render-process-gone: ${details.reason} (exit ${details.exitCode})`),
+        context: { 'reason': details.reason, 'exitCode': details.exitCode }
+      })
+    } catch {/* ignore */}
+  })
+
   const wcRef = mainWindow.webContents
   mainWindow.on('closed', async () => {
     // Kill any PTY sessions spawned by this window — prevents zombie shells.
@@ -127,6 +205,18 @@ function createWindow(): void {
       const { disposeAllForWebContents } = await import('./services/terminals')
       disposeAllForWebContents(wcRef)
     } catch { /* terminals module may not be loaded */ }
+    // Tear down the hidden search-scraper window too — otherwise it can outlive
+    // the main window, keeping the app alive headless or (when it later closes)
+    // tripping window-all-closed → app.quit() at a surprising time.
+    try {
+      const { closeScraper } = await import('./services/search')
+      closeScraper()
+    } catch { /* search module may not be loaded */ }
+    // Same for the persistent web-browse window used by the web_open tool.
+    try {
+      const { closeBrowse } = await import('./services/web-browse')
+      closeBrowse()
+    } catch { /* web-browse module may not be loaded */ }
   })
 
   mainWindow.on('maximize', () => {
@@ -163,10 +253,31 @@ app.whenReady().then(async () => {
   // would sit here forever holding the single-instance lock, blocking every
   // relaunch. Force-exit after 20s so the next launch starts clean. unref()
   // keeps a normal fast startup unaffected.
-  const startupWatchdog = setTimeout(() => {
+  const startupWatchdog = setTimeout(async () => {
     if (!startupComplete) {
-      console.error('[startup] watchdog: startup did not complete within 20s — force-exiting')
-      app.exit(1)
+      const msg = 'startup did not complete within 20s'
+      console.error('[startup] watchdog:', msg)
+      try {
+        const { logEntry } = await import('./services/error-log')
+        logEntry({ level: 'error', source: 'main', message: '[STARTUP-WATCHDOG] ' + msg })
+      } catch {/* ignore */}
+      try {
+        const { showFatalErrorWindow } = await import('./services/fatal-window')
+        showFatalErrorWindow({
+          title: '启动超时',
+          reason: '应用启动耗时超过 20 秒仍未完成 —— 通常是数据库文件被其他进程占用、数据目录所在磁盘异常，或某个依赖加载卡死。',
+          error: new Error('Startup watchdog tripped after 20s'),
+          context: {
+            'App version': app.getVersion(),
+            'Electron': process.versions.electron,
+            'Node': process.versions.node,
+            'Platform': `${process.platform} ${process.arch}`,
+            'userData': app.getPath('userData')
+          }
+        })
+      } catch {/* if even this fails, fall through to exit */}
+      // Don't force-exit anymore — leave the panic window up so the user can
+      // copy the log and choose restart vs quit themselves.
     }
   }, 20000)
   startupWatchdog.unref()
@@ -326,16 +437,49 @@ app.whenReady().then(async () => {
     console.warn('[startup] updater schedule failed:', (e as Error).message)
   }
 
+  // Scheduled prompts — start the per-task tick loop. Catches up on any
+  // < 24h missed fires from the previous session at start-up time.
+  try {
+    const { startScheduler } = await import('./services/scheduler')
+    startScheduler()
+  } catch (e) {
+    console.warn('[startup] scheduler start failed:', (e as Error).message)
+  }
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
-}).catch((e) => {
-  // Startup threw before completing. A half-initialized primary that lingers
-  // would hold the single-instance lock (so relaunch can't get a fresh
-  // process) and could get a dead window painted onto it by second-instance.
-  // Quit to release the lock — the next launch then starts from a clean slate.
-  console.error('[startup] fatal error — quitting so the next launch starts clean:', e)
-  app.quit()
+}).catch(async (e) => {
+  // Startup threw before completing. Surface a visible panic window so the
+  // user sees the error (previously this only logged to stderr, which is
+  // invisible in a packaged build → silent black screen). The panic window
+  // gives the user a Restart button + a "Open log folder" shortcut.
+  console.error('[startup] fatal error:', e)
+  try {
+    const { logEntry } = await import('./services/error-log')
+    const err = e instanceof Error ? e : new Error(String(e))
+    logEntry({ level: 'error', source: 'main', message: '[STARTUP-FATAL] ' + err.message, stack: err.stack })
+  } catch {/* logging is best-effort */}
+  try {
+    const { showFatalErrorWindow } = await import('./services/fatal-window')
+    showFatalErrorWindow({
+      title: '启动失败',
+      reason: '主进程在初始化阶段抛出了未捕获的异常。下面是错误详情；点击「重启」可以再试一次。',
+      error: e,
+      context: {
+        'App version': app.getVersion(),
+        'Electron': process.versions.electron,
+        'Node': process.versions.node,
+        'Platform': `${process.platform} ${process.arch}`,
+        'userData': app.getPath('userData')
+      }
+    })
+  } catch (e2) {
+    // If even the panic window fails, fall back to quitting — nothing else
+    // we can do without dumping a console message no user will ever see.
+    console.error('[startup] failed to open fatal-error window:', (e2 as Error).message)
+    app.quit()
+  }
 })
 
 app.on('window-all-closed', () => {
@@ -352,6 +496,22 @@ app.on('before-quit', async () => {
   // Remove the tray icon first so it disappears even if MCP cleanup stalls.
   const { destroyTray } = await import('./services/tray')
   destroyTray()
+  // Stop the scheduled-prompts tick loop so a slow setInterval doesn't keep
+  // the event loop alive after MCP teardown.
+  try {
+    const { stopScheduler } = await import('./services/scheduler')
+    stopScheduler()
+  } catch { /* best-effort */ }
+  // Tear down the hidden search-scraper Chromium window if it's still around.
+  try {
+    const { closeScraper } = await import('./services/search')
+    closeScraper()
+  } catch { /* best-effort */ }
+  // Tear down the persistent web-browse Chromium window if it's still around.
+  try {
+    const { closeBrowse } = await import('./services/web-browse')
+    closeBrowse()
+  } catch { /* best-effort */ }
   // Shut down any spawned MCP subprocesses cleanly
   const { mcpManager } = await import('./services/mcp')
   await mcpManager.disconnectAll().catch(() => {})

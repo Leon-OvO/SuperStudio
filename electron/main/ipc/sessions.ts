@@ -11,6 +11,7 @@ export function sessionHandlers(): void {
              s.created_at AS createdAt,
              s.updated_at AS updatedAt,
              COALESCE(s.archived, 0) AS archived,
+             COALESCE(s.is_scheduled, 0) AS isScheduled,
              COALESCE((SELECT SUM(cost_usd)      FROM messages WHERE session_id = s.id), 0) AS totalCostUsd,
              COALESCE((SELECT SUM(input_tokens)  FROM messages WHERE session_id = s.id), 0) AS totalInputTokens,
              COALESCE((SELECT SUM(output_tokens) FROM messages WHERE session_id = s.id), 0) AS totalOutputTokens
@@ -19,16 +20,24 @@ export function sessionHandlers(): void {
     `)
   )
 
-  ipcMain.handle(IPC.SESSIONS_CREATE, (_e, title?: string) => {
+  ipcMain.handle(IPC.SESSIONS_CREATE, (_e, title?: string, opts?: { isScheduled?: boolean }) => {
     const id = randomUUID()
     const now = Date.now()
     const name = title || `新对话 ${new Date(now).toLocaleString('zh-CN')}`
-    dbRun(`INSERT INTO sessions (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)`,
-      [id, name, now, now])
-    return { id, title: name, createdAt: now, updatedAt: now }
+    dbRun(
+      `INSERT INTO sessions (id, title, created_at, updated_at, is_scheduled) VALUES (?, ?, ?, ?, ?)`,
+      [id, name, now, now, opts?.isScheduled ? 1 : 0]
+    )
+    return { id, title: name, createdAt: now, updatedAt: now, isScheduled: opts?.isScheduled ? 1 : 0 }
   })
 
   ipcMain.handle(IPC.SESSIONS_DELETE, (_e, id: string) => {
+    // Side-effect: if this session was a scheduled task's dedicated channel,
+    // auto-pause the owning task. Task + run history stay, so the user can
+    // re-enable later (which will rebuild a fresh dedicated session).
+    try {
+      dbRun(`UPDATE scheduled_tasks SET enabled = 0, updated_at = ? WHERE session_id = ?`, [Date.now(), id])
+    } catch { /* table may not exist on very old DBs — ignore */ }
     dbRun(`DELETE FROM messages WHERE session_id = ?`, [id])
     dbRun(`DELETE FROM sessions WHERE id = ?`, [id])
     return { ok: true }
@@ -106,6 +115,15 @@ export function sessionHandlers(): void {
     return { ok: true, deleted: before }
   })
 
+  ipcMain.handle(IPC.MESSAGES_CLEAR_SESSION, (_e, sessionId: string) => {
+    const before = dbGet<{ cnt: number }>(
+      `SELECT COUNT(*) AS cnt FROM messages WHERE session_id = ?`,
+      [sessionId]
+    )?.cnt ?? 0
+    dbRun(`DELETE FROM messages WHERE session_id = ?`, [sessionId])
+    return { ok: true, deleted: before }
+  })
+
   ipcMain.handle(IPC.MESSAGES_UPDATE, (_e, messageId: string, content: string) => {
     dbRun(`UPDATE messages SET content = ? WHERE id = ?`, [content, messageId])
     return { ok: true }
@@ -161,7 +179,7 @@ export function sessionHandlers(): void {
     const dlg = win ? await dialog.showSaveDialog(win, opts) : await dialog.showSaveDialog(opts)
     if (dlg.canceled || !dlg.filePath) return { canceled: true }
 
-    const sessions = dbAll(`SELECT id, title, created_at AS createdAt, updated_at AS updatedAt, COALESCE(archived, 0) AS archived FROM sessions ORDER BY created_at ASC`)
+    const sessions = dbAll(`SELECT id, title, created_at AS createdAt, updated_at AS updatedAt, COALESCE(archived, 0) AS archived, COALESCE(is_scheduled, 0) AS isScheduled FROM sessions ORDER BY created_at ASC`)
     const messages = dbAll(
       `SELECT id, session_id AS sessionId, role, content, tool_calls AS toolCallsJson,
               attachments AS attachmentsJson, meta AS metaJson, created_at AS createdAt
@@ -192,7 +210,7 @@ export function sessionHandlers(): void {
     }
     const data = parsed as {
       version?: number
-      sessions?: Array<{ id: string; title: string; createdAt: number; updatedAt: number; archived?: number }>
+      sessions?: Array<{ id: string; title: string; createdAt: number; updatedAt: number; archived?: number; isScheduled?: number }>
       messages?: Array<{
         id: string; sessionId: string; role: string; content: string;
         toolCallsJson?: string | null; attachmentsJson?: string | null; metaJson?: string | null;
@@ -215,8 +233,8 @@ export function sessionHandlers(): void {
         if (strategy === 'merge') { sessionsSkipped++; continue }
       }
       dbRun(
-        `INSERT OR REPLACE INTO sessions (id, title, created_at, updated_at, archived) VALUES (?, ?, ?, ?, ?)`,
-        [s.id, s.title, s.createdAt, s.updatedAt, s.archived ?? 0]
+        `INSERT OR REPLACE INTO sessions (id, title, created_at, updated_at, archived, is_scheduled) VALUES (?, ?, ?, ?, ?, ?)`,
+        [s.id, s.title, s.createdAt, s.updatedAt, s.archived ?? 0, s.isScheduled ?? 0]
       )
       sessionsAdded++
     }
