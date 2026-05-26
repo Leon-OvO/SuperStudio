@@ -117,12 +117,18 @@ SuperStudio 把 LLM 对话 + 多模态生成（文生图、图生图、文生视
 
 ## 🚀 快速开始
 
-### 先决条件
-- **Node.js 18+**
-- 一个 **SuperCode 账号**（推荐，最简）：访问 [supercode.help](https://www.supercode.help) 注册
-- 或者自备 OpenAI 协议兼容的 API Key
+### 📥 直接下载（普通用户推荐）
 
-### 安装与运行
+前往 **[Releases](https://github.com/Leon-OvO/SuperStudio/releases)** 下载最新版本：
+
+- **Windows**：`SuperStudio-Setup-x.x.x.exe`（安装版）或 `SuperStudio-x.x.x-portable.exe`（免安装）
+- **macOS**：`SuperStudio-x.x.x-arm64.dmg`（Apple Silicon）或 `SuperStudio-x.x.x-x64.dmg`（Intel）
+
+下载后直接运行，应用内置自动更新检查。
+
+### 🛠 从源码运行（开发者）
+
+先决条件：**Node.js 18+**、一个 **SuperCode 账号**（推荐，最简）：访问 [supercode.help](https://www.supercode.help) 注册；或自备 OpenAI 协议兼容的 API Key。
 
 ```bash
 git clone https://github.com/Leon-OvO/SuperStudio.git

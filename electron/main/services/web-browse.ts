@@ -709,7 +709,14 @@ const SNAPSHOT_JS = `new Promise((__ssResolve) => { setTimeout(() => { __ssResol
   // Whole-text keywords that should ALWAYS be captured if mounted — last-resort
   // catch-net for action buttons that escape every other heuristic, INCLUDING when
   // they're temporarily disabled / visibility:hidden waiting for form completion.
-  const ACTION_TEXT_RE = /^(发布|发布笔记|立即发布|提交|确认|发送|确定|完成|保存|取消|删除|关注|订阅|登录|注册|下一步|上一步|Submit|Send|Post|Publish|Save|OK|Continue|Next|Back|Login|Sign[- ]?in|Sign[- ]?up)$/i
+  //
+  // NOTE: "发布笔记" is deliberately EXCLUDED — on 小红书 creator pages it's the
+  // SIDEBAR NAV menu label (router push to ?from=menu&target=video), NOT the
+  // form-bottom publish action. The real button is just "发布" or "立即发布".
+  // Including "发布笔记" previously caused the snapshot to capture 3-4 sidebar
+  // wrappers as "action elements" and made web_click(text="发布笔记") land on
+  // the sidebar instead of submitting the form.
+  const ACTION_TEXT_RE = /^(发布|立即发布|提交|确认|发送|确定|完成|保存|取消|删除|关注|订阅|登录|注册|下一步|上一步|Submit|Send|Post|Publish|Save|OK|Continue|Next|Back|Login|Sign[- ]?in|Sign[- ]?up)$/i
   // Two-tier check: cheap attribute signals first (onclick / tabindex / btn-class).
   // ONLY fall through to the expensive getComputedStyle (cursor:pointer) when those
   // miss — and only within a global budget (CURSOR_CHECK_BUDGET below), because
@@ -745,7 +752,9 @@ const SNAPSHOT_JS = `new Promise((__ssResolve) => { setTimeout(() => { __ssResol
   // Strong class-name signals that a div IS the publish/submit button (a fallback
   // even if it has no text yet because i18n loaded lazily). Tighter than BTN_CLASS_RE
   // so we don't sweep up every "btn" / "button" wrapper on the page.
-  const PUBLISH_CLASS_RE = /\\b(publish[-_]?btn|publish[-_]?button|publish[-_]?action|submit[-_]?btn|submit[-_]?button|post[-_]?btn|post[-_]?button|d-button-content|red-button)\\b/i
+  // ce-btn/red-btn — 小红书创作平台发布按钮 (<button class="ce-btn bg-red">发布</button>)
+  // d-button-content — Discourse; red-button — 通用; bg-red 是 utility 不写进，避免误伤
+  const PUBLISH_CLASS_RE = /\\b(publish[-_]?btn|publish[-_]?button|publish[-_]?action|submit[-_]?btn|submit[-_]?button|post[-_]?btn|post[-_]?button|d-button-content|red-button|red-btn|ce-btn)\\b/i
   const clip = (s, n) => { s = (s || '').replace(/\\s+/g, ' ').trim(); return s.length > n ? s.slice(0, n) : s }
 
   const elements = []
@@ -930,6 +939,30 @@ export async function snapshotPage(): Promise<SnapshotResult> {
     const { wc } = requireWindow()
     if (idleTimer) { clearTimeout(idleTimer); idleTimer = null }
     try {
+      // Pre-snapshot scroll-to-bottom on creator/publish URLs: 小红书/B站/视频号 等
+      // 创作页用 IntersectionObserver 惰性挂载发布工具栏，光在视窗顶部 snapshot 永远
+      // 抓不到底部的发布按钮。隐藏窗口里滚动无 UX 影响；只对发布类 URL 做，避免给普通
+      // 阅读类页面加无谓延迟。
+      try {
+        const url = wc.getURL() || ''
+        if (/(publish|create|create-?center|creator|editor|new[-_/]?post|compose|draft)/i.test(url)) {
+          await execJs<number>(
+            wc,
+            `(() => {
+              try {
+                window.scrollTo(0, document.body.scrollHeight)
+                const sel = 'button.ce-btn,button.red-btn,[class*="publish-btn"],[class*="publish-button"],[class*="submit-btn"]'
+                const list = document.querySelectorAll(sel)
+                for (const e of list) { try { e.scrollIntoView({ block: 'end' }) } catch (x) {} }
+                return list.length
+              } catch (e) { return -1 }
+            })()`,
+            1500
+          )
+          // 给 IntersectionObserver 留 commit 时间。
+          await new Promise(r => setTimeout(r, 200))
+        }
+      } catch { /* pre-scroll failure isn't fatal */ }
       // Retry: a SPA route push or anti-bot interstitial right after web_open can
       // make executeJavaScript reject with the generic "Script failed to execute"
       // (no active frame to evaluate against). The script itself is now wrapped
@@ -1053,6 +1086,29 @@ function buildActJs(action: PageAction): string {
         else if (t.indexOf(want) !== -1 && t.length <= want.length + 6) partial.push(c)
       }
     }
+    // Navigation containers — when multiple candidates share the same text
+    // (e.g. "发布笔记" appears on both the sidebar nav AND the in-page button),
+    // we want the in-form button to win. Walk up to ~8 ancestors looking for
+    // nav-shape signals. NAV_CLASS_RE is intentionally tight so we don't penalize
+    // genuine button wrappers that happen to contain "side" in their class.
+    const NAV_TAG_RE = /^(nav|aside|header)$/i
+    const NAV_ROLE_RE = /^(navigation|menu|menubar|menuitem|tab|tablist)$/i
+    const NAV_CLASS_RE = /(^|[ _-])(sidebar|side-bar|side[_-]?nav|side[_-]?menu|left[_-]?nav|left[_-]?menu|nav[_-]?bar|nav[_-]?menu|menu[_-]?bar|main[_-]?menu|app[_-]?menu)([ _-]|$)/i
+    const inNavLike = (e) => {
+      try {
+        let cur = e
+        for (let hops = 0; hops < 8 && cur && cur !== document.documentElement; hops++) {
+          const tag = (cur.tagName || '').toLowerCase()
+          if (NAV_TAG_RE.test(tag)) return true
+          const role = (cur.getAttribute && cur.getAttribute('role')) || ''
+          if (NAV_ROLE_RE.test(role)) return true
+          const cls = (cur.getAttribute && cur.getAttribute('class')) || ''
+          if (NAV_CLASS_RE.test(cls)) return true
+          cur = cur.parentElement
+        }
+      } catch (x) { /* hostile ancestor — treat as not-nav */ }
+      return false
+    }
     const scoreOf = (e) => {
       let s = 0
       const tag = (e.tagName || '').toLowerCase()
@@ -1063,12 +1119,23 @@ function buildActJs(action: PageAction): string {
       const st = styleOf(e)
       if (st && st.cursor === 'pointer') s += 1
       if (/\\b(publish|submit|post|btn|button)\\b/i.test(e.getAttribute('class') || '')) s += 1
+      // Strong negative: sidebar/nav ancestor. Outweighs every positive signal
+      // except the button-tag bonus — even a <button> inside a sidebar nav is
+      // a nav button (logout/settings/draft list etc.), not the form submit.
+      if (inNavLike(e)) s -= 6
       return s
     }
     const pool = exact.length ? exact : partial
     pool.sort((a, b) => scoreOf(b) - scoreOf(a))
     el = pool[0] || null
     if (!el) return { ok: false, finalUrl: location.href, error: '页面上找不到文字为「' + action.text + '」的可点击元素，请先 web_snapshot 看看现在有哪些元素' }
+    // 硬拒绝：若 pool 里所有候选都在 nav/sidebar 里，且用户找的是「发布/提交/确定/...」这类
+    // 表单动作关键词，几乎可以确定它们都不是真按钮（真按钮还没挂出来）。直接报错让 LLM 滚到底
+    // 部再 snapshot，而不是把侧栏 navItem 当成发布按钮误点（小红书草稿箱回流的根因）。
+    const ACTION_WORDS_RE = /^(发布|立即发布|提交|确认|发送|确定|完成|保存|Submit|Send|Post|Publish|Save)$/i
+    if (ACTION_WORDS_RE.test(want) && pool.every(c => inNavLike(c))) {
+      return { ok: false, finalUrl: location.href, error: '找到的「' + action.text + '」候选全部位于侧栏/导航容器中，可能是「发布笔记」等导航入口而非表单提交按钮。请先把页面滚到底部（document.body.scrollHeight）再重新 web_snapshot；真发布按钮通常在表单底部，惰性挂载（IntersectionObserver）。' }
+    }
   }
   if (!el) return { ok: false, finalUrl: location.href, error: '元素已失效，请重新 web_snapshot' }
 
@@ -1231,18 +1298,77 @@ export async function actOnPage(action: PageAction): Promise<ActResult> {
         // tight and we'd snapshot before the publish button reappeared.
         const settleMs = action.type === 'click' ? 400 : 500
         await new Promise(r => setTimeout(r, settleMs))
-        // One retry with a longer settle: a tab switch / submit can kick off a big
-        // re-render that's still mounting when the first snapshot runs (or that
-        // snapshot races the timeout). Without a fresh `elements`, the model has no
-        // refs and tends to narrate-then-stop, so it's worth a second attempt.
+        // Pre-snapshot scroll-to-bottom + bottom-up scrollIntoView walk: 小红书 publish /
+        // B站 dynamic / 视频号 等创作页通过 IntersectionObserver 惰性挂载表单底部的
+        // 发布工具栏。表单比视窗高，<button class="ce-btn bg-red">发布</button> 一直没
+        // render，snapshot 自然抓不到。每次 action 后无脑滚到底——这是隐藏 BrowserWindow，
+        // 用户看不见，零 UX 风险；同时再 scrollIntoView 触发一下任何 [data-publish]/
+        // .publish-btn 类元素，把 IntersectionObserver 强制击发。
+        try {
+          await execJs<number>(
+            wc,
+            `(() => {
+              try {
+                window.scrollTo(0, document.body.scrollHeight)
+                // 兜底：找 publish 类候选 + 表单底部，scrollIntoView 一次，IntersectionObserver
+                // 即便没被滚动事件触发，这步也能挂上来（小红书发布按钮的实测路径）。
+                const sel = 'button.ce-btn,button.red-btn,[class*="publish-btn"],[class*="publish-button"],[class*="submit-btn"]'
+                const list = document.querySelectorAll(sel)
+                for (const e of list) { try { e.scrollIntoView({ block: 'end' }) } catch (x) {} }
+                return list.length
+              } catch (e) { return -1 }
+            })()`,
+            1500
+          )
+        } catch { /* scroll injection failure isn't fatal */ }
+        // 滚动后给 IntersectionObserver + 组件挂载留时间。比无脑等更紧——但比单纯
+        // settleMs 又多一点点。
+        await new Promise(r => setTimeout(r, 200))
+        // 重试逻辑保持：tab switch / submit 触发的大 re-render 可能让首次 snapshot
+        // 仍 race timeout，第二次再滚一遍兜底。额外一次「内容质量」重试：creator URL
+        // 上若 snapshot 里完全没有「发布/提交/确定/Save/Submit」类按钮，几乎确定还没
+        // 挂载完，再 rescroll + 等更久。
+        const PUBLISH_URL_RE = /(publish|create|create-?center|creator|editor|new[-_/]?post|compose|draft)/i
+        const ACTION_KW_RE = /^(发布|立即发布|提交|确认|发送|确定|完成|保存|Submit|Send|Post|Publish|Save)$/i
         let snapped = false
         let lastSnapErr = ''
-        for (const extra of [0, 900]) {
-          if (extra) await new Promise(r => setTimeout(r, extra))
+        const MAX_ATTEMPTS = 3
+        for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+          if (attempt > 0) {
+            try {
+              await execJs<number>(
+                wc,
+                `(() => {
+                  try {
+                    window.scrollTo(0, document.body.scrollHeight)
+                    const sel = 'button.ce-btn,button.red-btn,[class*="publish-btn"],[class*="publish-button"],[class*="submit-btn"]'
+                    const list = document.querySelectorAll(sel)
+                    for (const e of list) { try { e.scrollIntoView({ block: 'end' }) } catch (x) {} }
+                    return list.length
+                  } catch (e) { return -1 }
+                })()`,
+                1500
+              )
+            } catch { /* scroll injection failure isn't fatal — keep retrying */ }
+            // 第二次等更久：IntersectionObserver 触发后 React 的 commit 还需要一拍。
+            await new Promise(r => setTimeout(r, attempt === 1 ? 900 : 1500))
+          }
           try {
             const snap = await evalSnapshot(wc)
             if (snap._snapshotError) {
               throw new Error(`snapshot script threw inside page: ${snap._snapshotError}`)
+            }
+            // 内容质量检查：发布类 URL 必须能看到一个动作关键词按钮，否则视为本轮失败、
+            // 强制重试。注意不能用 finalUrl 去 match（可能还没拿到），用 snap.url。
+            const onPublishLike = PUBLISH_URL_RE.test(snap.url || '')
+            const hasActionBtn = (snap.elements || []).some(el => {
+              const tx = (el.text || '').replace(/\s+/g, '').trim()
+              return ACTION_KW_RE.test(tx)
+            })
+            if (onPublishLike && !hasActionBtn && attempt < MAX_ATTEMPTS - 1) {
+              lastSnapErr = `snapshot 在发布页 ${snap.url} 抓到 ${snap.elements?.length || 0} 元素，但其中无动作关键词按钮（发布/提交/确定/...）；可能还没挂载完，rescroll 重试中`
+              console.warn(`[web-automation] post-action snapshot attempt #${attempt + 1} content-incomplete:`, lastSnapErr)
+              continue
             }
             result.elements = snap.elements
             result.title = snap.title
@@ -1251,7 +1377,7 @@ export async function actOnPage(action: PageAction): Promise<ActResult> {
             break
           } catch (snapErr) {
             lastSnapErr = (snapErr as Error).message || String(snapErr)
-            console.warn(`[web-automation] post-action snapshot failed (settle+${extra}ms):`, lastSnapErr)
+            console.warn(`[web-automation] post-action snapshot attempt #${attempt + 1} failed:`, lastSnapErr)
           }
         }
         if (!snapped) {
