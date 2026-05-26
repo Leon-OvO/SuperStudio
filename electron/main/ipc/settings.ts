@@ -70,7 +70,17 @@ async function recoverSupercodeProviderKey(provider: ProviderConfig): Promise<st
 
 export function settingsHandlers(): void {
   ipcMain.handle(IPC.SETTINGS_GET, () => getSettings())
-  ipcMain.handle(IPC.SETTINGS_SET, (_e, data) => saveSettings(data))
+  ipcMain.handle(IPC.SETTINGS_SET, async (_e, data) => {
+    saveSettings(data)
+    // Live-apply network proxy if any of the proxy fields changed (or just
+    // re-apply unconditionally — it's idempotent and cheap). Don't await here
+    // so the IPC reply isn't blocked on session.setProxy round-trips.
+    if (data && ('proxyMode' in data || 'proxyHost' in data || 'proxyPort' in data)) {
+      import('../services/proxy')
+        .then(({ applyProxyFromSettings }) => applyProxyFromSettings(getSettings()))
+        .catch(e => console.error('[settings] proxy re-apply failed:', (e as Error).message))
+    }
+  })
 
   ipcMain.handle(IPC.SETTINGS_RESET, async () => {
     // Reset AppSettings to defaults

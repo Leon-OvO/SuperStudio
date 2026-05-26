@@ -15,6 +15,7 @@
  */
 
 import { BrowserWindow, session, Session, WebContents } from 'electron'
+import fs from 'fs'
 
 const NAV_TIMEOUT_MS = 20_000
 /** Max time to wait for a client-rendered page (SPA) to paint its content
@@ -31,10 +32,39 @@ const SCROLL_BUDGET_MS = 5_000
  *  timer (it's a one-shot DOM walk), so if executeJavaScript itself stalls (page
  *  mid-redirect, wedged renderer) only this outer race can free the agent. */
 const EXTRACT_TIMEOUT_MS = 8_000
+/** Snapshot does far more than a one-shot extract — it getComputedStyle's its way
+ *  across every interactive element in light + shadow DOM, in multiple phases.
+ *  On heavy creator SPAs (小红书 / 掘金 / 语雀) 8s was occasionally too tight and
+ *  the whole snapshot timed out, returning zero elements and stalling the agent.
+ *  Give it a wider ceiling; the inner work still finishes well under this. */
+const SNAPSHOT_TIMEOUT_MS = 15_000
 /** Destroy the shared window this long after the last call finishes. Longer
  *  than the scraper's because a browsing session is more likely to be followed
  *  by a "now look at this other page" within the same chat turn. */
 const IDLE_CLOSE_MS = 30_000
+/** Longer idle window kept alive between automation ops (snapshot / click /
+ *  fill / upload). These calls happen across LLM thinking turns, so the 30s
+ *  read-idle would tear the window down mid-task; 3 min spans a normal
+ *  multi-step fill/submit flow without pinning the window forever. */
+const OP_IDLE_CLOSE_MS = 3 * 60_000
+
+// --- Login-wait cadence (used when a login wall is hit in interactive mode) ---
+/** How often we poll the in-page flags (button click / overlay state). Cheap
+ *  in-process DOM reads — costs ZERO LLM tokens (the whole wait is one tool
+ *  call; the model only sees the final result). Kept tight so the injected
+ *  「我已登录完成」button feels near-instant. */
+const LOGIN_BTN_POLL_MS = 1_000
+/** Silent fallback for users who finish logging in but never click the button:
+ *  re-run the (heavier) login-wall detection on the CURRENT page this often. */
+const LOGIN_AUTO_POLL_MS = 30_000
+/** Max silent auto-detects before we give up and nag the user with an overlay. */
+const LOGIN_AUTO_POLL_MAX = 3
+/** Hard ceiling on the whole wait so a walked-away user can't pin the window
+ *  (and the mutex) open forever — past this we fall back to needsLogin:true. */
+const LOGIN_TOTAL_BUDGET_MS = 10 * 60_000
+
+const delay = (ms: number): Promise<void> =>
+  new Promise(r => { const t = setTimeout(r, ms); t.unref?.() })
 
 export interface BrowseLink {
   text: string
@@ -64,9 +94,9 @@ let mutex: Promise<unknown> = Promise.resolve()
 let idleTimer: NodeJS.Timeout | null = null
 
 /** (Re)arm the idle timer that tears the window down once browsing stops. */
-function armIdleClose(): void {
+function armIdleClose(ms: number = IDLE_CLOSE_MS): void {
   if (idleTimer) clearTimeout(idleTimer)
-  idleTimer = setTimeout(() => { idleTimer = null; closeBrowse() }, IDLE_CLOSE_MS)
+  idleTimer = setTimeout(() => { idleTimer = null; closeBrowse() }, ms)
   // Don't let the pending timer hold the event loop open at quit time.
   idleTimer.unref?.()
 }
@@ -266,15 +296,243 @@ const EXTRACT_JS = `(() => {
   return { isLogin, hasVisiblePassword, urlLooksLogin, hasLoginWallPhrase, finalUrl: href, title, text, links }
 })()`
 
+type ExtractResult = {
+  isLogin: boolean
+  finalUrl: string
+  title: string
+  text: string
+  links: BrowseLink[]
+}
+
+// Injected into the login-wall page. Idempotently installs a floating
+// 「我已登录完成，继续」button (the PRIMARY, instant path: the user clicks it the
+// moment they finish signing in) plus a hidden full-screen reminder overlay we
+// only reveal after silent auto-detection gives up. Returns the live flags so
+// the main-process loop can react. Re-installs itself after a navigation wipes
+// the page (full-redirect logins), self-healing the flags across page loads.
+const LOGIN_POLL_JS = `(() => {
+  function install() {
+    if (window.__ssLoginHelperInstalled) return
+    window.__ssLoginHelperInstalled = true
+    window.__ssLogin = { done: false }
+    const root = document.documentElement
+    const btn = document.createElement('button')
+    btn.id = '__ss_login_btn'
+    btn.textContent = '✅ 我已登录完成，继续'
+    Object.assign(btn.style, {
+      position: 'fixed', right: '20px', bottom: '20px', zIndex: '2147483647',
+      padding: '12px 18px', background: '#4f46e5', color: '#fff', border: 'none',
+      borderRadius: '10px', fontSize: '15px', fontWeight: '600', cursor: 'pointer',
+      boxShadow: '0 6px 20px rgba(0,0,0,.35)', fontFamily: 'system-ui, sans-serif'
+    })
+    btn.onclick = () => {
+      window.__ssLogin.done = true
+      btn.textContent = '✅ 正在继续…'
+      btn.disabled = true
+      btn.style.opacity = '.7'
+    }
+    root.appendChild(btn)
+    const ov = document.createElement('div')
+    ov.id = '__ss_login_overlay'
+    Object.assign(ov.style, {
+      position: 'fixed', inset: '0', zIndex: '2147483646', display: 'none',
+      alignItems: 'center', justifyContent: 'center',
+      background: 'rgba(0,0,0,.6)', fontFamily: 'system-ui, sans-serif'
+    })
+    const card = document.createElement('div')
+    Object.assign(card.style, {
+      background: '#fff', color: '#111', padding: '28px 32px', borderRadius: '14px',
+      maxWidth: '420px', textAlign: 'center', fontSize: '15px', lineHeight: '1.6',
+      boxShadow: '0 10px 48px rgba(0,0,0,.45)'
+    })
+    card.innerHTML = '<div style="font-size:18px;font-weight:700;margin-bottom:10px;">请尽快完成登录</div>'
+      + '<div>检测到此页面仍需登录。请在本窗口完成登录后，点击右下角「我已登录完成，继续」按钮。</div>'
+    const close = document.createElement('button')
+    close.textContent = '我知道了，继续等待'
+    Object.assign(close.style, {
+      marginTop: '18px', padding: '10px 18px', background: '#4f46e5', color: '#fff',
+      border: 'none', borderRadius: '8px', fontSize: '14px', cursor: 'pointer'
+    })
+    close.onclick = () => { ov.style.display = 'none' }
+    card.appendChild(close)
+    ov.appendChild(card)
+    root.appendChild(ov)
+    window.__ssShowOverlay = () => {
+      const o = document.getElementById('__ss_login_overlay')
+      if (o) o.style.display = 'flex'
+    }
+  }
+  install()
+  const o = document.getElementById('__ss_login_overlay')
+  return JSON.stringify({
+    done: !!(window.__ssLogin && window.__ssLogin.done),
+    overlayVisible: !!(o && o.style.display !== 'none')
+  })
+})()`
+
+const SHOW_OVERLAY_JS = `(() => { if (window.__ssShowOverlay) window.__ssShowOverlay() })()`
+
+/** Navigate to a URL, wait for it to settle, nudge lazy content, then extract.
+ *  Shared by the first open and the post-login re-fetch. */
+async function loadAndExtract(wc: WebContents, url: string): Promise<ExtractResult> {
+  // 1. Navigate with a hard timeout. A client redirect aborts the first load
+  //    with ERR_ABORTED — expected, not a failure.
+  let navTimer: NodeJS.Timeout | undefined
+  const navTimeout = new Promise<never>((_, reject) => {
+    navTimer = setTimeout(() => reject(new Error(`页面加载超时 (${NAV_TIMEOUT_MS}ms)`)), NAV_TIMEOUT_MS)
+  })
+  try {
+    await Promise.race([wc.loadURL(url), navTimeout])
+  } catch (e) {
+    const msg = (e as Error).message || String(e)
+    if (!/ERR_ABORTED|\(-3\)/i.test(msg)) {
+      if (navTimer) clearTimeout(navTimer)
+      throw new Error(`打开网页失败：${msg}`)
+    }
+  } finally {
+    if (navTimer) clearTimeout(navTimer)
+  }
+
+  // 2. Wait for a client-rendered page to paint.
+  const settleJs = `
+    new Promise(resolve => {
+      const done = () => resolve(true)
+      const start = Date.now()
+      let last = -1, stable = 0
+      const tick = () => {
+        const ready = document.readyState === 'complete'
+        const len = document.body ? document.body.innerText.length : 0
+        if (ready && len > 0 && len === last) {
+          if (++stable >= 2) return done()
+        } else {
+          stable = 0
+        }
+        last = len
+        if (Date.now() - start > ${SETTLE_TIMEOUT_MS}) return done()
+        setTimeout(tick, 250)
+      }
+      tick()
+    })
+  `
+  try { await execJs(wc, settleJs, SETTLE_TIMEOUT_MS + 4_000) } catch { /* best-effort */ }
+
+  // 2b. Nudge lazy-loaded content into existence by scrolling.
+  try { await execJs(wc, SCROLL_JS, SCROLL_BUDGET_MS + 4_000) } catch { /* best-effort */ }
+
+  // 3. Detect login + extract in one round-trip.
+  try {
+    return await execJs<ExtractResult>(wc, EXTRACT_JS, EXTRACT_TIMEOUT_MS)
+  } catch {
+    throw new Error(`读取页面内容超时，该页面可能在持续跳转或触发了反爬拦截：${url.slice(0, 120)}`)
+  }
+}
+
+function toResult(raw: ExtractResult, url: string, needsLogin: boolean): BrowseResult {
+  return {
+    finalUrl: raw.finalUrl || url,
+    title: raw.title || '',
+    text: raw.text || '',
+    links: raw.links || [],
+    needsLogin,
+    ...(needsLogin
+      ? { loginHint: '该页面需要登录。浏览器窗口已弹出，请在其中完成登录后点击右下角「我已登录完成，继续」按钮（若未点击，我也会自动检测）。' }
+      : {})
+  }
+}
+
+/** Bring the (possibly hidden) shared window to the foreground so the user can
+ *  actually see + interact with the login form. On Windows show()+focus() alone
+ *  often fails to steal foreground; a brief always-on-top pin reliably surfaces
+ *  it, then we drop the pin. */
+function surfaceWindow(w: BrowserWindow): void {
+  try {
+    if (w.isMinimized()) w.restore()
+    w.show()
+    w.moveTop()
+    w.setAlwaysOnTop(true)
+    w.focus()
+    setTimeout(() => { try { if (!w.isDestroyed()) w.setAlwaysOnTop(false) } catch { /* gone */ } }, 1500)
+  } catch { /* window may have been torn down concurrently */ }
+}
+
+/**
+ * Block (in-process, zero LLM tokens) until the user finishes logging in, then
+ * re-fetch the intended page and return its content. Cadence:
+ *   - Poll the injected button flag every ~1s → a click continues near-instantly.
+ *   - If they log in WITHOUT clicking, silently re-detect the login wall every
+ *     30s, up to 3 times.
+ *   - Still walled after that → reveal a full-screen reminder overlay and PAUSE
+ *     auto-detection (the button still works). When the user closes the overlay
+ *     we resume the 30s×3 cycle fresh.
+ *   - Window closed by user, or total budget exceeded → fall back to
+ *     needsLogin:true (caller asks the user to log in then retry).
+ *
+ * Auto-detection inspects the CURRENT page in place (never re-navigates) so it
+ * can't wipe a half-typed password / regenerate a QR code mid-login. We only
+ * re-navigate once login is confirmed, to fetch the actually-intended content.
+ */
+async function waitForLoginThenExtract(
+  w: BrowserWindow, wc: WebContents, url: string, lastRaw: ExtractResult
+): Promise<BrowseResult> {
+  // Inject the button immediately so it's visible the instant the window surfaces.
+  try { await execJs(wc, LOGIN_POLL_JS, EXTRACT_TIMEOUT_MS) } catch { /* best-effort */ }
+
+  const start = Date.now()
+  let autoPolls = 0
+  let lastAutoAt = Date.now()
+  let prevOverlay = false
+
+  while (true) {
+    if (w.isDestroyed() || Date.now() - start > LOGIN_TOTAL_BUDGET_MS) {
+      return toResult(lastRaw, url, true)
+    }
+    await delay(LOGIN_BTN_POLL_MS)
+    if (w.isDestroyed()) return toResult(lastRaw, url, true)
+
+    let flags: { done: boolean; overlayVisible: boolean }
+    try { flags = JSON.parse(await execJs<string>(wc, LOGIN_POLL_JS, EXTRACT_TIMEOUT_MS)) }
+    catch { continue }
+
+    // Primary path: user clicked the button → trust it, fetch real content.
+    if (flags.done) {
+      const raw2 = await loadAndExtract(wc, url)
+      return toResult(raw2, url, raw2.isLogin)
+    }
+
+    // Overlay just dismissed → resume the 30s×3 cycle from scratch.
+    if (prevOverlay && !flags.overlayVisible) { autoPolls = 0; lastAutoAt = Date.now() }
+    prevOverlay = flags.overlayVisible
+    if (flags.overlayVisible) continue // paused while the reminder is up
+
+    if (Date.now() - lastAutoAt >= LOGIN_AUTO_POLL_MS) {
+      lastAutoAt = Date.now()
+      autoPolls++
+      let detected: ExtractResult | null = null
+      try { detected = await execJs<ExtractResult>(wc, EXTRACT_JS, EXTRACT_TIMEOUT_MS) } catch { /* keep waiting */ }
+      if (detected && !detected.isLogin) {
+        const raw2 = await loadAndExtract(wc, url)
+        return toResult(raw2, url, raw2.isLogin)
+      }
+      if (autoPolls >= LOGIN_AUTO_POLL_MAX) {
+        try { await execJs(wc, SHOW_OVERLAY_JS, EXTRACT_TIMEOUT_MS) } catch { /* best-effort */ }
+        prevOverlay = true
+      }
+    }
+  }
+}
+
 /**
  * Open a URL in the shared browser window and read its rendered content.
  * Detects login walls; on detection forces the window visible so the user can
- * sign in, and returns needsLogin=true (the caller should ask the user to log
- * in then call again).
+ * sign in. In interactive mode (waitForLogin) it then BLOCKS until the user
+ * finishes — clicking the injected「我已登录完成」button or via silent
+ * auto-detection — and returns the real content, so the agent continues in the
+ * SAME tool call (no "reply to me when done" round-trip). Only on timeout /
+ * window-close / headless mode does it return needsLogin=true.
  */
 export async function openPage(
   url: string,
-  opts: { browserVisible: boolean }
+  opts: { browserVisible: boolean; waitForLogin?: boolean }
 ): Promise<BrowseResult> {
   if (!/^https?:\/\//i.test(url)) {
     throw new Error(`web_open 仅支持 http(s) 网址，收到：${url.slice(0, 120)}`)
@@ -304,108 +562,18 @@ export async function openPage(
       const w = ensureWindow(!!opts.browserVisible)
       const wc = w.webContents
 
-      // 1. Navigate with a hard timeout. A client redirect aborts the first
-      //    load with ERR_ABORTED — that's expected, not a failure.
-      let navTimer: NodeJS.Timeout | undefined
-      const navTimeout = new Promise<never>((_, reject) => {
-        navTimer = setTimeout(
-          () => reject(new Error(`页面加载超时 (${NAV_TIMEOUT_MS}ms)`)),
-          NAV_TIMEOUT_MS
-        )
-      })
-      try {
-        await Promise.race([wc.loadURL(url), navTimeout])
-      } catch (e) {
-        const msg = (e as Error).message || String(e)
-        // Redirects / user-driven nav cancel the in-flight load; keep going and
-        // read whatever the window settled on.
-        if (!/ERR_ABORTED|\(-3\)/i.test(msg)) {
-          if (navTimer) clearTimeout(navTimer)
-          throw new Error(`打开网页失败：${msg}`)
-        }
-      } finally {
-        if (navTimer) clearTimeout(navTimer)
-      }
+      const raw = await loadAndExtract(wc, url)
+      if (!raw.isLogin) return toResult(raw, url, false)
 
-      // 2. Wait for a client-rendered page to paint. Resolve once innerText
-      //    stops growing for two consecutive polls, or on a hard timeout.
-      const settleJs = `
-        new Promise(resolve => {
-          const done = () => resolve(true)
-          const start = Date.now()
-          let last = -1, stable = 0
-          const tick = () => {
-            const ready = document.readyState === 'complete'
-            const len = document.body ? document.body.innerText.length : 0
-            if (ready && len > 0 && len === last) {
-              if (++stable >= 2) return done()
-            } else {
-              stable = 0
-            }
-            last = len
-            if (Date.now() - start > ${SETTLE_TIMEOUT_MS}) return done()
-            setTimeout(tick, 250)
-          }
-          tick()
-        })
-      `
-      // Best-effort + bounded: settle has an internal 8s timer, but the outer
-      // race protects against executeJavaScript itself never resolving.
-      try { await execJs(wc, settleJs, SETTLE_TIMEOUT_MS + 4_000) } catch { /* best-effort */ }
+      // Login wall — surface the window so the user can sign in.
+      surfaceWindow(w)
+      // Headless / scheduled runs have nobody to log in: don't block, just
+      // report needsLogin so the agent can give a partial answer.
+      if (opts.waitForLogin === false) return toResult(raw, url, true)
 
-      // 2b. Nudge lazy-loaded content (comment sections, infinite feeds) into
-      //     existence by scrolling, then the shadow-DOM-aware extract below can
-      //     read content rendered into Web Components (e.g. bilibili 评论区).
-      try { await execJs(wc, SCROLL_JS, SCROLL_BUDGET_MS + 4_000) } catch { /* best-effort */ }
-
-      // 3. Detect login + extract in one round-trip. If even this times out we
-      //    have no content to return, so surface a clear, actionable error
-      //    instead of hanging the agent forever.
-      type ExtractResult = {
-        isLogin: boolean
-        finalUrl: string
-        title: string
-        text: string
-        links: BrowseLink[]
-      }
-      let raw: ExtractResult
-      try {
-        raw = await execJs<ExtractResult>(wc, EXTRACT_JS, EXTRACT_TIMEOUT_MS)
-      } catch {
-        throw new Error(`读取页面内容超时，该页面可能在持续跳转或触发了反爬拦截：${url.slice(0, 120)}`)
-      }
-
-      if (raw.isLogin) {
-        // Force the window to the FOREGROUND regardless of the hidden setting —
-        // the user must see it to log in. On Windows show()+focus() alone often
-        // fails to steal foreground from the main app window, leaving the login
-        // window buried behind it (looks like "nothing opened"). Briefly pinning
-        // always-on-top reliably surfaces it; we drop the pin shortly after.
-        try {
-          if (w.isMinimized()) w.restore()
-          w.show()
-          w.moveTop()
-          w.setAlwaysOnTop(true)
-          w.focus()
-          setTimeout(() => { try { if (!w.isDestroyed()) w.setAlwaysOnTop(false) } catch { /* gone */ } }, 1500)
-        } catch { /* window may have been torn down concurrently */ }
-        return {
-          finalUrl: raw.finalUrl || url,
-          title: raw.title || '',
-          text: raw.text || '',
-          links: raw.links || [],
-          needsLogin: true,
-          loginHint: '该页面需要登录。浏览器窗口已弹出，请在其中完成登录后重试。'
-        }
-      }
-
-      return {
-        finalUrl: raw.finalUrl || url,
-        title: raw.title || '',
-        text: raw.text || '',
-        links: raw.links || [],
-        needsLogin: false
-      }
+      // Interactive: block (zero LLM tokens) until login completes, then
+      // re-fetch the real content and continue in this same tool call.
+      return waitForLoginThenExtract(w, wc, url, raw)
     })
   }
 }
@@ -414,4 +582,886 @@ export function closeBrowse(): void {
   if (idleTimer) { clearTimeout(idleTimer); idleTimer = null }
   try { if (win && !win.isDestroyed()) win.destroy() } catch { /* swallow */ }
   win = null
+}
+
+// ============================================================================
+// Webpage automation — act on the SAME shared window web_open left behind, so
+// the login state and already-rendered page carry over. Every op runs through
+// withMutex (serialized with web_open's own work), NEVER navigates (navigation
+// would lose typed input / login), and re-arms a LONGER idle timer
+// (OP_IDLE_CLOSE_MS) on the way out because automation steps are separated by
+// LLM thinking turns that would blow the 30s read-idle.
+// ============================================================================
+
+export interface SnapshotElement {
+  /** Stable handle the act/upload ops reference. Valid until the DOM changes. */
+  ref: string
+  tag: string
+  type: string
+  /** name / id / aria-label — whatever best identifies the field. */
+  name: string
+  /** Visible text / value / placeholder, truncated. */
+  text: string
+}
+
+export interface SnapshotResult {
+  title: string
+  url: string
+  /** Visible page text (truncated) so the model knows the page context. */
+  text: string
+  elements: SnapshotElement[]
+  /** Set when SNAPSHOT_JS caught an internal exception. Lets snapshotPage()
+   *  treat in-script throws like outer-script throws (same hint path) while
+   *  carrying the real message — without this we just saw Electron's generic
+   *  "Script failed to execute, this normally means an error was thrown". */
+  _snapshotError?: string
+}
+
+/** Guard shared by every automation op: the window must already be open (via
+ *  web_open). We never auto-open here because we'd have no URL and would lose
+ *  the point of acting on the user's already-prepared, logged-in page. */
+function requireWindow(): { w: BrowserWindow; wc: WebContents } {
+  if (!win || win.isDestroyed()) {
+    throw new Error('请先用 web_open 打开目标页面')
+  }
+  // Keep it visible so the user can handle captcha / 2FA / sliders.
+  if (!win.isVisible()) { try { win.showInactive() } catch { /* gone */ } }
+  return { w: win, wc: win.webContents }
+}
+
+// Walk light + shadow DOM and tag interactive elements with a stable
+// data-ss-ref. Reuses the recursive shadow-root traversal from EXTRACT_JS.
+//
+// Collected in THREE phases with separate quotas, so a feed of <a> tags can't
+// starve out the action buttons (the original bug: B站 publish toolbar lived
+// past element #150 because pass 1 hit the cap on <a> from the feed first):
+//   Phase A — form controls + explicit buttons (input/textarea/select/contenteditable/<button>/[role=button])
+//   Phase B — div/span/li styled as buttons (CN sites use these instead of <button>; e.g. B站 <div class="bili-pub-button">发布</div>)
+//   Phase C — <a href> and link-role items (lowest priority — feeds love them)
+// Plus a catch-net for visible leaf elements whose entire text is a publish/submit keyword,
+// in case both the class-name and cursor:pointer heuristics miss them.
+// File inputs (incl. hidden ones — sites style a fake button and hide the real input)
+// are always captured so web_upload has a target.
+const SNAPSHOT_JS = `new Promise((__ssResolve) => { setTimeout(() => { __ssResolve((() => {
+  // The outer 'new Promise + setTimeout' wrapper is CRITICAL: executeJavaScript's
+  // synchronous evaluate phase gets reject-bombed by SPA navigation race (the
+  // 小红书 creator page does router.push tab_switch right after web_open). By
+  // returning a Promise immediately, evaluate phase only parses 'new Promise(...)'
+  // — a few microseconds — then the real DOM walk runs from the task queue
+  // AFTER navigation settles. Without this we used to see "Script failed to
+  // execute, this normally means an error was thrown" with no recoverable info.
+  //
+  // The inner try-catch handles a separate failure mode: heavy SPA pages
+  // hook Element.prototype getters, register synchronous DOM event listeners
+  // that throw, or freeze prototypes — any of which can blow up our element-
+  // probing loops. With it, we ALWAYS return a SnapshotResult; if something
+  // threw, _snapshotError carries the actual message + stack.
+  try {
+  // Walk light + shadow DOM only. We deliberately DON'T descend into iframes
+  // here: this snapshot calls getComputedStyle on hundreds/thousands of elements
+  // (Phase A/B visibility checks), and folding same-origin iframe DOM into the
+  // root set multiplied that work past the exec timeout on heavy SPAs (the
+  // 小红书 creator regression — the whole snapshot threw and returned no
+  // elements at all). web_click(text=...) still reaches iframes when needed; the
+  // snapshot stays cheap and reliable.
+  function allShadowRoots(root, acc) {
+    let els
+    try { els = root.querySelectorAll('*') } catch (e) { return acc }
+    for (const el of els) {
+      if (el.shadowRoot) { acc.push(el.shadowRoot); allShadowRoots(el.shadowRoot, acc) }
+    }
+    return acc
+  }
+  const shadowRoots = allShadowRoots(document, [])
+  const roots = [document, ...shadowRoots]
+
+  const formSel = 'button,input,textarea,select,[contenteditable=""],[contenteditable="true"],[role="button"],[role="textbox"],[role="combobox"],[role="checkbox"],[role="tab"]'
+  const linkSel = 'a[href],[role="link"],[role="menuitem"]'
+  const styleOf = (el) => { try { return (el.ownerDocument.defaultView || window).getComputedStyle(el) } catch (e) { return null } }
+  // EVERY per-element predicate is try-caught: heavy SPAs ship custom elements
+  // with hostile getters (anti-bot probes, Proxy traps) that throw when our
+  // loops touch a property — without a wrapper one bad element fails the whole
+  // snapshot (the 小红书 throw we couldn't see). Defaults err on the safe side
+  // (treat a throwing element as not-visible / not-mounted / not-clickable).
+  const isVisible = (el) => {
+    try {
+      const rect = el.getBoundingClientRect()
+      if (rect.width <= 0 || rect.height <= 0) return false
+      const st = styleOf(el)
+      if (st && (st.display === 'none' || st.visibility === 'hidden' || parseFloat(st.opacity) === 0)) return false
+      return true
+    } catch (e) { return false }
+  }
+  const isFileInput = (el) => { try { return el.tagName === 'INPUT' && (el.getAttribute('type') || '').toLowerCase() === 'file' } catch (e) { return false } }
+  // display:none → truly absent in layout, never collect. visibility:hidden / opacity:0
+  // are different — the element occupies space and may become visible after a state
+  // change (disabled→enabled, fade-in). For action buttons we treat those as collectible.
+  const isMounted = (el) => {
+    try {
+      const st = styleOf(el)
+      if (st && st.display === 'none') return false
+      return true
+    } catch (e) { return false }
+  }
+  // Class names that strongly imply "this div IS a button" — catches custom controls
+  // that have no role=button and may even have cursor:not-allowed when disabled.
+  const BTN_CLASS_RE = /\\b(btn|button|publish|submit|send|primary|action|pub[-_]btn|pub[-_]button)\\b/i
+  // Whole-text keywords that should ALWAYS be captured if mounted — last-resort
+  // catch-net for action buttons that escape every other heuristic, INCLUDING when
+  // they're temporarily disabled / visibility:hidden waiting for form completion.
+  const ACTION_TEXT_RE = /^(发布|发布笔记|立即发布|提交|确认|发送|确定|完成|保存|取消|删除|关注|订阅|登录|注册|下一步|上一步|Submit|Send|Post|Publish|Save|OK|Continue|Next|Back|Login|Sign[- ]?in|Sign[- ]?up)$/i
+  // Two-tier check: cheap attribute signals first (onclick / tabindex / btn-class).
+  // ONLY fall through to the expensive getComputedStyle (cursor:pointer) when those
+  // miss — and only within a global budget (CURSOR_CHECK_BUDGET below), because
+  // calling it on every div/span/li on a heavy SPA used to blow past our snapshot
+  // timeout. cursor:pointer is the only reliable signal for React-style sites
+  // (小红书 included) where clickable divs have no onclick attr / no btn-class.
+  const looksClickable = (el) => {
+    try {
+      const t = (el.textContent || '').trim()
+      if (t.length === 0 || t.length > 40) return false  // wrappers and giant containers
+      if (el.getAttribute('onclick')) return true
+      if (el.getAttribute('tabindex') !== null) return true
+      if (BTN_CLASS_RE.test(el.getAttribute('class') || '')) return true
+      if (cursorChecks >= CURSOR_CHECK_BUDGET) return false
+      cursorChecks++
+      const st = styleOf(el)
+      return !!(st && st.cursor === 'pointer')
+    } catch (e) { return false }
+  }
+  // Global ceiling on getComputedStyle calls inside looksClickable. ~800 ≈ a few
+  // hundred ms on heavy SPAs; well under SNAPSHOT_TIMEOUT_MS. Tune up if action
+  // buttons start getting missed; tune down if snapshots start timing out.
+  let cursorChecks = 0
+  const CURSOR_CHECK_BUDGET = 800
+  // Whitespace-collapsed match: "发  布" / "发\\n布" / "  发布  " all normalize to "发布".
+  // Many editors space-pad button text via internal text nodes; raw .trim() preserves
+  // internal whitespace and misses these.
+  const normalizeWord = (s) => (s || '').replace(/\\s+/g, '').trim()
+  const isActionKeyword = (el) => {
+    if (el.childElementCount > 0) return false  // leaf only — wrapper's whole text is just the inner button's
+    return ACTION_TEXT_RE.test(normalizeWord(el.textContent || ''))
+  }
+  // Strong class-name signals that a div IS the publish/submit button (a fallback
+  // even if it has no text yet because i18n loaded lazily). Tighter than BTN_CLASS_RE
+  // so we don't sweep up every "btn" / "button" wrapper on the page.
+  const PUBLISH_CLASS_RE = /\\b(publish[-_]?btn|publish[-_]?button|publish[-_]?action|submit[-_]?btn|submit[-_]?button|post[-_]?btn|post[-_]?button|d-button-content|red-button)\\b/i
+  const clip = (s, n) => { s = (s || '').replace(/\\s+/g, ' ').trim(); return s.length > n ? s.slice(0, n) : s }
+
+  const elements = []
+  const seen = new Set()
+  let i = 0
+  const CAP_FORMS = 80
+  const CAP_BUTTONS = 80
+  const CAP_LINKS = 120
+  const CAP_TOTAL = 260
+  const add = (el) => {
+    if (elements.length >= CAP_TOTAL || seen.has(el)) return false
+    seen.add(el)
+    const ref = 'e' + i
+    i++
+    try { el.setAttribute('data-ss-ref', ref) } catch (e) { return false }
+    const tag = (el.tagName || '').toLowerCase()
+    const type = el.getAttribute('type') || el.getAttribute('role') || (el.isContentEditable ? 'contenteditable' : '')
+    const name = clip(el.getAttribute('name') || el.id || el.getAttribute('aria-label') || el.getAttribute('placeholder') || '', 60)
+    const raw = el.textContent || el.value || el.getAttribute('placeholder') || el.getAttribute('aria-label') || ''
+    elements.push({ ref, tag, type, name, text: clip(raw, 80) })
+    return true
+  }
+
+  // Phase A — form controls + <button> + [role=button]. Highest priority.
+  // BUTTONS get extra leniency: a <button>/[role=button] whose text matches an
+  // action keyword (发布/提交/...) is collected even when visibility:hidden /
+  // opacity:0 / 0×0 rect — sites like 小红书 keep the publish button mounted but
+  // "soft-disabled" until the form is complete. Skipping it here means the agent
+  // has no ref to click once the form IS complete.
+  let formsN = 0
+  for (const r of roots) {
+    if (formsN >= CAP_FORMS) break
+    let found
+    try { found = r.querySelectorAll(formSel) } catch (e) { found = [] }
+    for (const el of found) {
+      if (formsN >= CAP_FORMS) break
+      if (isFileInput(el)) { if (add(el)) formsN++; continue }
+      if (isVisible(el)) { if (add(el)) formsN++; continue }
+      // Mounted but currently hidden — keep iff it's a button-shaped element with
+      // an action-keyword text OR a publish-class. This is the "发布按钮初始 disabled/
+      // hidden" escape hatch.
+      const tag = (el.tagName || '').toLowerCase()
+      const role = (el.getAttribute('role') || '').toLowerCase()
+      const isBtnShape = tag === 'button' || role === 'button' || tag === 'input'
+      if (isBtnShape && isMounted(el)) {
+        const t = normalizeWord(el.textContent || el.value || '')
+        const cls = el.getAttribute('class') || ''
+        if (ACTION_TEXT_RE.test(t) || PUBLISH_CLASS_RE.test(cls)) {
+          if (add(el)) formsN++
+        }
+      }
+    }
+  }
+  // Phase B-priority — div/span/li whose entire text matches an action keyword
+  // (发布/提交/...). These get an UNLIMITED slot allotment (capped only by
+  // CAP_TOTAL) and run BEFORE the general button scan, so navigation menus and
+  // settings panels can't starve out the publish button (the 小红书 bug:
+  // 91 elements were collected, CAP_BUTTONS=80 was full of sidebar items, and
+  // the publish button at the right of the page never got a ref).
+  for (const r of roots) {
+    let cands
+    try { cands = r.querySelectorAll('div,span,li') } catch (e) { cands = [] }
+    for (const el of cands) {
+      if (!isActionKeyword(el)) continue
+      if (isVisible(el) || isMounted(el)) add(el)
+    }
+  }
+  // Phase B-class — fallback for action-class elements that escaped both Phase A
+  // (no button/role) and Phase B-priority (text wrapped in a non-leaf shape, eg
+  // <div class="publish-btn"><i icon/><span>发布</span></div>). Class-name signals
+  // are deliberate; PUBLISH_CLASS_RE is tight enough not to scoop random "btn"s.
+  // Mounted-only so we don't surface v-if branches that haven't rendered yet.
+  for (const r of roots) {
+    let cands
+    try { cands = r.querySelectorAll('[class]') } catch (e) { cands = [] }
+    for (const el of cands) {
+      if (!PUBLISH_CLASS_RE.test(el.getAttribute('class') || '')) continue
+      if (el.childElementCount > 6) continue  // skip huge containers that merely include a btn class somewhere
+      if (isVisible(el) || isMounted(el)) add(el)
+    }
+  }
+  // Phase B — div/span/li that behave like buttons (everything else, capped).
+  // ORDER MATTERS: looksClickable (cheap attribute checks) runs BEFORE isVisible
+  // (getComputedStyle), so we only pay the style-recalc cost on the small handful
+  // of elements that actually have a clickable signal — not on every div on the
+  // page. Reversing this order is what caused the 小红书 snapshot to time out.
+  let btnsN = 0
+  for (const r of roots) {
+    if (btnsN >= CAP_BUTTONS) break
+    let cands
+    try { cands = r.querySelectorAll('div,span,li') } catch (e) { cands = [] }
+    for (const el of cands) {
+      if (btnsN >= CAP_BUTTONS) break
+      if (!looksClickable(el)) continue
+      if (!isVisible(el)) continue
+      if (add(el)) btnsN++
+    }
+  }
+  // Phase C — anchors / link-role. Lowest priority (feeds dominate these).
+  let linksN = 0
+  for (const r of roots) {
+    if (linksN >= CAP_LINKS) break
+    let found
+    try { found = r.querySelectorAll(linkSel) } catch (e) { found = [] }
+    for (const el of found) {
+      if (linksN >= CAP_LINKS) break
+      if (isVisible(el)) { if (add(el)) linksN++ }
+    }
+  }
+
+  const lightText = (document.body && document.body.innerText) ? document.body.innerText : ''
+  const text = lightText.replace(/[\\t\\f\\r ]+/g, ' ').replace(/\\n{3,}/g, '\\n\\n').trim().slice(0, 2000)
+  return { title: document.title || '', url: location.href || '', text, elements }
+  } catch (e) {
+    const msg = (e && e.message) ? e.message : String(e)
+    const stk = (e && e.stack) ? String(e.stack).slice(0, 400) : ''
+    return {
+      title: (typeof document !== 'undefined' && document.title) || '',
+      url: (typeof location !== 'undefined' && location.href) || '',
+      text: '', elements: [], _snapshotError: msg + (stk ? ' || ' + stk : '')
+    }
+  }
+})()); }, 0); })`
+
+/** Evaluate SNAPSHOT_JS via Chrome DevTools Protocol — bypasses
+ *  webContents.executeJavaScript's main-frame-availability check, which on
+ *  heavy SPAs (小红书 publish was the canary) rejects with
+ *  "Script failed to execute, this normally means an error was thrown" at
+ *  evaluate time without ever running the script. CDP's Runtime.evaluate
+ *  doesn't have that issue: it queues the eval onto the page's main world
+ *  regardless of frame churn. `awaitPromise: true` makes it wait for our
+ *  `new Promise(setTimeout(...))`-wrapped result. */
+async function snapshotViaCDP(wc: WebContents): Promise<SnapshotResult> {
+  let attached = false
+  try {
+    try { wc.debugger.attach('1.3') } catch (e) {
+      const msg = (e as Error).message || String(e)
+      // Already attached (we re-entered, or devtools is open) — fine, proceed.
+      if (!/already attached/i.test(msg)) throw new Error(`CDP attach failed: ${msg}`)
+    }
+    attached = true
+    await wc.debugger.sendCommand('Runtime.enable')
+    const res = await wc.debugger.sendCommand('Runtime.evaluate', {
+      expression: SNAPSHOT_JS,
+      awaitPromise: true,
+      returnByValue: true,
+      timeout: SNAPSHOT_TIMEOUT_MS
+    }) as { result?: { value?: SnapshotResult }; exceptionDetails?: { exception?: { description?: string } } }
+    if (res.exceptionDetails) {
+      const desc = res.exceptionDetails.exception?.description || JSON.stringify(res.exceptionDetails)
+      throw new Error(`CDP snapshot threw: ${desc.slice(0, 300)}`)
+    }
+    const value = res.result?.value
+    if (!value) throw new Error('CDP snapshot returned no value')
+    if (value._snapshotError) throw new Error(`snapshot script threw inside page: ${value._snapshotError}`)
+    return value
+  } finally {
+    if (attached) { try { wc.debugger.detach() } catch { /* already detached */ } }
+  }
+}
+
+/** Evaluate SNAPSHOT_JS — fast path (executeJavaScript) first, immediate CDP
+ *  fallback on failure. On normal pages the fast path always wins (no attach
+ *  cost). On SPA-mid-navigation pages where executeJavaScript synchronously
+ *  rejects with "Script failed to execute", we fall straight to CDP without
+ *  burning retry budget. */
+async function evalSnapshot(wc: WebContents): Promise<SnapshotResult> {
+  try {
+    return await execJs<SnapshotResult>(wc, SNAPSHOT_JS, SNAPSHOT_TIMEOUT_MS)
+  } catch (fastErr) {
+    const msg = (fastErr as Error).message || String(fastErr)
+    console.log(`[web-automation] fast-path snapshot failed (${msg.slice(0, 80)}…), falling back to CDP`)
+    return await snapshotViaCDP(wc)
+  }
+}
+
+/** Snapshot the current page: tag + list visible interactive elements. The
+ *  model calls this before acting (to get refs) and after any DOM-mutating
+ *  action (refs go stale once the DOM changes). */
+export async function snapshotPage(): Promise<SnapshotResult> {
+  return withMutex(async () => {
+    const { wc } = requireWindow()
+    if (idleTimer) { clearTimeout(idleTimer); idleTimer = null }
+    try {
+      // Retry: a SPA route push or anti-bot interstitial right after web_open can
+      // make executeJavaScript reject with the generic "Script failed to execute"
+      // (no active frame to evaluate against). The script itself is now wrapped
+      // in `new Promise(setTimeout(...))` so the evaluate phase is microseconds
+      // long — but if a navigation lands EXACTLY during that window, retry is
+      // still needed. Burst the first few attempts so we catch sub-second SPA
+      // tab_switch races (小红书 publish page does this), then back off normally.
+      const backoffs = [0, 150, 350, 700, 1500, 3000]
+      let lastErr: Error | undefined
+      // Per-attempt log: every retry's wait, exec duration, and failure reason
+      // — surfaced on success-after-retry (result._snapshotAttempts) AND on
+      // final failure (thrown Error.attempts). Lets exported session JSON show
+      // exactly which attempt failed and why, without needing console access.
+      const attempts: Array<{ idx: number; waitMs: number; execMs: number; ok: boolean; error?: string }> = []
+      for (let i = 0; i < backoffs.length; i++) {
+        const wait = backoffs[i]
+        if (wait) await new Promise(r => setTimeout(r, wait))
+        const start = Date.now()
+        try {
+          const result = await evalSnapshot(wc)
+          const execMs = Date.now() - start
+          if (result._snapshotError) {
+            attempts.push({ idx: i + 1, waitMs: wait, execMs, ok: false, error: `inner-throw: ${result._snapshotError.slice(0, 300)}` })
+            throw new Error(`snapshot script threw inside page: ${result._snapshotError}`)
+          }
+          attempts.push({ idx: i + 1, waitMs: wait, execMs, ok: true })
+          console.log('[web-automation] snapshot', result.url, '→', result.elements.length, 'elements', 'attempts=' + attempts.length)
+          // Surface retry log only when we actually needed to retry (>1 attempt).
+          // Empty on first-try success keeps the happy-path JSON clean.
+          if (attempts.length > 1) (result as SnapshotResult & { _snapshotAttempts?: typeof attempts })._snapshotAttempts = attempts
+          return result
+        } catch (e) {
+          const execMs = Date.now() - start
+          const msg = (e as Error).message || String(e)
+          // Push only if we didn't already push the inner-throw record above.
+          if (attempts.length <= i) attempts.push({ idx: i + 1, waitMs: wait, execMs, ok: false, error: msg.slice(0, 300) })
+          lastErr = e as Error
+          console.warn(`[web-automation] snapshot attempt #${i + 1} (after ${wait}ms, exec=${execMs}ms) failed:`, lastErr.message)
+        }
+      }
+      // Aggregate ALL attempt errors into the thrown message + a structured
+      // `.attempts` property so callers (web_open auto-snapshot, web_snapshot)
+      // can serialize them into the tool result for the exported JSON.
+      const summary = attempts.map(a => `#${a.idx}(wait=${a.waitMs}ms,exec=${a.execMs}ms): ${a.error || 'ok'}`).join(' | ')
+      const err = new Error(`snapshot failed after ${attempts.length} attempts: ${summary}`)
+      ;(err as Error & { attempts?: typeof attempts }).attempts = attempts
+      throw err
+    } finally {
+      armIdleClose(OP_IDLE_CLOSE_MS)
+    }
+  })
+}
+
+export type PageAction =
+  | { type: 'click'; ref?: string; text?: string }
+  | { type: 'fill'; ref: string; value: string }
+  | { type: 'select'; ref: string; value: string }
+
+export interface ActResult {
+  ok: boolean
+  finalUrl: string
+  error?: string
+  /** Fresh snapshot after the action settled. Always populated on success so the
+   *  agent doesn't need to chain web_snapshot just to find the next ref — that
+   *  intermediate "let me snapshot" reasoning is what makes models stop mid-flow. */
+  elements?: SnapshotElement[]
+  title?: string
+  /** Set only when the action succeeded but the follow-up snapshot couldn't be
+   *  captured — tells the model how to recover instead of stalling. */
+  hint?: string
+}
+
+// Find the [data-ss-ref] element across light + shadow trees, then perform the
+// action. Returns { ok, error? }. Built per-call with the action JSON inlined.
+function buildActJs(action: PageAction): string {
+  const payload = JSON.stringify(action)
+  return `(async () => {
+  const action = ${payload}
+  function allShadowRoots(root, acc) {
+    let els
+    try { els = root.querySelectorAll('*') } catch (e) { return acc }
+    for (const el of els) {
+      if (el.shadowRoot) { acc.push(el.shadowRoot); allShadowRoots(el.shadowRoot, acc) }
+      if (el.tagName === 'IFRAME' || el.tagName === 'FRAME') {
+        try {
+          const doc = el.contentDocument
+          if (doc && doc !== root) { acc.push(doc); allShadowRoots(doc, acc) }
+        } catch (e) { /* cross-origin: skip */ }
+      }
+    }
+    return acc
+  }
+  const roots = [document, ...allShadowRoots(document, [])]
+  let el = null
+  if (action.ref) {
+    for (const r of roots) {
+      let hit
+      try { hit = r.querySelector('[data-ss-ref="' + action.ref + '"]') } catch (e) { continue }
+      if (hit) { el = hit; break }
+    }
+  }
+  // Text fallback (click only): resolve a clickable element by its visible text
+  // at click-time, on the LIVE DOM. Bypasses the snapshot entirely, so it still
+  // works when the target (e.g. the 发布 button) was lazy-rendered or capped out
+  // of the snapshot and therefore never got a data-ss-ref.
+  if (!el && action.type === 'click' && action.text) {
+    const norm = (s) => (s || '').replace(/\\s+/g, '').trim()
+    const want = norm(action.text)
+    const styleOf = (e) => { try { return (e.ownerDocument.defaultView || window).getComputedStyle(e) } catch (x) { return null } }
+    const sel = 'button,a[href],[role="button"],[role="menuitem"],[role="tab"],input[type="button"],input[type="submit"],div,span,li'
+    const exact = []
+    const partial = []
+    for (const r of roots) {
+      let cands
+      try { cands = r.querySelectorAll(sel) } catch (e) { continue }
+      for (const c of cands) {
+        if (c.childElementCount > 8) continue  // skip big containers; we want the leaf control
+        const t = norm(c.textContent || c.value || c.getAttribute('aria-label') || '')
+        if (!t || !want) continue
+        if (t === want) exact.push(c)
+        else if (t.indexOf(want) !== -1 && t.length <= want.length + 6) partial.push(c)
+      }
+    }
+    const scoreOf = (e) => {
+      let s = 0
+      const tag = (e.tagName || '').toLowerCase()
+      const role = (e.getAttribute('role') || '').toLowerCase()
+      if (tag === 'button' || role === 'button' || tag === 'input') s += 4
+      const rect = e.getBoundingClientRect()
+      if (rect.width > 0 && rect.height > 0) s += 3
+      const st = styleOf(e)
+      if (st && st.cursor === 'pointer') s += 1
+      if (/\\b(publish|submit|post|btn|button)\\b/i.test(e.getAttribute('class') || '')) s += 1
+      return s
+    }
+    const pool = exact.length ? exact : partial
+    pool.sort((a, b) => scoreOf(b) - scoreOf(a))
+    el = pool[0] || null
+    if (!el) return { ok: false, finalUrl: location.href, error: '页面上找不到文字为「' + action.text + '」的可点击元素，请先 web_snapshot 看看现在有哪些元素' }
+  }
+  if (!el) return { ok: false, finalUrl: location.href, error: '元素已失效，请重新 web_snapshot' }
+
+  try { el.scrollIntoView({ block: 'center', inline: 'center' }) } catch (e) {}
+
+  if (action.type === 'click') {
+    try {
+      const opts = { bubbles: true, cancelable: true, view: window }
+      el.dispatchEvent(new MouseEvent('pointerdown', opts))
+      el.dispatchEvent(new MouseEvent('mousedown', opts))
+      el.dispatchEvent(new MouseEvent('mouseup', opts))
+      el.click()
+    } catch (e) { return { ok: false, finalUrl: location.href, error: '点击失败：' + (e && e.message) } }
+    return { ok: true, finalUrl: location.href }
+  }
+
+  if (action.type === 'fill') {
+    const v = String(action.value == null ? '' : action.value)
+    try {
+      const tag = (el.tagName || '').toLowerCase()
+      if (tag === 'input' || tag === 'textarea') {
+        const proto = tag === 'input' ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype
+        const setter = Object.getOwnPropertyDescriptor(proto, 'value').set
+        el.focus()
+        setter.call(el, v)
+        el.dispatchEvent(new Event('input', { bubbles: true }))
+        el.dispatchEvent(new Event('change', { bubbles: true }))
+        if (el.value !== v) return { ok: false, finalUrl: location.href, error: '写入后回读不一致，可能被组件拦截' }
+      } else if (el.isContentEditable) {
+        // Rich-text editors (Quill/Slate/Lexical/Draft/ProseMirror/小红书自研) all maintain
+        // their own internal model. Three strategies in descending preference:
+        //   1. paste event — every serious editor handles paste (browser feature parity);
+        //      passes \\n as real newlines and avoids execCommand's per-char buggy path.
+        //   2. execCommand('insertText') — legacy but widely supported; chokes on long
+        //      strings + newlines + emoji on some editors (this was the 小红书 failure).
+        //   3. beforeinput + raw textContent — last-resort; some editors will sync.
+        el.focus()
+        // Select all existing content so the new value replaces it.
+        const selectAll = () => {
+          try {
+            const range = document.createRange()
+            range.selectNodeContents(el)
+            const sel = window.getSelection()
+            sel.removeAllRanges()
+            sel.addRange(range)
+          } catch (e) {}
+        }
+        selectAll()
+
+        const want = v.replace(/\\s+/g, ' ').trim()
+        const checkOk = () => {
+          const got = (el.textContent || '').replace(/\\s+/g, ' ').trim()
+          if (want.length === 0) return { ok: true, got }
+          // Accept if we wrote ≥70% of the intended length AND the first 8 chars match.
+          // Editors normalize whitespace, drop trailing newlines, replace emoji with
+          // shortcodes etc., so byte-for-byte equality is too strict.
+          // Use Array.from for code-point-correct slicing (emoji safety).
+          const wantArr = Array.from(want)
+          const gotArr = Array.from(got)
+          const head = wantArr.slice(0, Math.min(8, wantArr.length)).join('')
+          const ratio = wantArr.length > 0 ? gotArr.length / wantArr.length : 1
+          return { ok: !!head && got.includes(head) && ratio >= 0.7, got }
+        }
+
+        // 1. Paste strategy.
+        let pasted = false
+        try {
+          const dt = new DataTransfer()
+          dt.setData('text/plain', v)
+          dt.setData('text', v)  // some editors check the older 'text' key
+          const evt = new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: dt })
+          // dispatchEvent returns false iff a handler called preventDefault — for paste
+          // that actually means the editor TOOK the data (it cancels default to insert via its own model).
+          el.dispatchEvent(evt)
+          pasted = true
+        } catch (e) {}
+
+        await new Promise(r => setTimeout(r, 100))
+        let res = checkOk()
+
+        // 2. execCommand fallback.
+        if (!res.ok) {
+          selectAll()
+          try { document.execCommand('insertText', false, v) } catch (e) {}
+          await new Promise(r => setTimeout(r, 100))
+          res = checkOk()
+        }
+
+        // 3. beforeinput + raw mutation fallback.
+        if (!res.ok) {
+          selectAll()
+          try {
+            el.dispatchEvent(new InputEvent('beforeinput', {
+              bubbles: true, cancelable: true, inputType: 'insertFromPaste', data: v
+            }))
+          } catch (e) {}
+          try { el.textContent = v } catch (e) {}
+          try {
+            el.dispatchEvent(new InputEvent('input', {
+              bubbles: true, inputType: 'insertFromPaste', data: v
+            }))
+          } catch (e) {}
+          await new Promise(r => setTimeout(r, 100))
+          res = checkOk()
+        }
+
+        if (!res.ok) {
+          return {
+            ok: false, finalUrl: location.href,
+            error: '富文本编辑器未接受输入（回读："' + res.got.slice(0, 60) + '"）。请先 web_click 这个编辑器把它聚焦，再重试 web_fill；如果仍失败，告诉用户该编辑器要求手动填写，把内容贴到聊天里让用户自己粘。'
+          }
+        }
+      } else {
+        return { ok: false, finalUrl: location.href, error: '该元素不是可填写的输入框（' + tag + '）' }
+      }
+    } catch (e) { return { ok: false, finalUrl: location.href, error: '填写失败：' + (e && e.message) } }
+    return { ok: true, finalUrl: location.href }
+  }
+
+  if (action.type === 'select') {
+    try {
+      if ((el.tagName || '').toLowerCase() !== 'select') {
+        return { ok: false, finalUrl: location.href, error: '该元素不是 <select>' }
+      }
+      const want = String(action.value == null ? '' : action.value)
+      let matched = false
+      for (const opt of el.options) {
+        if (opt.value === want || (opt.textContent || '').trim() === want) {
+          el.value = opt.value
+          matched = true
+          break
+        }
+      }
+      if (!matched) return { ok: false, finalUrl: location.href, error: '未找到匹配的选项：' + want }
+      el.dispatchEvent(new Event('change', { bubbles: true }))
+    } catch (e) { return { ok: false, finalUrl: location.href, error: '选择失败：' + (e && e.message) } }
+    return { ok: true, finalUrl: location.href }
+  }
+
+  return { ok: false, finalUrl: location.href, error: '未知动作：' + action.type }
+})()`
+}
+
+/** Click / fill / select on a previously-snapshotted element (by ref). Never
+ *  navigates by itself, but the page's own handlers may. */
+export async function actOnPage(action: PageAction): Promise<ActResult> {
+  return withMutex(async () => {
+    const { wc } = requireWindow()
+    if (idleTimer) { clearTimeout(idleTimer); idleTimer = null }
+    try {
+      const result = await execJs<ActResult>(wc, buildActJs(action), EXTRACT_TIMEOUT_MS)
+      const targetLabel = action.type === 'click' ? (action.ref || `text:${action.text ?? ''}`) : action.ref
+      console.log('[web-automation]', action.type, targetLabel, '→', result.ok ? 'ok' : `fail: ${result.error}`)
+      if (result.ok) {
+        // Auto-snapshot so the agent gets fresh refs without a second tool round-trip.
+        // Click can trigger navigation or DOM mutation — give the page a moment to settle.
+        // Fill needs longer than it intuitively should: heavy editors (小红书/掘金/语雀)
+        // re-render their action toolbar (发布/暂存) based on form-validation state, and
+        // the re-render kicks off AFTER React processes the input event. 120ms was too
+        // tight and we'd snapshot before the publish button reappeared.
+        const settleMs = action.type === 'click' ? 400 : 500
+        await new Promise(r => setTimeout(r, settleMs))
+        // One retry with a longer settle: a tab switch / submit can kick off a big
+        // re-render that's still mounting when the first snapshot runs (or that
+        // snapshot races the timeout). Without a fresh `elements`, the model has no
+        // refs and tends to narrate-then-stop, so it's worth a second attempt.
+        let snapped = false
+        let lastSnapErr = ''
+        for (const extra of [0, 900]) {
+          if (extra) await new Promise(r => setTimeout(r, extra))
+          try {
+            const snap = await evalSnapshot(wc)
+            if (snap._snapshotError) {
+              throw new Error(`snapshot script threw inside page: ${snap._snapshotError}`)
+            }
+            result.elements = snap.elements
+            result.title = snap.title
+            result.finalUrl = snap.url
+            snapped = true
+            break
+          } catch (snapErr) {
+            lastSnapErr = (snapErr as Error).message || String(snapErr)
+            console.warn(`[web-automation] post-action snapshot failed (settle+${extra}ms):`, lastSnapErr)
+          }
+        }
+        if (!snapped) {
+          // Include the underlying snapshot error so it surfaces in the chat
+          // transcript — without this we're guessing whether it timed out or threw.
+          result.hint = `操作已成功，但抓取最新元素清单失败（${lastSnapErr || '未知原因'}）。请立刻调用 web_snapshot 重新获取 elements——不要在这里停下来回复用户；若 web_snapshot 仍失败，就改用 web_click 的 text 参数按按钮文字（如"发布"）直接操作。`
+        }
+      }
+      return result
+    } catch (e) {
+      const msg = (e as Error).message || '操作失败'
+      const lbl = action.type === 'click' ? (action.ref ?? action.text ?? '') : action.ref
+      console.warn('[web-automation]', action.type, lbl, '→ threw:', msg)
+      return { ok: false, finalUrl: '', error: msg }
+    } finally {
+      armIdleClose(OP_IDLE_CLOSE_MS)
+    }
+  })
+}
+
+export interface UploadResult {
+  ok: boolean
+  error?: string
+  /** Same auto-snapshot story as ActResult — caller gets fresh refs without a second tool call. */
+  elements?: SnapshotElement[]
+  title?: string
+  finalUrl?: string
+  /** True when the file input was located by scanning the page (caller did not
+   *  pass a ref or the ref was stale). Useful for the LLM to know: if false,
+   *  the snapshot-driven path worked; if true, the LLM can keep using the
+   *  no-ref form to bypass snapshot entirely. */
+  autoLocated?: boolean
+  /** Set only when upload succeeded but the follow-up snapshot couldn't be
+   *  captured — tells the model how to recover (text-based clicks) instead of
+   *  stalling and replying to the user. */
+  hint?: string
+}
+
+/** Set files on a `<input type=file>` — by ref if provided, otherwise the
+ *  function auto-locates the first usable file input on the page (across light
+ *  + shadow + same-origin iframe DOM). Page JS can't write `input.files`
+ *  (read-only), so this goes through the Chrome DevTools Protocol: resolve
+ *  the element's objectId, then DOM.setFileInputFiles (which also fires
+ *  the `change` event the site listens for). filePaths must be local absolute
+ *  paths — e.g. an image_generate result's `images[].path`.
+ *
+ *  The ref-optional path exists because the snapshot pipeline can fail on
+ *  heavy SPAs (小红书 publish was the canary): without it, the LLM has no
+ *  way to upload at all. Auto-locate picks the first `<input type=file>` that
+ *  is "mounted" (display!=none) — file inputs are usually opacity:0 / 0×0
+ *  rect behind a styled label, so we deliberately do NOT require isVisible. */
+export async function uploadToPage(ref: string | null | undefined, filePaths: string[]): Promise<UploadResult> {
+  return withMutex(async () => {
+    const { wc } = requireWindow()
+    if (idleTimer) { clearTimeout(idleTimer); idleTimer = null }
+
+    for (const p of filePaths) {
+      if (!p || !fs.existsSync(p)) {
+        armIdleClose(OP_IDLE_CLOSE_MS)
+        return { ok: false, error: `文件不存在：${p}` }
+      }
+    }
+
+    let attached = false
+    try {
+      try { wc.debugger.attach('1.3') } catch (e) {
+        const msg = (e as Error).message || String(e)
+        // Already attached (by us earlier or devtools) — proceed; otherwise fail.
+        if (!/already attached/i.test(msg)) {
+          return { ok: false, error: `无法附加调试器（上传需要）：${msg}` }
+        }
+      }
+      attached = true
+      await wc.debugger.sendCommand('DOM.enable')
+      await wc.debugger.sendCommand('Runtime.enable')
+
+      // Resolve the file input across light + shadow + same-origin iframe DOM.
+      // Two strategies:
+      //   - With ref: pinpoint by [data-ss-ref] (fastest, exact). Verifies the
+      //     hit IS a file input — if the ref happens to point at a non-file
+      //     element (e.g. the "上传图片" tab button), the LLM gets a clear
+      //     error instead of a silently-broken upload.
+      //   - Without ref: pick the first <input type=file> we can find.
+      //     Mounted-only (display != 'none') — file inputs are usually
+      //     opacity:0 / 0×0 sitting behind a styled label, so isVisible() is
+      //     wrong here. Logs which strategy hit for diagnostic JSON.
+      const refLiteral = ref ? JSON.stringify(ref) : 'null'
+      const findJs = `(() => {
+        const targetRef = ${refLiteral}
+        function allRoots(root, acc) {
+          let els
+          try { els = root.querySelectorAll('*') } catch (e) { return acc }
+          for (const el of els) {
+            if (el.shadowRoot) { acc.push(el.shadowRoot); allRoots(el.shadowRoot, acc) }
+            if (el.tagName === 'IFRAME' || el.tagName === 'FRAME') {
+              try {
+                const doc = el.contentDocument
+                if (doc && doc !== root) { acc.push(doc); allRoots(doc, acc) }
+              } catch (e) {}
+            }
+          }
+          return acc
+        }
+        const roots = [document, ...allRoots(document, [])]
+        const isFileInput = (el) => {
+          try { return el.tagName === 'INPUT' && (el.getAttribute('type') || '').toLowerCase() === 'file' }
+          catch (e) { return false }
+        }
+        const isMounted = (el) => {
+          try {
+            const st = (el.ownerDocument.defaultView || window).getComputedStyle(el)
+            return !st || st.display !== 'none'
+          } catch (e) { return true }
+        }
+        // Strategy 1: by ref
+        if (targetRef) {
+          for (const r of roots) {
+            let hit
+            try { hit = r.querySelector('[data-ss-ref="' + targetRef + '"]') } catch (e) { continue }
+            if (hit) {
+              if (!isFileInput(hit)) {
+                // Wrong target — surface a structured signal so the caller can
+                // tell the LLM exactly why upload failed (vs generic "not found").
+                throw new Error('__ss_not_file_input__:' + ((hit.tagName || '') + (hit.getAttribute && hit.getAttribute('class') ? '.' + hit.getAttribute('class') : '')))
+              }
+              return hit
+            }
+          }
+          // Fall through to auto-locate when ref'd element is gone (page mutated)
+        }
+        // Strategy 2: auto-locate first mounted file input
+        for (const r of roots) {
+          let cands
+          try { cands = r.querySelectorAll('input[type="file"]') } catch (e) { continue }
+          for (const el of cands) {
+            if (isFileInput(el) && isMounted(el)) return el
+          }
+        }
+        return null
+      })()`
+      let evalRes: { result?: { objectId?: string; subtype?: string }; exceptionDetails?: { exception?: { description?: string } } }
+      try {
+        evalRes = await wc.debugger.sendCommand('Runtime.evaluate', {
+          expression: findJs
+        }) as typeof evalRes
+      } catch (e) {
+        return { ok: false, error: `定位文件输入框失败：${(e as Error).message}` }
+      }
+      // Distinguish "ref pointed at wrong element" from "no file input on page"
+      const excDesc = evalRes.exceptionDetails?.exception?.description || ''
+      if (excDesc.includes('__ss_not_file_input__:')) {
+        const tail = excDesc.split('__ss_not_file_input__:')[1]?.split(/[\s"]/)[0] || '?'
+        return { ok: false, error: `给定 ref 不是 <input type=file>，而是 ${tail}。请省略 ref 参数让上传自动定位，或先 web_snapshot 找到 input[type=file] 的 ref。` }
+      }
+      const objectId = evalRes.result?.objectId
+      if (!objectId) {
+        return {
+          ok: false,
+          error: ref
+            ? '指定 ref 的元素已失效，且页面上找不到任何 <input type=file>——请确认已进入图文模式（先 web_click 点"图文/图片"tab），然后调 web_upload(filePaths) 省略 ref 自动定位。'
+            : '页面上找不到任何 <input type=file>——请先 web_click 点"图文/图片"tab 切到图片编辑模式，再调 web_upload(filePaths)。'
+        }
+      }
+      const autoLocated = !ref
+      if (autoLocated) console.log('[web-automation] web_upload auto-located file input (no ref provided)')
+
+      await wc.debugger.sendCommand('DOM.setFileInputFiles', {
+        files: filePaths,
+        objectId
+      })
+      // Detach BEFORE snapshotting so executeJavaScript doesn't compete with CDP.
+      try { wc.debugger.detach() } catch { /* already detached */ }
+      attached = false
+      // Upload triggers a previewer / preview-grid render in most editors — let it settle.
+      await new Promise(r => setTimeout(r, 500))
+      const result: UploadResult = { ok: true, autoLocated }
+      // Retry the post-upload snapshot: upload triggers a heavy re-render
+      // (preview grid, encoder, validators) and 500ms isn't always enough on
+      // slow machines. Without elements, the LLM has no refs for title/body
+      // and tends to stop — so it's worth two attempts before giving up.
+      let snapped = false
+      let lastSnapErr = ''
+      for (const extra of [0, 1000]) {
+        if (extra) await new Promise(r => setTimeout(r, extra))
+        try {
+          const snap = await evalSnapshot(wc)
+          if (snap._snapshotError) {
+            throw new Error(`snapshot script threw inside page: ${snap._snapshotError}`)
+          }
+          result.elements = snap.elements
+          result.title = snap.title
+          result.finalUrl = snap.url
+          snapped = true
+          break
+        } catch (snapErr) {
+          lastSnapErr = (snapErr as Error).message || String(snapErr)
+          console.warn(`[web-automation] post-upload snapshot failed (settle+${extra}ms):`, lastSnapErr)
+        }
+      }
+      if (!snapped) {
+        // 上传成功了，但抓不到新的元素列表 —— LLM 没有 refs 就容易停下。
+        // 给出明确的恢复路径：用 web_click(text='...') 文本按钮路径继续填写文案/发布。
+        result.hint = `图片已上传，但抓取最新元素清单失败（${lastSnapErr || '未知原因'}）。请立刻继续：① 调 web_snapshot 再试一次拿 refs；② 若 web_snapshot 仍失败，改用 web_click 的 text 参数按按钮/标签文字直接操作（例如 web_click(text='标题') 然后 web_fill；最后 web_click(text='发布')）。不要在这里停下来回复用户。`
+      }
+      return result
+    } catch (e) {
+      return { ok: false, error: `上传失败：${(e as Error).message || String(e)}` }
+    } finally {
+      if (attached) { try { wc.debugger.detach() } catch { /* already detached */ } }
+      armIdleClose(OP_IDLE_CLOSE_MS)
+    }
+  })
 }

@@ -471,6 +471,13 @@ function MessageBubble({
             ) : null
           ))}
 
+          {/* Tool error detail — surfaced verbatim so the model's summary
+              can't bury it (e.g. image_generate provider/model errors). */}
+          {message.toolCalls?.map((tc, i) => {
+            const err = (tc.result as { error?: string } | null)?.error
+            return err ? <ToolErrorCard key={`err-${i}`} toolName={tc.toolName} error={err} /> : null
+          })}
+
           {/* ask_user choice card — interactive only while this is the last
               message and nothing's running. Once the user picks, their choice
               becomes a new user message, this stops being last → card locks. */}
@@ -948,6 +955,28 @@ function FileRevertCard({ tc }: { tc: ToolCallRecord }) {
           还原备份
         </button>
       )}
+    </div>
+  )
+}
+
+const TOOL_ERROR_LABELS: Record<string, string> = {
+  image_generate: '生成图片',
+  video_generate: '生成视频',
+  web_open: '打开网页',
+  vision_analyze: '图片识别'
+}
+
+/** Shows a tool call's raw error verbatim. Without this the model's prose
+ *  summary is the only thing the user sees, which hides the real cause
+ *  (provider / baseUrl / model in image_generate failures, etc.). */
+function ToolErrorCard({ toolName, error }: { toolName: string; error: string }) {
+  const label = TOOL_ERROR_LABELS[toolName] || toolName
+  return (
+    <div className="mt-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs">
+      <div className="font-medium text-destructive mb-1">{label} 失败</div>
+      <div className="whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-destructive/90">
+        {error}
+      </div>
     </div>
   )
 }

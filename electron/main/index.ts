@@ -312,43 +312,90 @@ app.whenReady().then(async () => {
     // Wasm
     wasm: 'application/wasm'
   }
-  protocol.handle('local-file', async (req) => {
-    // Chromium with standard:true normalizes local-file:///F:/path → local-file://f/path
-    // where drive letter becomes lowercase hostname and the rest is pathname.
-    const url = new URL(req.url)
-    let filePath: string
-    if (url.hostname && url.hostname.length === 1 && /[a-z]/.test(url.hostname)) {
-      // Windows: reconstruct drive path — hostname=f + pathname=/Data/... → F:/Data/...
-      filePath = `${url.hostname.toUpperCase()}:${decodeURIComponent(url.pathname)}`
-    } else {
-      filePath = decodeURIComponent(url.pathname)
+  // Defensive: if any prior handler for this scheme somehow exists (Electron
+  // 33.x has occasionally been seen leaving stale registration after a hot
+  // upgrade where the previous process tray-quit asynchronously, or after an
+  // app.relaunch where whenReady fires twice), detach it first so the fresh
+  // handler installs cleanly instead of throwing "Failed to register protocol".
+  try {
+    if (protocol.isProtocolHandled('local-file')) {
+      protocol.unhandle('local-file')
+      console.warn('[startup] local-file protocol was already handled; detached prior handler')
     }
+  } catch (e) {
+    // isProtocolHandled / unhandle are best-effort defenses — don't let them
+    // mask the real failure on the next line.
+    console.warn('[startup] pre-handle local-file probe threw:', (e as Error).message)
+  }
+  try {
+    protocol.handle('local-file', async (req) => {
+      // Chromium with standard:true normalizes local-file:///F:/path → local-file://f/path
+      // where drive letter becomes lowercase hostname and the rest is pathname.
+      const url = new URL(req.url)
+      let filePath: string
+      if (url.hostname && url.hostname.length === 1 && /[a-z]/.test(url.hostname)) {
+        // Windows: reconstruct drive path — hostname=f + pathname=/Data/... → F:/Data/...
+        filePath = `${url.hostname.toUpperCase()}:${decodeURIComponent(url.pathname)}`
+      } else {
+        filePath = decodeURIComponent(url.pathname)
+      }
 
-    // Path allowlist — refuse to serve anything that isn't under userData OR
-    // hasn't been explicitly opened/attached by the user. Blocks prompt-injection
-    // attempts to exfiltrate arbitrary disk files through <img src="local-file:///...">.
-    const { isApproved } = await import('./services/path-allow')
-    if (!isApproved(filePath)) {
-      console.warn('[local-file] BLOCKED (not in allowlist):', filePath)
-      return new Response('forbidden', { status: 403 })
-    }
+      // Path allowlist — refuse to serve anything that isn't under userData OR
+      // hasn't been explicitly opened/attached by the user. Blocks prompt-injection
+      // attempts to exfiltrate arbitrary disk files through <img src="local-file:///...">.
+      const { isApproved } = await import('./services/path-allow')
+      if (!isApproved(filePath)) {
+        console.warn('[local-file] BLOCKED (not in allowlist):', filePath)
+        return new Response('forbidden', { status: 403 })
+      }
 
-    const ext = filePath.split('.').pop()?.toLowerCase() ?? ''
-    console.log('[local-file]', filePath)
+      const ext = filePath.split('.').pop()?.toLowerCase() ?? ''
+      console.log('[local-file]', filePath)
+      try {
+        const data = fs.readFileSync(filePath)
+        return new Response(data, { headers: { 'Content-Type': MIME[ext] ?? 'application/octet-stream' } })
+      } catch (e) {
+        console.error('[local-file] not found:', filePath, (e as Error).message)
+        return new Response('not found', { status: 404 })
+      }
+    })
+  } catch (e) {
+    // CRITICAL: do not let protocol registration failure crash startup. The
+    // app needs to launch so the user can reach settings / about / log
+    // viewer. Without this catch, "Failed to register protocol: local-file"
+    // surfaces as a fatal panic window with no recovery path. Gallery
+    // thumbnails, Vibe preview, and KB attachments will be broken until
+    // the user restarts (which fixes it 99% of the time), but the app is
+    // at least usable.
+    const msg = (e as Error).message || String(e)
+    console.error('[startup] protocol.handle(local-file) failed — continuing without it:', msg)
     try {
-      const data = fs.readFileSync(filePath)
-      return new Response(data, { headers: { 'Content-Type': MIME[ext] ?? 'application/octet-stream' } })
-    } catch (e) {
-      console.error('[local-file] not found:', filePath, (e as Error).message)
-      return new Response('not found', { status: 404 })
-    }
-  })
+      const { logEntry } = await import('./services/error-log')
+      logEntry({
+        level: 'error',
+        source: 'main',
+        message: '[STARTUP] protocol.handle("local-file") failed: ' + msg,
+        stack: (e as Error).stack,
+        context: { electron: process.versions.electron, platform: process.platform }
+      })
+    } catch {/* logging best-effort */}
+  }
 
   // Read data directory from store (electron-store is independent of SQLite, safe to read early)
   const { getSettings: readSettings } = await import('./services/store')
   const startupSettings = readSettings()
   await initDb(startupSettings.dataDirectory || undefined)
   registerIpcHandlers()
+
+  // Apply outbound proxy. Both session-level proxy (BrowserWindow + net.fetch)
+  // and undici global dispatcher (Node's global fetch — image, video, updater,
+  // LLM streaming, …) are set here. Fire-and-forget: we MUST NOT block window
+  // creation on session.setProxy round-trips. For mode='off' (the default),
+  // applyProxyFromSettings short-circuits to a true no-op so default users see
+  // zero behavior change from before this feature existed.
+  import('./services/proxy')
+    .then(({ applyProxyFromSettings }) => applyProxyFromSettings(startupSettings))
+    .catch(e => console.warn('[startup] applyProxy failed:', (e as Error).message))
 
   // Reconcile OS-level toggles with the stored intent on every boot. This
   // matters after the user moves the .exe (path inside the registry / login

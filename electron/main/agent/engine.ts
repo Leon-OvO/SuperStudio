@@ -8,7 +8,7 @@ import { generateImage } from '../services/image'
 import { generateVideo } from '../services/video'
 import { readFile, writeFile } from '../services/fileops'
 import { searchWeb } from '../services/search'
-import { openPage } from '../services/web-browse'
+import { openPage, snapshotPage, actOnPage, uploadToPage } from '../services/web-browse'
 import { saveGalleryItem } from '../services/gallery'
 import { mcpManager, type McpTool } from '../services/mcp'
 import { getActiveSkillsForScenario, type InstalledSkill } from '../services/skills-db'
@@ -127,6 +127,12 @@ export async function runAgent(
   } catch (e) {
     console.warn('[Agent] failed to load active skills:', (e as Error).message)
   }
+  // Set below after computeToolAllowSet. When web_snapshot is allowed (i.e.
+  // 网页操作 skill is active), web_open auto-includes the snapshot in its
+  // return — fixes a class of failures where the model treats web_open's
+  // 12K-char text result as user-facing content, narrates "现在获取页面快照…"
+  // then stops with finish_reason='stop' instead of calling web_snapshot.
+  let webSnapshotAvailable = false
   const systemPrompt = buildSystemPrompt(kbContext, mcpTools, activeSkills, scheduledContext)
 
   const toolCallLog: Array<{ toolName: string; args: unknown; result: unknown }> = []
@@ -264,25 +270,185 @@ export async function runAgent(
             'do NOT assume "comments are JS-loaded so I can\'t read them"; just open the page and look in `text`. ' +
             'Use for a specific page that plain search can\'t cover — a given article, a listing page, ' +
             'a site\'s "popular/hot" page, a video\'s comment section, etc. Returns { finalUrl, title, text, links, needsLogin, loginHint }. ' +
-            'If the page requires login, the browser window is shown to the user and needsLogin is true; in that ' +
-            'case tell the user to log in in the opened window, then call web_open again to retry — do NOT pretend ' +
-            'you got the data. Prefer web_search for open-ended "find me X" queries.',
+            'When the 网页操作 (web-automation) skill is active, the return ALSO includes `elements` (same shape as web_snapshot) — ' +
+            'no need to call web_snapshot right after web_open; go straight to web_click/web_fill/web_upload using those refs. ' +
+            'If the page requires login, the browser window is shown and this tool BLOCKS waiting for the user to ' +
+            'finish signing in (they click a「我已登录完成，继续」button in the window, or it auto-detects) — so it ' +
+            'usually returns the real content in this same call; do NOT pretend you got the data. needsLogin=true is ' +
+            'only returned if the user never logged in (timeout / closed the window): then tell them to log in in the ' +
+            'opened window and call web_open again. Prefer web_search for open-ended "find me X" queries.',
           parameters: z.object({ url: z.string().describe('Absolute http(s) URL to open') }),
           execute: async ({ url }) => {
             emit({ stepIndex: stepIndex++, stepName: 'Browser Open', toolName: 'web_open', status: 'running', message: url })
             try {
-              const result = await openPage(url, { browserVisible: !!settings.searchBrowserVisible })
+              // In scheduled/headless runs nobody can log in, so don't block on a
+              // login wall — report needsLogin and let the agent give a partial answer.
+              const result = await openPage(url, {
+                browserVisible: !!settings.searchBrowserVisible,
+                waitForLogin: !scheduledContext
+              })
+              // Auto-snapshot when 网页操作 skill is active: collapses web_open + web_snapshot
+              // into one tool call so the model never gets a chance to narrate "现在获取页面快照…"
+              // and stop. Also shortens text/links since `elements` is now the actionable payload.
+              let merged: unknown = result
+              if (!result.needsLogin && webSnapshotAvailable) {
+                try {
+                  const snap = await snapshotPage()
+                  merged = {
+                    ...result,
+                    text: result.text.length > 1500 ? result.text.slice(0, 1500) + '…（已截断，请用 elements 操作）' : result.text,
+                    links: result.links.slice(0, 15),
+                    elements: snap.elements
+                  }
+                  console.log(`[Agent] web_open auto-snapshot: ${snap.elements.length} elements`)
+                } catch (snapErr) {
+                  const snapMsg = (snapErr as Error).message || String(snapErr)
+                  // Pull the structured retry log if snapshotPage attached one — lets
+                  // the exported session JSON show WHICH attempt failed and why
+                  // (e.g. "after 700ms still rejecting → likely SPA still navigating").
+                  const attempts = (snapErr as Error & { attempts?: Array<{ idx: number; waitMs: number; execMs: number; ok: boolean; error?: string }> }).attempts
+                  const stack = (snapErr as Error).stack?.split('\n').slice(0, 4).join('\n')
+                  console.warn('[Agent] web_open auto-snapshot failed:', snapMsg)
+                  // Don't just fall through silently — without `elements` the model
+                  // tends to narrate and stop. Tell it exactly how to recover, and
+                  // include the underlying error so we can diagnose next time.
+                  merged = {
+                    ...result,
+                    hint: `页面已打开，但首次抓取元素清单失败（${snapMsg}）。请立刻调用 web_snapshot 重新获取 elements 再操作——不要停下来回复用户；若 web_snapshot 仍失败，可用 web_click 的 text 参数按按钮文字（如"上传图文"、"发布"）直接点。`,
+                    // Diagnostic-only fields (LLM may see them but they're meant for
+                    // exported JSON inspection): the full retry trace + stack head.
+                    _debug: { snapshotError: snapMsg, snapshotAttempts: attempts, snapshotStack: stack }
+                  }
+                }
+              }
+              const elemsCount = (merged as { elements?: unknown[] }).elements?.length
               const doneMsg = result.needsLogin
                 ? '需要登录 — 已弹出浏览器窗口，请用户登录后重试'
-                : `已读取页面（${result.text.length} 字 · ${result.links.length} 链接）`
+                : elemsCount !== undefined
+                  ? `已读取页面（${elemsCount} 个可操作元素）`
+                  : `已读取页面（${result.text.length} 字 · ${result.links.length} 链接）`
               emit({ stepIndex: stepIndex - 1, stepName: 'Browser Open', toolName: 'web_open', status: 'done', message: doneMsg })
-              toolCallLog.push({ toolName: 'web_open', args: { url }, result })
-              return result
+              toolCallLog.push({ toolName: 'web_open', args: { url }, result: merged })
+              return merged
             } catch (err) {
               const msg = (err as Error).message || String(err)
               emit({ stepIndex: stepIndex - 1, stepName: 'Browser Open', toolName: 'web_open', status: 'error', message: msg })
               toolCallLog.push({ toolName: 'web_open', args: { url }, result: { error: msg } })
               return `[web_open error] ${msg}`
+            }
+          }
+        }),
+        web_snapshot: tool({
+          description:
+            'Snapshot the page CURRENTLY open in the web_open browser window: returns { title, url, text, elements }. ' +
+            'Each element is { ref, tag, type, name, text } — `ref` is the stable handle you pass to web_click / web_fill / web_upload. ' +
+            'Call this RIGHT BEFORE operating to get fresh refs, and AGAIN after any action that changes the DOM (a click, a fill, a navigation) — ' +
+            'refs go stale once the page mutates and become "元素已失效". Pierces Shadow DOM, lists only visible interactive elements (capped at 150). ' +
+            'Requires web_open to have opened a page first.',
+          parameters: z.object({}),
+          execute: async () => {
+            emit({ stepIndex: stepIndex++, stepName: 'Page Snapshot', toolName: 'web_snapshot', status: 'running' })
+            try {
+              const result = await snapshotPage()
+              emit({ stepIndex: stepIndex - 1, stepName: 'Page Snapshot', toolName: 'web_snapshot', status: 'done', message: `${result.elements.length} 个可交互元素` })
+              toolCallLog.push({ toolName: 'web_snapshot', args: {}, result })
+              return result
+            } catch (err) {
+              const msg = (err as Error).message || String(err)
+              const attempts = (err as Error & { attempts?: Array<{ idx: number; waitMs: number; execMs: number; ok: boolean; error?: string }> }).attempts
+              const stack = (err as Error).stack?.split('\n').slice(0, 4).join('\n')
+              emit({ stepIndex: stepIndex - 1, stepName: 'Page Snapshot', toolName: 'web_snapshot', status: 'error', message: msg })
+              // Persist the retry breakdown + stack head into toolCallLog so the
+              // exported JSON shows exactly why the snapshot couldn't be obtained.
+              toolCallLog.push({ toolName: 'web_snapshot', args: {}, result: { error: msg, _debug: { attempts, stack } } })
+              return `[web_snapshot error] ${msg}`
+            }
+          }
+        }),
+        web_click: tool({
+          description:
+            'Click an element on the open page. Identify it EITHER by `ref` (from a recent web_snapshot / web_open / web_click / web_fill / web_upload return) ' +
+            'OR by `text` (the exact visible label, e.g. "发布"). ' +
+            'Use `text` when the button you need has no ref — common for a publish/submit button that is lazy-rendered or was capped out of the snapshot. ' +
+            '`text` is resolved against the LIVE DOM at click-time (light + shadow + same-origin iframes), so it works even when web_snapshot never listed it. ' +
+            'Scrolls the match into view and fires a full pointer/mouse/click sequence. ' +
+            'On success ALSO returns a fresh snapshot (`elements`, `title`, `finalUrl`) — use those refs directly for the next action; do NOT chain a web_snapshot call. ' +
+            'Returns { ok, finalUrl, error?, elements?, title? }.',
+          parameters: z.object({
+            ref: z.string().nullable().describe('Element ref from a recent snapshot, e.g. "e12". Preferred when available.'),
+            text: z.string().nullable().describe('Exact visible text of the button/link to click (e.g. "发布"). Fallback when the element has no ref. Pass null when using ref.')
+          }),
+          execute: async ({ ref, text }) => {
+            const label = ref || (text ? `text:${text}` : '')
+            emit({ stepIndex: stepIndex++, stepName: 'Click', toolName: 'web_click', status: 'running', message: label })
+            try {
+              const result = await actOnPage({ type: 'click', ref: ref ?? undefined, text: text ?? undefined })
+              emit({ stepIndex: stepIndex - 1, stepName: 'Click', toolName: 'web_click', status: result.ok ? 'done' : 'error', message: result.error })
+              toolCallLog.push({ toolName: 'web_click', args: { ref, text }, result })
+              return result
+            } catch (err) {
+              const msg = (err as Error).message || String(err)
+              emit({ stepIndex: stepIndex - 1, stepName: 'Click', toolName: 'web_click', status: 'error', message: msg })
+              toolCallLog.push({ toolName: 'web_click', args: { ref, text }, result: { error: msg } })
+              return `[web_click error] ${msg}`
+            }
+          }
+        }),
+        web_fill: tool({
+          description:
+            'Fill text into an input / textarea / contenteditable, or pick a <select> option, on the open page by `ref`. ' +
+            'Uses the native value setter + input/change events for inputs, execCommand("insertText") for rich-text editors (Quill/Slate/Draft), with readback verification. ' +
+            'Set kind="select" to choose a <select> option (value matches the option value OR its visible label); otherwise leave kind null for normal text fields. ' +
+            'On success ALSO returns a fresh snapshot (`elements`, `title`, `finalUrl`) — the next ref (e.g. the "发布" button) is in there; do NOT chain a web_snapshot call. ' +
+            'Returns { ok, finalUrl, error?, elements?, title? }.',
+          parameters: z.object({
+            ref: z.string().describe('Element ref from web_snapshot'),
+            value: z.string().describe('Text to type, or the option value/label when kind="select"'),
+            kind: z.enum(['fill', 'select']).nullable().describe('"select" to pick a <select> option; null/"fill" for text inputs')
+          }),
+          execute: async ({ ref, value, kind }) => {
+            const type = kind === 'select' ? 'select' as const : 'fill' as const
+            emit({ stepIndex: stepIndex++, stepName: 'Fill', toolName: 'web_fill', status: 'running', message: ref })
+            try {
+              const result = await actOnPage({ type, ref, value })
+              emit({ stepIndex: stepIndex - 1, stepName: 'Fill', toolName: 'web_fill', status: result.ok ? 'done' : 'error', message: result.error })
+              toolCallLog.push({ toolName: 'web_fill', args: { ref, value, kind }, result })
+              return result
+            } catch (err) {
+              const msg = (err as Error).message || String(err)
+              emit({ stepIndex: stepIndex - 1, stepName: 'Fill', toolName: 'web_fill', status: 'error', message: msg })
+              toolCallLog.push({ toolName: 'web_fill', args: { ref, value, kind }, result: { error: msg } })
+              return `[web_fill error] ${msg}`
+            }
+          }
+        }),
+        web_upload: tool({
+          description:
+            'Set local files on a <input type=file> on the open page. ' +
+            'filePaths must be LOCAL ABSOLUTE paths — you can pass the `path` values from an image_generate result directly to attach generated images. ' +
+            '`ref` is OPTIONAL: omit it (or pass null) and this tool auto-locates the first usable <input type=file> on the page across light + shadow + same-origin iframe DOM. ' +
+            'USE THE NO-REF FORM whenever web_snapshot is failing or elements lacks an input[type=file] — instead of clicking "上传图片"/"上传图文" buttons and re-snapshotting, just call web_upload(filePaths) directly. ' +
+            'Only pass `ref` when you have a specific snapshot ref that you KNOW points at an input[type=file]. ' +
+            'Fires the page\'s change handler so the site\'s uploader picks the files up. ' +
+            'On success ALSO returns a fresh snapshot (`elements`, `title`, `finalUrl`) — uploaded-preview thumbnails / progress UI / new buttons show up there; do NOT chain a web_snapshot call. ' +
+            'Returns { ok, error?, elements?, title?, finalUrl?, autoLocated? }.',
+          parameters: z.object({
+            filePaths: z.array(z.string()).describe('Local absolute file paths to upload'),
+            ref: z.string().nullable().optional().describe('OPTIONAL ref of the <input type=file> from web_snapshot. Omit or pass null to auto-locate the file input on the page (recommended when snapshot is unreliable).')
+          }),
+          execute: async ({ ref, filePaths }) => {
+            const refLabel = ref ?? '(auto)'
+            emit({ stepIndex: stepIndex++, stepName: 'Upload', toolName: 'web_upload', status: 'running', message: `${filePaths.length} 个文件 · ref=${refLabel}` })
+            try {
+              const result = await uploadToPage(ref ?? null, filePaths)
+              emit({ stepIndex: stepIndex - 1, stepName: 'Upload', toolName: 'web_upload', status: result.ok ? 'done' : 'error', message: result.error })
+              toolCallLog.push({ toolName: 'web_upload', args: { ref: ref ?? null, filePaths }, result })
+              return result
+            } catch (err) {
+              const msg = (err as Error).message || String(err)
+              emit({ stepIndex: stepIndex - 1, stepName: 'Upload', toolName: 'web_upload', status: 'error', message: msg })
+              toolCallLog.push({ toolName: 'web_upload', args: { ref: ref ?? null, filePaths }, result: { error: msg } })
+              return `[web_upload error] ${msg}`
             }
           }
         }),
@@ -297,17 +463,27 @@ export async function runAgent(
             const actualN = n ?? 1
             const actualSize = size ?? '1024x1024'
             emit({ stepIndex: stepIndex++, stepName: 'Image Generation', toolName: 'image_generate', status: 'running', message: `Generating ${actualN} image(s)...` })
-            const result = await generateImage({ prompt, n: actualN, size: actualSize, settings })
-            for (const img of result.images) {
-              await saveGalleryItem({
-                type: 'image', filePath: img.path, prompt,
-                source: 'chat', sessionId, modelName: settings.defaultImageModel
-              })
-              emit({ stepIndex: stepIndex - 1, stepName: 'Image Generation', toolName: 'image_generate', status: 'done',
-                artifact: { type: 'image', path: img.path } })
+            try {
+              const result = await generateImage({ prompt, n: actualN, size: actualSize, settings })
+              for (const img of result.images) {
+                await saveGalleryItem({
+                  type: 'image', filePath: img.path, prompt,
+                  source: 'chat', sessionId, modelName: settings.defaultImageModel
+                })
+                emit({ stepIndex: stepIndex - 1, stepName: 'Image Generation', toolName: 'image_generate', status: 'done',
+                  artifact: { type: 'image', path: img.path } })
+              }
+              toolCallLog.push({ toolName: 'image_generate', args: { prompt, n: actualN, size: actualSize }, result })
+              return result
+            } catch (err) {
+              // Return the error as a tool result instead of letting it abort the
+              // whole streamText turn — otherwise one failed image kills any
+              // parallel work the model queued (e.g. opening another page).
+              const msg = (err as Error).message || String(err)
+              emit({ stepIndex: stepIndex - 1, stepName: 'Image Generation', toolName: 'image_generate', status: 'error', message: msg })
+              toolCallLog.push({ toolName: 'image_generate', args: { prompt, n: actualN, size: actualSize }, result: { error: msg } })
+              return `[image_generate error] ${msg}`
             }
-            toolCallLog.push({ toolName: 'image_generate', args: { prompt, n: actualN, size: actualSize }, result })
-            return result
           }
         }),
         video_generate: tool({
@@ -402,6 +578,7 @@ export async function runAgent(
     // Apply skill tool whitelist (union across skills; null = unrestricted).
     // Only legacy skills carry whitelists — runtime skills are always null.
     const allowSet = computeToolAllowSet(activeSkills)
+    webSnapshotAvailable = allowSet ? allowSet.has('web_snapshot') : true
     let tools: Record<string, Tool> = allowSet
       ? Object.fromEntries(Object.entries(allTools).filter(([name]) => allowSet.has(name)))
       : allTools
@@ -503,9 +680,13 @@ export async function runAgent(
       streamErr = iterErr as Error
     }
     try { usage = await result.usage } catch (e) { console.warn('[Agent] usage await threw:', (e as Error).message) }
+    let finishReasonForLog: string | undefined
+    try { finishReasonForLog = await result.finishReason } catch (e) { console.warn('[Agent] finishReason await threw:', (e as Error).message) }
     console.log('[Agent] streaming finished', {
       chunks: chunkCount,
       len: fullText.length,
+      toolCalls: toolCallLog.length,
+      finishReason: finishReasonForLog,
       hadErr: !!streamErr,
       usage,
       usageRaw: JSON.stringify(usage)
@@ -554,6 +735,20 @@ export async function runAgent(
     const costUsd = inTok != null && outTok != null && (inTok > 0 || outTok > 0)
       ? computeCost(effectiveModel, inTok, outTok)
       : null
+    // Diagnostic debug bundle — included only when something looks anomalous
+    // (early termination, finish_reason=error, mid-stream interrupt) so happy-
+    // path exports stay clean. Surfaced through MessageMeta.debug.
+    const debugAnomaly =
+      !!streamErr ||
+      (finishReasonForLog && finishReasonForLog !== 'stop' && finishReasonForLog !== 'tool-calls') ||
+      (chunkCount === 0)
+    const debugBundle = debugAnomaly ? {
+      chunkCount,
+      finishReason: finishReasonForLog,
+      streamErr: streamErr ? ((streamErr as Error).message || String(streamErr)) : undefined,
+      toolCallCount: toolCallLog.length,
+      streamMs: Date.now() - runStartTime
+    } : undefined
     const meta = JSON.stringify({
       model: effectiveModel,
       providerId: effectiveProviderId,
@@ -561,7 +756,8 @@ export async function runAgent(
       durationMs: Date.now() - runStartTime,
       inputTokens: inTok ?? undefined,
       outputTokens: outTok ?? undefined,
-      costUsd: costUsd ?? undefined
+      costUsd: costUsd ?? undefined,
+      debug: debugBundle
     })
     dbRun(
       `INSERT INTO messages
@@ -587,7 +783,8 @@ export async function runAgent(
       durationMs: Date.now() - runStartTime,
       ...(inTok != null ? { inputTokens: inTok } : {}),
       ...(outTok != null ? { outputTokens: outTok } : {}),
-      ...(costUsd != null ? { costUsd } : {})
+      ...(costUsd != null ? { costUsd } : {}),
+      ...(debugBundle ? { debug: debugBundle } : {})
     }
 
     win.webContents.send(IPC.AGENT_DONE, {

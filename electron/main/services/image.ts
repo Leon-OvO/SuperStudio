@@ -63,6 +63,13 @@ async function doOneRequest(
 
   const baseUrl = (provider.baseUrl || 'https://api.openai.com').replace(/\/v1\/?$/, '')
   const modelName = settings.defaultImageModel || ''
+  console.log('[image] resolved provider/model', {
+    defaultImageProviderId: settings.defaultImageProviderId,
+    providerId: provider.id,
+    providerName: provider.name,
+    baseUrl,
+    model: modelName
+  })
 
   let res: Response | undefined
   let referencesIgnored = false
@@ -169,7 +176,7 @@ async function doOneRequest(
   if (!res) throw new Error('Image generation request did not produce a response')
   if (!res.ok) {
     const err = await res.text()
-    throw new Error(`Image generation failed: ${err}`)
+    throw new Error(`生图失败（provider=「${provider.name}」, baseUrl=${baseUrl}, model=${modelName}）：${err}`)
   }
   const data = await res.json() as { data: Array<{ url?: string; b64_json?: string }> }
 

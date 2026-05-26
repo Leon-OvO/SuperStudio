@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import { Loader2, Power, MousePointerClick, AlertTriangle, Home, Check, Globe, PanelLeft } from 'lucide-react'
-import type { AppSettings, ProviderConfig } from '../../../../shared/ipc-types'
+import { Loader2, Power, MousePointerClick, AlertTriangle, Home, Check, Globe, PanelLeft, Network } from 'lucide-react'
+import type { AppSettings, ProviderConfig, ProxyMode } from '../../../../shared/ipc-types'
 import { cn } from '../../lib/utils'
 import { toast } from '../../components/ui/Toast'
 import { Select } from '../../components/ui/Select'
@@ -237,6 +237,9 @@ function SystemSection({
         onChange={toggleShellIntegration}
       />
 
+      {/* 网络代理 ---------------------------------------------------------- */}
+      <ProxySection settings={settings} onSave={onSave} />
+
       {/* Out-of-sync warning — only shows when stored intent ≠ actual OS state */}
       {(state.storedAutoLaunch !== state.autoLaunch ||
         (state.shellIntegrationSupported && state.storedShellIntegration !== state.shellIntegration)) && (
@@ -249,6 +252,150 @@ function SystemSection({
         </div>
       )}
     </div>
+  )
+}
+
+/* ------------------------------------------------------------------ */
+/* 网络代理 —— global proxy switch. Affects EVERY outbound request from the
+   main process (LLM streaming, image/video generation, web_search, web_open
+   BrowserWindow, updater, skills registry, MCP downloads). Wired to
+   electron/main/services/proxy.ts which sets both session.setProxy AND
+   undici.setGlobalDispatcher. */
+
+function ProxySection({
+  settings, onSave
+}: {
+  settings: AppSettings | null
+  onSave: (s: AppSettings) => void | Promise<void>
+}): JSX.Element {
+  const mode: ProxyMode = settings?.proxyMode ?? 'off'
+  // Local input state so typing doesn't fire a setProxy per keystroke; we
+  // commit on blur. Re-sync if settings reload externally (e.g. config import).
+  const [host, setHost] = useState(settings?.proxyHost ?? '')
+  const [port, setPort] = useState(settings?.proxyPort ? String(settings.proxyPort) : '')
+  const [pending, setPending] = useState(false)
+
+  useEffect(() => {
+    setHost(settings?.proxyHost ?? '')
+    setPort(settings?.proxyPort ? String(settings.proxyPort) : '')
+  }, [settings?.proxyHost, settings?.proxyPort])
+
+  async function patch(partial: Partial<AppSettings>, okMsg: string) {
+    if (!settings) return
+    setPending(true)
+    try {
+      await onSave({ ...settings, ...partial })
+      toast.success(okMsg)
+    } catch (e) {
+      toast.error('保存失败：' + ((e as Error)?.message ?? '未知错误'))
+    } finally {
+      setPending(false)
+    }
+  }
+
+  async function changeMode(next: ProxyMode) {
+    if (next === mode) return
+    const msg = next === 'off' ? '已关闭代理' : next === 'system' ? '已切换为跟随系统代理' : '已切换为自定义代理'
+    await patch({ proxyMode: next }, msg)
+  }
+
+  async function commitCustom() {
+    if (mode !== 'custom') return
+    const portNum = Number(port)
+    if (host.trim() && port && (!Number.isFinite(portNum) || portNum < 1 || portNum > 65535)) {
+      toast.error('端口必须在 1-65535 之间')
+      return
+    }
+    const nextHost = host.trim()
+    const nextPort = portNum > 0 ? portNum : 0
+    // Skip save if nothing actually changed — avoids redundant proxy re-apply.
+    if (nextHost === (settings?.proxyHost ?? '') && nextPort === (settings?.proxyPort ?? 0)) return
+    await patch({ proxyHost: nextHost, proxyPort: nextPort }, '代理地址已保存')
+  }
+
+  return (
+    <div className="p-4 rounded-lg border border-border bg-card space-y-3">
+      <div className="flex items-start gap-3">
+        <div className="shrink-0 mt-0.5">
+          <Network size={16} className="text-primary" />
+        </div>
+        <div className="flex-1 min-w-0">
+          <h3 className="text-sm font-medium">网络代理</h3>
+          <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
+            统一控制所有出站请求（LLM 对话、图片/视频生成、网络搜索、网页浏览、检查更新等）走何种代理。修改即时生效，无需重启。
+          </p>
+        </div>
+        <div className="shrink-0 flex items-center gap-0.5 rounded-md bg-muted/40 border border-border p-0.5">
+          <ModePill active={mode === 'off'} onClick={() => changeMode('off')} disabled={pending}>关闭</ModePill>
+          <ModePill active={mode === 'system'} onClick={() => changeMode('system')} disabled={pending}>跟随系统</ModePill>
+          <ModePill active={mode === 'custom'} onClick={() => changeMode('custom')} disabled={pending}>自定义</ModePill>
+        </div>
+      </div>
+
+      {mode === 'custom' && (
+        <div className="space-y-2 pt-3 border-t border-border/50">
+          <div className="flex items-center gap-2">
+            <label className="text-xs text-muted-foreground w-10 shrink-0">主机</label>
+            <input
+              type="text"
+              value={host}
+              onChange={e => setHost(e.target.value)}
+              onBlur={commitCustom}
+              placeholder="127.0.0.1"
+              disabled={pending}
+              className="flex-1 h-8 px-2 rounded-md border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/40"
+            />
+            <label className="text-xs text-muted-foreground w-8 shrink-0 ml-2">端口</label>
+            <input
+              type="number"
+              value={port}
+              onChange={e => setPort(e.target.value)}
+              onBlur={commitCustom}
+              placeholder="7890"
+              min={1}
+              max={65535}
+              disabled={pending}
+              className="w-24 h-8 px-2 rounded-md border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/40"
+            />
+          </div>
+          <p className="text-[11px] text-muted-foreground leading-relaxed">
+            仅支持裸 HTTP 代理（http://host:port），不支持账号密码鉴权和 SOCKS5。如需鉴权或 SOCKS，请切到「跟随系统」由操作系统的代理工具承担。
+          </p>
+        </div>
+      )}
+
+      {mode === 'system' && (
+        <div className="pt-3 border-t border-border/50">
+          <p className="text-[11px] text-muted-foreground leading-relaxed">
+            浏览器窗口与抓取请求跟随操作系统的代理设置；LLM/图片等通过 Node 原生 fetch 的请求按 <code className="font-mono text-[10px] px-1 rounded bg-muted">HTTPS_PROXY</code> / <code className="font-mono text-[10px] px-1 rounded bg-muted">HTTP_PROXY</code> 环境变量走代理。Windows 上若系统已设置代理但未配置环境变量，请改用「自定义」模式填写代理地址。
+          </p>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ModePill({
+  active, onClick, disabled, children
+}: {
+  active: boolean
+  onClick: () => void
+  disabled?: boolean
+  children: React.ReactNode
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className={cn(
+        'px-2.5 h-6 rounded text-xs transition-colors whitespace-nowrap',
+        active ? 'bg-background text-foreground shadow-sm font-medium' : 'text-muted-foreground hover:text-foreground',
+        disabled && 'opacity-60 cursor-not-allowed'
+      )}
+    >
+      {children}
+    </button>
   )
 }
 

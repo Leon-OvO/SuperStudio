@@ -65,12 +65,14 @@ export function registerIpcHandlers(): void {
     const result = await dialog.showOpenDialog({
       properties: ['openFile', 'multiSelections'],
       filters: [
-        { name: 'Supported Files', extensions: ['xlsx', 'xls', 'docx', 'doc', 'pptx', 'ppt', 'pdf', 'txt', 'md'] },
+        { name: 'Supported Files', extensions: ['xlsx', 'xls', 'docx', 'doc', 'pptx', 'ppt', 'pdf', 'txt', 'md', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'] },
+        { name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'] },
         { name: 'Excel', extensions: ['xlsx', 'xls'] },
         { name: 'Word', extensions: ['docx', 'doc'] },
         { name: 'PowerPoint', extensions: ['pptx', 'ppt'] },
         { name: 'PDF', extensions: ['pdf'] },
         { name: 'Text', extensions: ['txt', 'md'] },
+        { name: 'All Files', extensions: ['*'] },
       ],
       ...options
     })

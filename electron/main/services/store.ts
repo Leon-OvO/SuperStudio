@@ -39,6 +39,9 @@ const defaults: StoreSchema = {
     shellIntegrationEnabled: true,
     startupPage: 'chat',
     webhookBots: [],
+    proxyMode: 'off',
+    proxyHost: '',
+    proxyPort: 0,
   }
 }
 

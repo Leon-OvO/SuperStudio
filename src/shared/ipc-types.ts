@@ -351,7 +351,19 @@ export interface AppSettings {
   /** Globally-configured notification bots (DingTalk / Feishu / WeChat Work),
    *  selectable per scheduled task. URLs and secrets are encrypted at rest. */
   webhookBots: WebhookBot[]
+
+  /** Global outbound proxy mode.
+   *  - off: direct connection (default)
+   *  - system: BrowserWindow/net.fetch follow OS proxy; undici fetch follows HTTPS_PROXY/HTTP_PROXY env
+   *  - custom: http://proxyHost:proxyPort applied everywhere */
+  proxyMode?: ProxyMode
+  /** Custom proxy host, e.g. '127.0.0.1'. Only used when proxyMode === 'custom'. */
+  proxyHost?: string
+  /** Custom proxy port, e.g. 7890. Only used when proxyMode === 'custom'. */
+  proxyPort?: number
 }
+
+export type ProxyMode = 'off' | 'system' | 'custom'
 
 /** Snapshot of OS-level toggle state, read back from the actual platform — so
  *  the UI can show what's really registered even if the store is out of sync
@@ -701,6 +713,20 @@ export interface MessageMeta {
   inputTokens?: number
   outputTokens?: number
   costUsd?: number
+  /** Diagnostic info captured on the assistant turn — surfaced in exported
+   *  JSON to make stuck/abort cases reproducible without console access. */
+  debug?: {
+    /** Text chunks pulled from result.textStream before completion / abort. */
+    chunkCount?: number
+    /** ai-sdk's finishReason: 'stop' | 'length' | 'tool-calls' | 'error' | 'other' | 'unknown'. */
+    finishReason?: string
+    /** Stream interruption error message (mid-stream ECONNRESET, etc.). */
+    streamErr?: string
+    /** Total tool invocations executed during this turn. */
+    toolCallCount?: number
+    /** Total wall-clock spent in the streamText loop (turn duration excl. DB writes). */
+    streamMs?: number
+  }
 }
 
 // Message
