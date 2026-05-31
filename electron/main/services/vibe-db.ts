@@ -37,6 +37,8 @@ export interface VibeRequestRow {
   status: RequestStatus
   kind: RequestKind
   created_at: number
+  /** AI-company employee承接该需求；null = 未指派（PM/默认模型执行）。 */
+  assignee_employee_id?: string | null
 }
 
 export type TaskStatus = 'pending' | 'running' | 'done' | 'error' | 'skipped'
@@ -158,6 +160,10 @@ export function getRequest(id: string): VibeRequestRow | null {
 
 export function updateRequestStatus(id: string, status: RequestStatus): void {
   dbRun(`UPDATE vibe_requests SET status = ? WHERE id = ?`, [status, id])
+}
+
+export function setRequestAssignee(id: string, employeeId: string | null): void {
+  dbRun(`UPDATE vibe_requests SET assignee_employee_id = ? WHERE id = ?`, [employeeId, id])
 }
 
 export function deleteRequest(id: string): void {

@@ -180,6 +180,7 @@ export const IPC = {
   // ---- Requests / tasks / messages ----
   VIBE_REQUEST_LIST: 'vibe:request-list',
   VIBE_REQUEST_DELETE: 'vibe:request-delete',
+  VIBE_REQUEST_SET_ASSIGNEE: 'vibe:request-set-assignee',  // 指派 AI 员工承接
   VIBE_TASK_LIST: 'vibe:task-list',
   VIBE_TASK_TOGGLE: 'vibe:task-toggle',
   VIBE_MESSAGE_LIST: 'vibe:message-list',
@@ -519,6 +520,8 @@ export interface VibeRequestInfo {
   status: VibeRequestStatus
   kind: VibeRequestKind
   createdAt: number
+  /** AI-company employee承接该需求；null = 未指派。 */
+  assigneeEmployeeId?: string | null
 }
 
 export interface VibeTaskInfo {

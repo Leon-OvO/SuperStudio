@@ -39,11 +39,13 @@ import { registerApprovedRoot } from '../services/path-allow'
 import {
   upsertProject, setProjectModel,
   createRequest, listRequests, getRequest, updateRequestStatus, updateRequestSummary,
-  deleteRequest, deleteTasksForRequest, slugify,
+  deleteRequest, deleteTasksForRequest, slugify, setRequestAssignee,
   createTask, listTasks, updateTaskStatus,
   appendMessage, listMessages,
   type VibeRequestRow, type VibeTaskRow, type VibeMessageRow, type VibeProjectRow
 } from '../services/vibe-db'
+import { getEmployee, setEmployeeStatus, bumpEmployeeStats } from '../services/employees-db'
+import { getSoul } from '../services/talent-pool'
 import { dbRun } from '../db/sqlite'
 import { writeProposalMd, writeTasksMd } from '../services/vibe-spec'
 import { getActiveSkillsForScenario, type InstalledSkill } from '../services/skills-db'
@@ -465,7 +467,8 @@ function resolveProjectModel(project: VibeProjectRow): { providerId: string; mod
 function toRequestInfo(r: VibeRequestRow): VibeRequestInfo {
   return {
     id: r.id, projectPath: r.project_path, slug: r.slug, title: r.title,
-    summary: r.summary, status: r.status, kind: r.kind, createdAt: r.created_at
+    summary: r.summary, status: r.status, kind: r.kind, createdAt: r.created_at,
+    assigneeEmployeeId: r.assignee_employee_id ?? null
   }
 }
 function toTaskInfo(t: VibeTaskRow): VibeTaskInfo {
@@ -780,6 +783,13 @@ export function vibeHandlers(): void {
   // ----- Requests / tasks / messages list --------------------------------
   ipcMain.handle(IPC.VIBE_REQUEST_LIST, async (_e, projectPath: string): Promise<VibeRequestInfo[]> => {
     return listRequests(path.resolve(projectPath)).map(toRequestInfo)
+  })
+
+  ipcMain.handle(IPC.VIBE_REQUEST_SET_ASSIGNEE, async (_e, args: { requestId: string; employeeId: string | null }) => {
+    setRequestAssignee(args.requestId, args.employeeId)
+    // Count the承接 on the employee's tally when newly assigned.
+    if (args.employeeId) bumpEmployeeStats(args.employeeId, { assigned: 1 })
+    return { ok: true }
   })
 
   ipcMain.handle(IPC.VIBE_REQUEST_DELETE, async (_e, id: string) => {
@@ -1351,6 +1361,14 @@ export function vibeHandlers(): void {
       return { started: false }
     }
 
+    // AI-company: if a request is assigned to an employee, that employee's
+    // chosen model + soul persona drive this run.
+    const employee = request.assignee_employee_id ? getEmployee(request.assignee_employee_id) : null
+    if (employee?.providerId && employee?.modelId) {
+      modelInfo = { providerId: employee.providerId, modelId: employee.modelId }
+    }
+    const soulPrompt = employee ? (getSoul(employee.soulId)?.systemPrompt ?? '') : ''
+
     activeRuns.get(projectPath)?.abort()
     const ctl = new AbortController()
     activeRuns.set(projectPath, ctl)
@@ -1362,8 +1380,9 @@ export function vibeHandlers(): void {
     ;(async () => {
       try {
         updateRequestStatus(request.id, 'applying')
+        if (employee) setEmployeeStatus(employee.id, 'busy')
         const model = createLLMClient(modelInfo.providerId, modelInfo.modelId)
-        emit({ type: 'system', text: `开始执行（${modelInfo.modelId}）` })
+        emit({ type: 'system', text: employee ? `${employee.name} 开始执行（${modelInfo.modelId}）` : `开始执行（${modelInfo.modelId}）` })
 
         // Loop tasks in order; refresh from DB each iter to support cancel/manual edits
         let safety = 0
@@ -1415,7 +1434,7 @@ export function vibeHandlers(): void {
           try {
             const result = streamText({
               model,
-              system: buildApplySystem(request, nextTask, otherTasks) + applySkillsSection,
+              system: (soulPrompt ? soulPrompt + '\n\n---\n\n' : '') + buildApplySystem(request, nextTask, otherTasks) + applySkillsSection,
               messages: [{ role: 'user', content: nextTask.description || nextTask.title }],
               tools,
               maxSteps: 25,
@@ -1461,6 +1480,7 @@ export function vibeHandlers(): void {
           updateTaskStatus(nextTask.id, 'done')
           writeTasksMd({ projectPath, slug: request.slug, tasks: listTasks(request.id) })
           emit({ type: 'task_status', taskId: nextTask.id, taskStatus: 'done' })
+          if (employee) bumpEmployeeStats(employee.id, { out: 1 }) // 每完成一个任务 +1 产出
           if (accumulated.trim()) {
             const inTok = finiteUsage(usage?.promptTokens)
             const outTok = finiteUsage(usage?.completionTokens)
@@ -1479,6 +1499,10 @@ export function vibeHandlers(): void {
         const finalTasks = listTasks(request.id)
         const stillPending = finalTasks.some(t => t.status === 'pending' || t.status === 'error')
         updateRequestStatus(request.id, stillPending ? 'proposed' : 'done')
+        if (employee) {
+          setEmployeeStatus(employee.id, 'idle')
+          if (!stillPending) bumpEmployeeStats(employee.id, { done: 1 }) // 整个需求交付 → 完成 +1
+        }
 
         if (ctl.signal.aborted) {
           win.webContents.send(IPC.VIBE_DONE, { projectPath, requestId: request.id, cancelled: true })
@@ -1492,6 +1516,7 @@ export function vibeHandlers(): void {
         win.webContents.send(IPC.VIBE_ERROR, { projectPath, requestId: request.id, error: msg })
       } finally {
         if (activeRuns.get(projectPath) === ctl) activeRuns.delete(projectPath)
+        if (employee) setEmployeeStatus(employee.id, 'idle') // 确保任何退出路径都释放忙碌态
       }
     })()
 

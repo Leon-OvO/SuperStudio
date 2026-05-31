@@ -5,7 +5,7 @@ import { TaskRow } from './TaskRow'
 import { MessageBubble } from './MessageBubble'
 import { MessagesMinimap } from './MessagesMinimap'
 import { formatCostUsd, formatTokens } from '../../../lib/format-cost'
-import type { VibeRequestInfo, VibeTaskInfo, VibeMessageInfo, VibeIntent } from '../../../../../shared/ipc-types'
+import type { VibeRequestInfo, VibeTaskInfo, VibeMessageInfo, VibeIntent, EmployeeInfo } from '../../../../../shared/ipc-types'
 
 interface Props {
   request: VibeRequestInfo | null
@@ -42,6 +42,18 @@ export function RequestTabContent({
   const messagesRef = useRef<HTMLDivElement>(null)
   const messagesContentRef = useRef<HTMLDivElement>(null)
   const taRef = useRef<HTMLTextAreaElement>(null)
+
+  // AI-company: which hired employee承接 this request. The employee's soul
+  // persona + chosen model drive the apply run (handled in main).
+  const [employees, setEmployees] = useState<EmployeeInfo[]>([])
+  const [assignee, setAssignee] = useState<string | null>(request?.assigneeEmployeeId ?? null)
+  useEffect(() => { window.api.listEmployees().then((e: EmployeeInfo[]) => setEmployees(e)).catch(() => {}) }, [])
+  useEffect(() => { setAssignee(request?.assigneeEmployeeId ?? null) }, [request?.id, request?.assigneeEmployeeId])
+  async function changeAssignee(id: string | null) {
+    if (!request) return
+    setAssignee(id)
+    try { await window.api.vibeRequestSetAssignee(request.id, id) } catch { /* non-fatal */ }
+  }
   // Sticky-bottom flag: true ⇒ auto-scroll on content growth. Flips to false
   // when the user scrolls up; flips back to true when they scroll near bottom.
   const stickRef = useRef(true)
@@ -157,6 +169,22 @@ export function RequestTabContent({
             )}
             <span className="text-muted-foreground/60">·</span>
             <span className="truncate">{request.slug}</span>
+            {isChange && (
+              <>
+                <span className="text-muted-foreground/60">·</span>
+                <span className="inline-flex items-center gap-1" title="指派一位 AI 员工承接：用其底层模型与岗位人格执行">
+                  👤
+                  <select
+                    value={assignee ?? ''}
+                    onChange={e => changeAssignee(e.target.value || null)}
+                    className="bg-transparent border border-border rounded px-1 py-px text-[10px] text-foreground focus:outline-none max-w-[120px]"
+                  >
+                    <option value="">未指派</option>
+                    {employees.map(emp => <option key={emp.id} value={emp.id}>{emp.name}</option>)}
+                  </select>
+                </span>
+              </>
+            )}
             {usageTotal && (
               <>
                 <span className="text-muted-foreground/60">·</span>

@@ -55,6 +55,7 @@ const api = {
   vibeStop: (args: { projectPath: string }) => ipcRenderer.invoke(IPC.VIBE_STOP, args),
   vibeRequestList: (projectPath: string) => ipcRenderer.invoke(IPC.VIBE_REQUEST_LIST, projectPath),
   vibeRequestDelete: (id: string) => ipcRenderer.invoke(IPC.VIBE_REQUEST_DELETE, id),
+  vibeRequestSetAssignee: (requestId: string, employeeId: string | null) => ipcRenderer.invoke(IPC.VIBE_REQUEST_SET_ASSIGNEE, { requestId, employeeId }),
   vibeTaskList: (requestId: string) => ipcRenderer.invoke(IPC.VIBE_TASK_LIST, requestId),
   vibeTaskToggle: (args: { taskId: string; status: 'pending' | 'done' | 'skipped' }) =>
     ipcRenderer.invoke(IPC.VIBE_TASK_TOGGLE, args),
