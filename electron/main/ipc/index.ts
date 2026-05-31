@@ -18,6 +18,7 @@ import { terminalHandlers } from './terminal'
 import { systemHandlers } from './system'
 import { updaterHandlers } from './updater'
 import { modelConfHandlers } from './model-conf'
+import { talentHandlers } from './talent'
 import { schedulerHandlers } from './scheduler'
 import { logEntry, getEntriesFromDisk, clearEntries } from '../services/error-log'
 
@@ -46,6 +47,7 @@ export function registerIpcHandlers(): void {
     ['system', systemHandlers],
     ['updater', updaterHandlers],
     ['modelConf', modelConfHandlers],
+    ['talent', talentHandlers],
     ['scheduler', schedulerHandlers],
   ]
   for (const [name, register] of groups) {

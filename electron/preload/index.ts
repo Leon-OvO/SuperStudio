@@ -230,6 +230,11 @@ const api = {
     return () => ipcRenderer.removeListener(IPC.UPDATER_AVAILABLE, listener)
   },
 
+  // --- Talent pool (encrypted bundled persona catalog) ---
+  browseTalent: (args?: { dept?: string; keyword?: string; page?: number; pageSize?: number }) =>
+    ipcRenderer.invoke(IPC.TALENT_BROWSE, args),
+  getTalentSoul: (id: string) => ipcRenderer.invoke(IPC.TALENT_GET, id),
+
   // --- Remote model.conf (managed default models from GitHub) ---
   syncModelConf: () => ipcRenderer.invoke(IPC.MODEL_CONF_SYNC) as Promise<{
     ok: boolean

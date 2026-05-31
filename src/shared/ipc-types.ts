@@ -198,6 +198,17 @@ export const IPC = {
   SKILLS_SET_ALLOW_SCRIPTS: 'skills:set-allow-scripts',
   SKILLS_READ_FILE: 'skills:read-file',
 
+  // Talent pool (encrypted bundled catalog of agent personas / "招募人才")
+  TALENT_BROWSE: 'talent:browse',
+  TALENT_GET: 'talent:get',
+
+  // AI company employees (hired souls)
+  EMP_LIST: 'emp:list',
+  EMP_HIRE: 'emp:hire',
+  EMP_FIRE: 'emp:fire',
+  EMP_SET_MODEL: 'emp:set-model',
+  EMP_SET_DEPT: 'emp:set-dept',
+
   // Terminal (PTY-backed shell in Vibe page)
   TERMINAL_CREATE: 'terminal:create',
   TERMINAL_WRITE: 'terminal:write',
@@ -845,4 +856,50 @@ export interface Attachment {
   name: string
   path: string
   mimeType: string
+}
+
+// ── AI Company: talent pool (souls) + employees ─────────────────────────────
+
+export type EmployeeDept = 'engineering' | 'design' | 'product' | 'marketing' | 'qa' | 'data' | 'game'
+
+/** One hireable persona from the bundled encrypted catalog (sources/ souls). */
+export interface TalentEntry {
+  id: string            // `${pack}/${localId}`
+  source: string        // pack name
+  name: string
+  description: string
+  dept: EmployeeDept | string
+  tools: string[]
+  /** Recommended model family from the soul frontmatter (opus/sonnet/haiku/…). */
+  recModel: string
+  systemPrompt: string  // the soul persona body
+}
+
+export interface TalentBrowseResult {
+  entries: TalentEntry[]
+  total: number
+  /** Per-dept counts across the WHOLE catalog (for filter chips). */
+  deptCounts: Record<string, number>
+}
+
+export interface EmployeeStats {
+  assigned: number
+  done: number
+  out: number
+  rate: number
+}
+
+/** A hired soul = employee in the user's AI company. */
+export interface EmployeeInfo {
+  id: string
+  companyId: string
+  soulId: string
+  name: string
+  dept: EmployeeDept | string
+  avatar?: string
+  providerId: string
+  modelId: string
+  status: 'idle' | 'busy'
+  stats: EmployeeStats
+  hiredAt: number
 }
