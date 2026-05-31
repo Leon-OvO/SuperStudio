@@ -27,6 +27,7 @@ export const IPC = {
   // Agent execution
   AGENT_RUN: 'agent:run',
   AGENT_STOP: 'agent:stop',
+  AGENT_CLASSIFY_INTENT: 'agent:classify-intent',  // renderer → main (auto-router smart mode)
   AGENT_PROGRESS: 'agent:progress',   // main → renderer (event)
   AGENT_DELTA: 'agent:delta',         // main → renderer (event — streamed assistant text chunks)
   AGENT_DONE: 'agent:done',           // main → renderer (event)

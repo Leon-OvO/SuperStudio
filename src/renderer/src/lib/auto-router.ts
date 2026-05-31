@@ -37,55 +37,25 @@ function detectStandardIntent(message: string, attachments: Attachment[]): AutoM
   return 'default'
 }
 
-// --- Smart mode: LLM classifier ----------------------------------------
+// --- Smart mode: LLM classifier (runs in MAIN via IPC) -----------------
+//
+// The classifier prompt + the actual model call live in the main process
+// (electron/main/agent/classify.ts) so it goes through createLLMClient and
+// therefore works for Anthropic/Gemini-native providers — a hardcoded
+// /chat/completions fetch only worked for OpenAI-compatible ones. The renderer
+// just delegates over IPC; on any failure the caller falls back to heuristics.
 
-const CLASSIFIER_SYSTEM = `你是一个意图分类器。将用户消息分类为以下之一，仅返回JSON，不要解释：
-vision | code | math | creative | quick | default
-格式：{"intent": "<label>"}`
+const VALID: AutoModelIntent[] = ['vision', 'code', 'math', 'creative', 'quick', 'default']
 
 async function detectSmartIntent(
   message: string,
   classifierProviderId: string,
-  classifierModel: string,
-  providers: ProviderConfig[]
+  classifierModel: string
 ): Promise<AutoModelIntent> {
-  const snippet = message.slice(0, 200)
-  const timeoutMs = 2000
-  const VALID: AutoModelIntent[] = ['vision', 'code', 'math', 'creative', 'quick', 'default']
-
-  const provider = providers.find(p => p.id === classifierProviderId)
-  if (!provider) return 'default'
-  const baseUrl = (provider.baseUrl || 'https://api.openai.com/v1').replace(/\/$/, '')
-
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), timeoutMs)
-
   try {
-    const res = await fetch(`${baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${provider.apiKey}`
-      },
-      body: JSON.stringify({
-        model: classifierModel,
-        max_tokens: 30,
-        messages: [
-          { role: 'system', content: CLASSIFIER_SYSTEM },
-          { role: 'user', content: snippet }
-        ]
-      }),
-      signal: controller.signal
-    })
-    clearTimeout(timer)
-    if (!res.ok) return 'default'
-    const json = await res.json() as { choices?: Array<{ message?: { content?: string } }> }
-    const text = json.choices?.[0]?.message?.content ?? ''
-    const match = text.match(/\{"intent"\s*:\s*"(\w+)"\}/)
-    const label = match?.[1] as AutoModelIntent | undefined
+    const label = await window.api.classifyIntent(message, classifierProviderId, classifierModel)
     return VALID.includes(label as AutoModelIntent) ? (label as AutoModelIntent) : 'default'
   } catch {
-    clearTimeout(timer)
     return 'default'
   }
 }
@@ -117,7 +87,7 @@ export async function resolveModel(
     const [pid, m] = settings.autoModelSmartModel.split('::')
     if (pid && m) {
       try {
-        intent = await detectSmartIntent(message, pid, m, _providers)
+        intent = await detectSmartIntent(message, pid, m)
       } catch {
         intent = detectStandardIntent(message, attachments)
       }

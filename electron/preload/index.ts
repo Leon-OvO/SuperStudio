@@ -109,6 +109,8 @@ const api = {
     overrides?: { providerId?: string; model?: string; mountedSpaceIds?: string[]; imageSize?: string; imageQuality?: string; imageCount?: number }
   ) => ipcRenderer.invoke(IPC.AGENT_RUN, sessionId, message, attachments, overrides),
   stopAgent: (sessionId: string) => ipcRenderer.invoke(IPC.AGENT_STOP, sessionId),
+  classifyIntent: (message: string, providerId: string, model: string) =>
+    ipcRenderer.invoke(IPC.AGENT_CLASSIFY_INTENT, { message, providerId, model }) as Promise<string>,
   onAgentProgress: (cb: (event: unknown) => void) => {
     ipcRenderer.on(IPC.AGENT_PROGRESS, (_e, data) => cb(data))
     return () => ipcRenderer.removeAllListeners(IPC.AGENT_PROGRESS)
