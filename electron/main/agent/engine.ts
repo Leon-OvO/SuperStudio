@@ -911,6 +911,34 @@ export async function runAgent(
 
     // Update session updated_at
     dbRun(`UPDATE sessions SET updated_at = ? WHERE id = ?`, [Date.now(), sessionId])
+
+    // Debug trace (opt-in): persist the full assembled context + response so a
+    // bad run can be reproduced. Local only, never sent to the renderer.
+    if (settings.debugTrace) {
+      try {
+        const dir = path.join(app.getPath('userData'), 'agent-traces')
+        fs.mkdirSync(dir, { recursive: true })
+        const trace = {
+          ts: new Date().toISOString(),
+          sessionId, messageId: asstMsgId,
+          provider: effectiveProviderId, model: effectiveModel,
+          system: systemPrompt.full,
+          // Redact inlined image bytes so the trace stays small + readable.
+          messages: history.map(m => Array.isArray(m.content)
+            ? { ...m, content: m.content.map(p => p.type === 'image' ? { type: 'image', mimeType: p.mimeType, bytes: p.image?.length ?? 0 } : p) }
+            : m),
+          tools: Object.keys(guardedTools),
+          finishReason: finishReasonForLog,
+          usage,
+          response: fullText,
+          toolCallLog
+        }
+        fs.writeFileSync(path.join(dir, `${sessionId}-${asstMsgId}.json`), JSON.stringify(trace, null, 2))
+      } catch (e) {
+        console.warn('[Agent] debug trace write failed:', (e as Error).message)
+      }
+    }
+
     const sessionTitle = tryAutoTitle(sessionId, message, false, false)
     const metaParsed = {
       model: effectiveModel,

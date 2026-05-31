@@ -101,6 +101,7 @@ export function settingsHandlers(): void {
       autoModelSmartModel: '',
       buildRecentProjectDirs: [],
       vibeAutoApply: false,
+      debugTrace: false,
       // Re-seed the managed-default snapshot so a post-reset model.conf sync
       // can repopulate recommended defaults from scratch.
       appliedModelConf: { ...BUILTIN_MODEL_DEFAULTS },

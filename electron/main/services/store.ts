@@ -54,6 +54,7 @@ const defaults: StoreSchema = {
     proxyMode: 'off',
     proxyHost: '',
     proxyPort: 0,
+    debugTrace: false,
     // Seed the managed-default snapshot with the built-in names, so on a fresh
     // install every default still equals its snapshot → the first model.conf
     // sync is free to update them. Diverges the moment the user picks their own.

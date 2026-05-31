@@ -421,6 +421,12 @@ export interface AppSettings {
   /** Custom proxy port, e.g. 7890. Only used when proxyMode === 'custom'. */
   proxyPort?: number
 
+  /** When true, the agent persists a full per-run trace (system prompt, messages,
+   *  tool list, raw response, usage) under userData/agent-traces for debugging a
+   *  bad run. Off by default — traces may contain prompt/KB content, so they
+   *  stay local and are never sent to the renderer. */
+  debugTrace?: boolean
+
   /** Internal bookkeeping for the remote model.conf "managed default" mechanism.
    *  Snapshot of the default model NAMES last pushed by model.conf. A field is
    *  only re-applied from a newer model.conf when the current value still equals
