@@ -90,6 +90,54 @@ export function priceModel(modelId: string | null | undefined): Price | null {
 }
 
 /**
+ * Approximate context-window size (total tokens, input + output) per model
+ * family, longest-prefix matched like the price table. Used to budget the
+ * message history so a long conversation can't silently overflow and error.
+ * Conservative when unsure — a too-small estimate just trims earlier turns.
+ */
+const CONTEXT_TABLE: Array<[prefix: string, tokens: number]> = [
+  // Anthropic — 200k across Claude 3/3.5/4 families
+  ['claude-', 200_000],
+  // OpenAI
+  ['gpt-5', 400_000],
+  ['gpt-4.1', 1_000_000],
+  ['gpt-4o', 128_000],
+  ['o1', 200_000],
+  ['o3', 200_000],
+  ['o4', 200_000],
+  ['gpt-4-turbo', 128_000],
+  ['gpt-4', 8_192],
+  ['gpt-3.5-turbo', 16_385],
+  // Google Gemini — 1M+ context
+  ['gemini-1.5-pro', 2_000_000],
+  ['gemini-1.5', 1_000_000],
+  ['gemini-2', 1_000_000],
+  ['gemini-', 1_000_000],
+  // DeepSeek / Qwen / Moonshot / Grok
+  ['deepseek', 64_000],
+  ['qwen-long', 1_000_000],
+  ['qwen', 128_000],
+  ['moonshot-v1-128k', 128_000],
+  ['moonshot-v1-32k', 32_000],
+  ['moonshot-v1-8k', 8_000],
+  ['kimi', 128_000],
+  ['grok', 131_072]
+]
+
+/** Default window for unknown models — modest so we trim rather than overflow. */
+export const DEFAULT_CONTEXT_TOKENS = 128_000
+
+/** Best-effort total context window (tokens) for a model id. */
+export function modelContextWindow(modelId: string | null | undefined): number {
+  if (!modelId) return DEFAULT_CONTEXT_TOKENS
+  const id = modelId.toLowerCase()
+  for (const [prefix, tokens] of CONTEXT_TABLE) {
+    if (id.includes(prefix)) return tokens
+  }
+  return DEFAULT_CONTEXT_TOKENS
+}
+
+/**
  * Cost in USD given a model id and token counts. Returns `null` for unknown
  * models — callers should show tokens only in that case.
  */

@@ -15,10 +15,10 @@ import { getActiveSkillsForScenario, type InstalledSkill } from '../services/ski
 import { buildSkillTools } from './skill-tools'
 import { notifyTaskComplete } from '../services/tray'
 import { dbRun, dbAll, dbGet } from '../db/sqlite'
-import { computeCost } from '../services/model-pricing'
+import { computeCost, modelContextWindow } from '../services/model-pricing'
 import { isApproved, registerApproved, invalidateDbCache } from '../services/path-allow'
 import { agentRunSemaphore } from './semaphore'
-import { buildAutoTitle, computeToolAllowSet, parseSizeFromMessage, friendlyError, truncateToolResult } from './pure'
+import { buildAutoTitle, computeToolAllowSet, parseSizeFromMessage, friendlyError, truncateToolResult, trimHistoryToBudget } from './pure'
 import { randomUUID } from 'crypto'
 import path from 'path'
 import fs from 'fs'
@@ -218,7 +218,9 @@ export async function runAgent(
               args,
               result: { text, artifacts }
             })
-            return text
+            // Cap the model-facing text so a verbose MCP payload can't blow the
+            // window; full text stays in toolCallLog for export.
+            return truncateToolResult(text)
           } catch (err) {
             const msg = (err as Error).message
             emit({ stepIndex: myIdx, stepName: `MCP · ${mt.serverName}`, toolName: mt.qualifiedName, status: 'error', message: msg })
@@ -753,7 +755,7 @@ export async function runAgent(
     const result = streamText({
       model,
       system: systemPrompt,
-      messages: await buildMessageHistory(sessionId, message, attachments),
+      messages: await buildMessageHistory(sessionId, message, attachments, effectiveModel),
       abortSignal: abort.signal,
       maxSteps: 30,
       maxRetries: 5,
@@ -930,44 +932,98 @@ export function stopAgent(sessionId: string): void {
   runningAgents.get(sessionId)?.abort()
 }
 
+/** Pull produced artifact paths (generated images/videos, written files) out of
+ *  a persisted tool_calls JSON blob, so a later turn can still reference them. */
+function extractArtifactPaths(toolCallsJson: string | null): string[] {
+  if (!toolCallsJson) return []
+  try {
+    const calls = JSON.parse(toolCallsJson) as Array<{ toolName?: string; args?: Record<string, unknown>; result?: unknown }>
+    const paths: string[] = []
+    for (const c of calls) {
+      const r = c.result as { path?: string; images?: Array<{ path?: string }> } | undefined
+      if (r?.path) paths.push(r.path)
+      if (Array.isArray(r?.images)) for (const img of r.images) if (img?.path) paths.push(img.path)
+      if (c.toolName === 'file_write' && typeof c.args?.filePath === 'string') paths.push(c.args.filePath)
+    }
+    return paths
+  } catch { return [] }
+}
+
 async function buildMessageHistory(
   sessionId: string,
   currentMessage: string,
-  attachments: Array<{ name: string; path: string; mimeType: string }>
+  attachments: Array<{ name: string; path: string; mimeType: string }>,
+  effectiveModel?: string
 ) {
-  const rows = dbAll<{ role: string; content: string }>(
-    `SELECT role, content FROM messages WHERE session_id = ? AND role IN ('user','assistant') ORDER BY created_at ASC LIMIT 40`,
+  // Pull tool_calls + attachments too — prior-turn artifacts/attachment paths
+  // would otherwise vanish, so a follow-up like "edit that image" / "add a
+  // column to that file" loses the path the manifest was built to supply.
+  const rows = dbAll<{ role: string; content: string; tool_calls: string | null; attachments: string | null }>(
+    `SELECT role, content, tool_calls, attachments FROM messages WHERE session_id = ? AND role IN ('user','assistant') ORDER BY created_at ASC LIMIT 200`,
     [sessionId]
   )
 
   // Exclude the just-inserted current user message (last row) from history,
   // since we add it explicitly below with attachments.
-  const history = rows
-    .slice(0, -1)
-    .map(r => ({ role: r.role as 'user' | 'assistant', content: r.content }))
+  const priorRows = rows.slice(0, -1)
+
+  // Accumulate produced-file / prior-attachment paths so the model keeps a
+  // stable "known files" reference across turns.
+  const knownPaths = new Set<string>()
+  const history = priorRows.map(r => {
+    let content = r.content
+    const arts = extractArtifactPaths(r.tool_calls)
+    for (const p of arts) knownPaths.add(p)
+    if (arts.length) content += `\n\n[本回合已生成文件: ${arts.join(' , ')}]`
+    if (r.attachments) {
+      try {
+        const atts = JSON.parse(r.attachments) as Array<{ path?: string }>
+        for (const a of atts) if (a.path) knownPaths.add(a.path)
+      } catch { /* skip malformed */ }
+    }
+    return { role: r.role as 'user' | 'assistant', content }
+  })
+
+  // Token-budget the history against the model's context window so a long
+  // conversation trims oldest turns instead of overflowing and erroring.
+  const window = modelContextWindow(effectiveModel)
+  // Reserve ~40% for system + KB + tools + the in-turn maxSteps tool outputs +
+  // the completion; budget the remaining ~60% for history.
+  const budgetedHistory = trimHistoryToBudget(history, Math.floor(window * 0.6))
 
   type UserPart =
     | { type: 'text'; text: string }
     | { type: 'image'; image: Buffer; mimeType: string }
-  let userContent: string | UserPart[] = currentMessage
+
+  // Build a persistent file manifest: current attachments + files produced or
+  // attached in earlier turns (so "edit that image / add a column to that file"
+  // still has a real path to use). The model can't infer paths from thin air.
+  const currentPaths = new Set(attachments.map(a => a.path))
+  const priorKnown = [...knownPaths].filter(p => !currentPaths.has(p))
+  const manifestSections: string[] = []
+  if (attachments.length) {
+    manifestSections.push(
+      `用户本次附加了 ${attachments.length} 个文件，绝对路径如下：\n` +
+      attachments.map((a, i) => `  [${i + 1}] ${a.name}  (${a.mimeType})\n      绝对路径: ${a.path}`).join('\n')
+    )
+  }
+  if (priorKnown.length) {
+    manifestSections.push(
+      `本会话此前已生成/引用的文件（可直接复用其绝对路径）：\n` +
+      priorKnown.map(p => `  - ${p}`).join('\n')
+    )
+  }
+  const manifest = manifestSections.length
+    ? manifestSections.join('\n\n') +
+      `\n\n如需读取、修改或分析上述文件，请把"绝对路径"完整拷贝到工具调用的 filePath / imagePath / referenceImagePath 参数里（不要发明新路径，也不要省略盘符）。\n\n`
+    : ''
+
+  let userContent: string | UserPart[] = manifest ? manifest + currentMessage : currentMessage
   if (attachments.length) {
     const fs = await import('fs')
 
-    // The model can't infer attachment file paths from thin air. Without this
-    // manifest, file_write / file_read / vision_analyze get called with made-up
-    // paths and fail with "File not found". List every attachment with its full
-    // absolute path so the model can pick the right one.
-    const manifestLines = attachments.map((a, i) =>
-      `  [${i + 1}] ${a.name}  (${a.mimeType})\n      绝对路径: ${a.path}`
-    ).join('\n')
-    const manifest =
-      `用户附加了 ${attachments.length} 个文件，绝对路径如下：\n${manifestLines}\n\n` +
-      `如需读取、修改或分析这些文件，请把上面的"绝对路径"完整拷贝到工具调用的 ` +
-      `filePath / imagePath 参数里（不要发明新路径，也不要省略盘符）。\n\n`
-    const textWithManifest = manifest + currentMessage
-
     const parts: UserPart[] = [
-      { type: 'text', text: textWithManifest }
+      { type: 'text', text: (manifest ? manifest : '') + currentMessage }
     ]
     // Inline image attachments as `image` parts so vision-capable models can
     // see them directly. Log every step so when "AI can't see the image" gets
@@ -1001,7 +1057,7 @@ async function buildMessageHistory(
     userContent = parts
   }
 
-  return [...history, { role: 'user' as const, content: userContent }]
+  return [...budgetedHistory, { role: 'user' as const, content: userContent }]
 }
 
 function buildSystemPrompt(kbContext: string, mcpTools: McpTool[] = [], skills: InstalledSkill[] = [], scheduledContext = false): string {
@@ -1140,27 +1196,53 @@ function buildSystemPrompt(kbContext: string, mcpTools: McpTool[] = [], skills: 
  * Returns `null` if any skill is unrestricted (null/undefined whitelist) —
  * meaning "no filter, allow everything". Returns a `Set<string>` otherwise.
  */
-async function buildKbContext(message: string, _sessionId: string, _settings: AppSettings, mountedSpaceIds: string[] = []): Promise<string> {
+/** Total characters of KB context injected per turn — bounds cost/overflow when
+ *  many spaces are mounted/enabled (each chunk is ~1600 chars). */
+const KB_CONTEXT_MAX_CHARS = 6000
+
+async function buildKbContext(message: string, sessionId: string, _settings: AppSettings, mountedSpaceIds: string[] = []): Promise<string> {
   try {
     const { searchKnowledge } = await import('../services/knowledge')
-    const parts: string[] = []
-    // Mounted (session-level) spaces have higher priority
-    if (mountedSpaceIds.length) {
-      const mounted = await searchKnowledge(message, mountedSpaceIds)
-      if (mounted.length) {
-        parts.push('## Session Knowledge\n' + mounted.map((r: { content: string }) => r.content).join('\n\n'))
-      }
-    }
-    // Global spaces — source of truth is kb_spaces.global_enabled (kept in sync by the UI toggle)
+
+    // History-aware query: a follow-up like "它的风险呢？" embeds poorly alone.
+    // Prepend the previous user turn; repeat the current message so it still
+    // dominates the vector.
+    let query = message
+    try {
+      const recent = dbAll<{ content: string }>(
+        `SELECT content FROM messages WHERE session_id = ? AND role = 'user' ORDER BY created_at DESC LIMIT 2`,
+        [sessionId]
+      )
+      // recent[0] is the just-saved current message; recent[1] is the prior turn.
+      if (recent[1]?.content) query = `${recent[1].content}\n${message}\n${message}`
+    } catch { /* fall back to raw message */ }
+
     const globalRows = dbAll<{ id: string }>(`SELECT id FROM kb_spaces WHERE global_enabled = 1`)
     const globalIds = globalRows.map(r => r.id).filter(id => !mountedSpaceIds.includes(id))
-    if (globalIds.length) {
-      const global = await searchKnowledge(message, globalIds)
-      if (global.length) {
-        parts.push('## Global Knowledge\n' + global.map((r: { content: string }) => r.content).join('\n\n'))
-      }
+
+    const [mounted, global] = await Promise.all([
+      mountedSpaceIds.length ? searchKnowledge(query, mountedSpaceIds) : Promise.resolve([]),
+      globalIds.length ? searchKnowledge(query, globalIds) : Promise.resolve([])
+    ])
+
+    // Merge + rank globally so the best chunks win regardless of space; mounted
+    // (session) chunks get a small boost so they edge out ties.
+    type Scored = { content: string; score: number; src: 'session' | 'global' }
+    const merged: Scored[] = [
+      ...mounted.map(r => ({ content: r.content, score: r.score + 0.05, src: 'session' as const })),
+      ...global.map(r => ({ content: r.content, score: r.score, src: 'global' as const }))
+    ].sort((a, b) => b.score - a.score)
+
+    // Cap total injected size.
+    const picked: Scored[] = []
+    let used = 0
+    for (const r of merged) {
+      if (picked.length && used + r.content.length > KB_CONTEXT_MAX_CHARS) break
+      picked.push(r)
+      used += r.content.length
     }
-    return parts.join('\n\n')
+    if (!picked.length) return ''
+    return picked.map(r => `[${r.src === 'session' ? '会话知识库' : '全局知识库'}] ${r.content}`).join('\n\n')
   } catch (e) {
     console.warn('[kb] buildKbContext failed:', (e as Error).message)
     return ''

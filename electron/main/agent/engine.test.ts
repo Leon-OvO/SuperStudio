@@ -56,7 +56,7 @@ vi.mock('../services/mcp', () => ({ mcpManager: { listAllTools: async () => [], 
 vi.mock('../services/knowledge', () => ({ searchKnowledge: async () => [] }))
 vi.mock('../services/skills-db', () => ({ getActiveSkillsForScenario: () => [] }))
 vi.mock('../services/tray', () => ({ notifyTaskComplete: vi.fn() }))
-vi.mock('../services/model-pricing', () => ({ computeCost: () => null }))
+vi.mock('../services/model-pricing', () => ({ computeCost: () => null, modelContextWindow: () => 128_000, DEFAULT_CONTEXT_TOKENS: 128_000 }))
 vi.mock('../services/gallery', () => ({ saveGalleryItem: vi.fn() }))
 vi.mock('./skill-tools', () => ({ buildSkillTools: () => ({}) }))
 

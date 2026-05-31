@@ -7,7 +7,9 @@ import {
   topologicalSort,
   topologicalLevels,
   flattenMcpTools,
-  truncateToolResult
+  truncateToolResult,
+  estimateTokens,
+  trimHistoryToBudget
 } from './pure'
 
 describe('buildAutoTitle', () => {
@@ -116,6 +118,28 @@ describe('flattenMcpTools', () => {
     expect(tools[0].qualifiedName).toBe('my-server__do_thing')
     expect(tools[0].serverId).toBe('srv1')
     expect(tools[1].inputSchema).toEqual({ type: 'object', properties: {} })
+  })
+})
+
+describe('estimateTokens / trimHistoryToBudget', () => {
+  it('estimateTokens ≈ chars/4', () => {
+    expect(estimateTokens('')).toBe(0)
+    expect(estimateTokens('abcd')).toBe(1)
+    expect(estimateTokens('a'.repeat(401))).toBe(101)
+  })
+  it('keeps newest turns within budget, drops oldest', () => {
+    const hist = [
+      { role: 'user', content: 'A'.repeat(400) },   // ~100 tok
+      { role: 'assistant', content: 'B'.repeat(400) }, // ~100 tok
+      { role: 'user', content: 'C'.repeat(400) }    // ~100 tok
+    ]
+    const kept = trimHistoryToBudget(hist, 150) // room for ~1 turn + the newest
+    expect(kept[kept.length - 1].content[0]).toBe('C') // newest preserved
+    expect(kept.length).toBeLessThan(3)
+  })
+  it('always keeps the most recent message even if it alone exceeds budget', () => {
+    const kept = trimHistoryToBudget([{ role: 'user', content: 'X'.repeat(4000) }], 1)
+    expect(kept).toHaveLength(1)
   })
 })
 

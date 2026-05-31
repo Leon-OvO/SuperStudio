@@ -161,6 +161,35 @@ export function flattenMcpTools(
   }))
 }
 
+/** Rough token estimate (≈4 chars/token) — dependency-free, good enough for
+ *  budgeting history. Errs slightly high for CJK, which is safe (trims more). */
+export function estimateTokens(text: string): number {
+  return Math.ceil((text?.length ?? 0) / 4)
+}
+
+/**
+ * Trim conversation history to fit a token budget, dropping the OLDEST turns
+ * first. Always keeps the most recent message even if it alone exceeds the
+ * budget (the model call will then surface the real overflow). Returns a new
+ * array; input is not mutated.
+ */
+export function trimHistoryToBudget<T extends { content: string }>(
+  history: ReadonlyArray<T>,
+  budgetTokens: number
+): T[] {
+  if (history.length === 0) return []
+  // Walk newest→oldest accumulating tokens; keep until the budget is hit.
+  const kept: T[] = []
+  let total = 0
+  for (let i = history.length - 1; i >= 0; i--) {
+    const cost = estimateTokens(history[i].content)
+    if (kept.length > 0 && total + cost > budgetTokens) break
+    kept.push(history[i])
+    total += cost
+  }
+  return kept.reverse()
+}
+
 /**
  * Truncate a model-facing tool result that may be huge (full PDF dump, a long
  * web page, a verbose MCP payload) so it can't blow the context window. The
