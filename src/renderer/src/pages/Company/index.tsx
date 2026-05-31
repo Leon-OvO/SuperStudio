@@ -4,6 +4,7 @@ import { cn } from '../../lib/utils'
 import { toast } from '../../components/ui/Toast'
 import { useConfirmDialog } from '../../components/ui/ConfirmDialog'
 import type { TalentEntry, TalentBrowseResult, EmployeeInfo, ProviderConfig } from '../../../../shared/ipc-types'
+import { levelOf, nextLevel } from '../../../../shared/company-levels'
 
 // ── dept metadata ───────────────────────────────────────────────────────────
 const DEPT: Record<string, { label: string; color: string; emoji: string }> = {
@@ -16,10 +17,6 @@ const DEPT: Record<string, { label: string; color: string; emoji: string }> = {
   game:        { label: '游戏',     color: '#ff8a5b', emoji: '🎮' }
 }
 const dept = (k: string) => DEPT[k] || { label: k, color: '#8b91a0', emoji: '🧩' }
-
-const LEVELS = [{ min: 0, name: '实习', icon: '🌱' }, { min: 1, name: '初级', icon: '⭐' }, { min: 3, name: '资深', icon: '💪' }, { min: 6, name: '专家', icon: '👑' }]
-const levelOf = (done: number) => LEVELS.reduce((acc, l) => (done >= l.min ? l : acc), LEVELS[0])
-const nextLevel = (done: number) => LEVELS.find(l => l.min > done)
 
 const PAGE_SIZE = 24
 
@@ -279,7 +276,14 @@ function Dashboard({ employees }: { employees: EmployeeInfo[] }) {
   const busy = employees.filter(e => e.status === 'busy').length
   const out = employees.reduce((s, e) => s + e.stats.out, 0)
   const done = employees.reduce((s, e) => s + e.stats.done, 0)
-  const kpis: [string, number, string][] = [['👥', employees.length, '员工'], ['🟢', employees.length - busy, '在岗空闲'], ['⚙️', busy, '忙碌中'], ['✅', done, '完成需求'], ['📦', out, '累计产出']]
+  const cost = employees.reduce((s, e) => s + (e.stats.cost ?? 0), 0)
+  const kpis: [string, string, string][] = [
+    ['👥', String(employees.length), '员工'],
+    ['🟢', String(employees.length - busy), '在岗空闲'],
+    ['✅', String(done), '完成需求'],
+    ['📦', String(out), '累计产出'],
+    ['💰', '$' + cost.toFixed(2), '累计成本']
+  ]
   const byDept: Record<string, EmployeeInfo[]> = {}
   for (const e of employees) (byDept[e.dept] = byDept[e.dept] || []).push(e)
   const maxN = Math.max(1, ...Object.values(byDept).map(a => a.length))

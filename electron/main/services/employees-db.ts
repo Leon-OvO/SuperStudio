@@ -4,7 +4,7 @@ import { getProviders, getSettings } from './store'
 import { getSoul } from './talent-pool'
 import type { EmployeeInfo, EmployeeStats } from '../../../src/shared/ipc-types'
 
-const DEFAULT_STATS: EmployeeStats = { assigned: 0, done: 0, out: 0, rate: 100 }
+const DEFAULT_STATS: EmployeeStats = { assigned: 0, done: 0, out: 0, rate: 100, cost: 0 }
 
 interface EmployeeRow {
   id: string; company_id: string; soul_id: string; name: string; dept: string
@@ -60,7 +60,20 @@ function resolveEmployeeModel(recModel: string): { providerId: string; modelId: 
 }
 
 export function listEmployees(): EmployeeInfo[] {
-  return dbAll<EmployeeRow>(`SELECT * FROM employees ORDER BY hired_at ASC`).map(rowToInfo)
+  const employees = dbAll<EmployeeRow>(`SELECT * FROM employees ORDER BY hired_at ASC`).map(rowToInfo)
+  // Live-aggregate spend per employee from the vibe message cost log (their
+  // assigned requests). Cheap GROUP BY; not stored in the stats JSON.
+  try {
+    const costRows = dbAll<{ eid: string; cost: number }>(
+      `SELECT r.assignee_employee_id AS eid, COALESCE(SUM(m.cost_usd), 0) AS cost
+         FROM vibe_messages m JOIN vibe_requests r ON m.request_id = r.id
+        WHERE r.assignee_employee_id IS NOT NULL
+        GROUP BY r.assignee_employee_id`
+    )
+    const costMap = new Map(costRows.map(c => [c.eid, c.cost]))
+    for (const e of employees) e.stats.cost = costMap.get(e.id) ?? 0
+  } catch { /* cost is best-effort */ }
+  return employees
 }
 
 export function getEmployee(id: string): EmployeeInfo | null {
