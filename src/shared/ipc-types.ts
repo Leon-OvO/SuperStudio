@@ -28,6 +28,7 @@ export const IPC = {
   AGENT_RUN: 'agent:run',
   AGENT_STOP: 'agent:stop',
   AGENT_PROGRESS: 'agent:progress',   // main → renderer (event)
+  AGENT_DELTA: 'agent:delta',         // main → renderer (event — streamed assistant text chunks)
   AGENT_DONE: 'agent:done',           // main → renderer (event)
   AGENT_ERROR: 'agent:error',         // main → renderer (event)
 

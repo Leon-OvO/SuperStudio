@@ -764,7 +764,10 @@ export async function runAgent(
       tools: guardedTools
     })
 
-    // Collect full response text
+    // Collect full response text. The assistant message id is allocated up-front
+    // so streamed deltas and the final AGENT_DONE share it — the renderer can
+    // render tokens live and then reconcile against the authoritative DONE.
+    const asstMsgId = randomUUID()
     let fullText = ''
     let chunkCount = 0
     let usage: { promptTokens?: number; completionTokens?: number } | null = null
@@ -774,6 +777,10 @@ export async function runAgent(
         fullText += chunk
         chunkCount++
         if (abort.signal.aborted) break
+        // Stream the chunk to the renderer unless this run was superseded.
+        if (!isStaleRun()) {
+          win.webContents.send(IPC.AGENT_DELTA, { sessionId, messageId: asstMsgId, delta: chunk })
+        }
       }
     } catch (iterErr) {
       console.error('[Agent] textStream iteration threw', iterErr)
@@ -824,8 +831,8 @@ export async function runAgent(
       throw new Error(detail)
     }
 
-    // Save assistant message with tool call log and metadata
-    const asstMsgId = randomUUID()
+    // Save assistant message with tool call log and metadata (asstMsgId was
+    // allocated before the stream so deltas already carry it).
     // Coerce NaN/Infinity to null — some providers resolve `result.usage` with
     // NaN when they don't report tokens, and NaN propagates through `??` then
     // pollutes the DB + renders as "— → — tok · —" chips.

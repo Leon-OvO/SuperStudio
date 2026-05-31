@@ -22,7 +22,7 @@ export function ChatPage() {
   const {
     sessions, activeSessionId, messages, runningSessionIds, sessionModel, mountedSpaceIds,
     setSessions, setActiveSession, addSession, removeSession, updateSessionTitle,
-    setMessages, addMessage, removeMessage, removeMessagesFrom, updateMessageContent,
+    setMessages, addMessage, upsertMessage, appendStreamDelta, removeMessage, removeMessagesFrom, updateMessageContent,
     startRun, stopRun, updateStep,
     setSessionModel, setMountedSpaces
   } = useChatStore()
@@ -97,6 +97,11 @@ export function ChatPage() {
     const u1 = window.api.onAgentProgress((event) => {
       updateStep(event as AgentProgressEvent)
     })
+    // Live token streaming — append chunks to a placeholder message keyed by the
+    // run's messageId; AGENT_DONE then reconciles it into the final message.
+    const uDelta = window.api.onAgentDelta((d) => {
+      if (d?.sessionId && d?.messageId) appendStreamDelta(d.sessionId, d.messageId, d.delta)
+    })
     const u2 = window.api.onAgentDone((data: unknown) => {
       const d = data as { sessionId: string; content: string; messageId: string; toolCallLog?: Array<{ toolName: string; args: unknown; result: unknown }>; cancelled?: boolean; sessionTitle?: string; meta?: { model?: string; providerId?: string; providerName?: string; durationMs?: number } }
       stopRun(d.sessionId)
@@ -104,7 +109,9 @@ export function ChatPage() {
       if (d.content) {
         const autoRoute = pendingAutoRouteRef.current[d.sessionId]
         delete pendingAutoRouteRef.current[d.sessionId]
-        addMessage(d.sessionId, {
+        // upsert (not add): replaces the streamed placeholder of the same id, or
+        // appends when this path didn't stream (e.g. direct image generation).
+        upsertMessage(d.sessionId, {
           id: d.messageId || randomId(),
           sessionId: d.sessionId,
           role: 'assistant',
@@ -144,7 +151,7 @@ export function ChatPage() {
       }
     })
 
-    unsubRef.current = [u1, u2, u3]
+    unsubRef.current = [u1, uDelta, u2, u3]
     return () => { unsubRef.current.forEach(fn => fn?.()) }
   }, [])
 

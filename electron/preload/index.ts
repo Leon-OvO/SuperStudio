@@ -113,6 +113,11 @@ const api = {
     ipcRenderer.on(IPC.AGENT_PROGRESS, (_e, data) => cb(data))
     return () => ipcRenderer.removeAllListeners(IPC.AGENT_PROGRESS)
   },
+  onAgentDelta: (cb: (data: { sessionId: string; messageId: string; delta: string }) => void) => {
+    const listener = (_e: unknown, data: { sessionId: string; messageId: string; delta: string }) => cb(data)
+    ipcRenderer.on(IPC.AGENT_DELTA, listener)
+    return () => ipcRenderer.removeListener(IPC.AGENT_DELTA, listener)
+  },
   onAgentDone: (cb: (data: unknown) => void) => {
     ipcRenderer.on(IPC.AGENT_DONE, (_e, data) => cb(data))
     return () => ipcRenderer.removeAllListeners(IPC.AGENT_DONE)

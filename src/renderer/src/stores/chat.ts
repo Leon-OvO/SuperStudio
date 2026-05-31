@@ -33,6 +33,12 @@ interface ChatState {
   updateSessionTitle: (id: string, title: string) => void
   setMessages: (sessionId: string, messages: Message[]) => void
   addMessage: (sessionId: string, message: Message) => void
+  /** Replace a message with the same id, or append if absent. Used by AGENT_DONE
+   *  to reconcile a streamed placeholder into the authoritative final message. */
+  upsertMessage: (sessionId: string, message: Message) => void
+  /** Append a streamed assistant text chunk, creating a placeholder message on
+   *  the first delta so tokens render live before AGENT_DONE arrives. */
+  appendStreamDelta: (sessionId: string, messageId: string, delta: string) => void
   removeMessage: (sessionId: string, messageId: string) => void
   removeMessagesFrom: (sessionId: string, messageId: string) => void
   updateMessageContent: (sessionId: string, messageId: string, content: string) => void
@@ -70,6 +76,27 @@ export const useChatStore = create<ChatState>((set) => ({
   addMessage: (sessionId, message) => set(s => ({
     messages: { ...s.messages, [sessionId]: [...(s.messages[sessionId] || []), message] }
   })),
+  upsertMessage: (sessionId, message) => set(s => {
+    const list = s.messages[sessionId] || []
+    const idx = list.findIndex(m => m.id === message.id)
+    if (idx < 0) return { messages: { ...s.messages, [sessionId]: [...list, message] } }
+    const next = [...list]
+    next[idx] = message
+    return { messages: { ...s.messages, [sessionId]: next } }
+  }),
+  appendStreamDelta: (sessionId, messageId, delta) => set(s => {
+    const list = s.messages[sessionId] || []
+    const idx = list.findIndex(m => m.id === messageId)
+    if (idx >= 0) {
+      const next = [...list]
+      next[idx] = { ...next[idx], content: (next[idx].content || '') + delta }
+      return { messages: { ...s.messages, [sessionId]: next } }
+    }
+    const placeholder: Message = {
+      id: messageId, sessionId, role: 'assistant', content: delta, createdAt: Date.now()
+    }
+    return { messages: { ...s.messages, [sessionId]: [...list, placeholder] } }
+  }),
   removeMessage: (sessionId, messageId) => set(s => ({
     messages: { ...s.messages, [sessionId]: (s.messages[sessionId] || []).filter(m => m.id !== messageId) }
   })),
