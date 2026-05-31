@@ -158,6 +158,11 @@ export function getRequest(id: string): VibeRequestRow | null {
   return dbGet<VibeRequestRow>(`SELECT * FROM vibe_requests WHERE id = ?`, [id])
 }
 
+/** All requests across every project — for the company-wide 看板. */
+export function listAllRequests(): VibeRequestRow[] {
+  return dbAll<VibeRequestRow>(`SELECT * FROM vibe_requests ORDER BY created_at DESC`)
+}
+
 export function updateRequestStatus(id: string, status: RequestStatus): void {
   dbRun(`UPDATE vibe_requests SET status = ? WHERE id = ?`, [status, id])
 }

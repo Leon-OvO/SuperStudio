@@ -54,6 +54,7 @@ const api = {
   vibeApply: (args: { requestId: string }) => ipcRenderer.invoke(IPC.VIBE_APPLY, args),
   vibeStop: (args: { projectPath: string }) => ipcRenderer.invoke(IPC.VIBE_STOP, args),
   vibeRequestList: (projectPath: string) => ipcRenderer.invoke(IPC.VIBE_REQUEST_LIST, projectPath),
+  vibeRequestListAll: () => ipcRenderer.invoke(IPC.VIBE_REQUEST_LIST_ALL),
   vibeRequestDelete: (id: string) => ipcRenderer.invoke(IPC.VIBE_REQUEST_DELETE, id),
   vibeRequestSetAssignee: (requestId: string, employeeId: string | null) => ipcRenderer.invoke(IPC.VIBE_REQUEST_SET_ASSIGNEE, { requestId, employeeId }),
   vibeTaskList: (requestId: string) => ipcRenderer.invoke(IPC.VIBE_TASK_LIST, requestId),
@@ -235,6 +236,8 @@ const api = {
   browseTalent: (args?: { dept?: string; keyword?: string; page?: number; pageSize?: number }) =>
     ipcRenderer.invoke(IPC.TALENT_BROWSE, args),
   getTalentSoul: (id: string) => ipcRenderer.invoke(IPC.TALENT_GET, id),
+  tryTalent: (soulId: string, messages: Array<{ role: 'user' | 'assistant'; content: string }>) =>
+    ipcRenderer.invoke(IPC.TALENT_TRY, { soulId, messages }),
 
   // --- AI company employees ---
   listEmployees: () => ipcRenderer.invoke(IPC.EMP_LIST),

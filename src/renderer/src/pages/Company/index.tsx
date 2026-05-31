@@ -3,7 +3,8 @@ import { Building2, Search, X, UserPlus, Trash2, Cpu, Loader2, BadgeCheck, Spark
 import { cn } from '../../lib/utils'
 import { toast } from '../../components/ui/Toast'
 import { useConfirmDialog } from '../../components/ui/ConfirmDialog'
-import type { TalentEntry, TalentBrowseResult, EmployeeInfo, ProviderConfig } from '../../../../shared/ipc-types'
+import { useUIStore } from '../../stores/ui'
+import type { TalentEntry, TalentBrowseResult, EmployeeInfo, ProviderConfig, VibeRequestInfo } from '../../../../shared/ipc-types'
 import { levelOf, nextLevel } from '../../../../shared/company-levels'
 
 // ── dept metadata ───────────────────────────────────────────────────────────
@@ -20,10 +21,10 @@ const dept = (k: string) => DEPT[k] || { label: k, color: '#8b91a0', emoji: '�
 
 const PAGE_SIZE = 24
 
-type Tab = 'market' | 'team' | 'dash'
+type Tab = 'board' | 'market' | 'team' | 'dash'
 
 export function CompanyPage() {
-  const [tab, setTab] = useState<Tab>('market')
+  const [tab, setTab] = useState<Tab>('board')
   const [employees, setEmployees] = useState<EmployeeInfo[]>([])
   const [providers, setProviders] = useState<ProviderConfig[]>([])
 
@@ -49,7 +50,7 @@ export function CompanyPage() {
         </div>
         <div className="flex-1" />
         <div className="flex bg-muted/40 rounded-lg p-0.5">
-          {([['market', '🛒 人才市场'], ['team', `👥 员工 ${employees.length}`], ['dash', '📊 经营台']] as [Tab, string][]).map(([k, label]) => (
+          {([['board', '🗂 需求看板'], ['market', '🛒 人才市场'], ['team', `👥 员工 ${employees.length}`], ['dash', '📊 经营台']] as [Tab, string][]).map(([k, label]) => (
             <button key={k} onClick={() => setTab(k)}
               className={cn('px-3.5 py-1.5 rounded-md text-xs', tab === k ? 'bg-primary/15 text-primary font-semibold' : 'text-muted-foreground hover:text-foreground')}>
               {label}
@@ -60,6 +61,7 @@ export function CompanyPage() {
       </div>
 
       <div className="flex-1 overflow-auto p-4">
+        {tab === 'board' && <Board employees={employees} onChange={refreshEmployees} goMarket={() => setTab('market')} />}
         {tab === 'market' && <Market hiredSoulIds={hiredSoulIds} onHire={refreshEmployees} />}
         {tab === 'team' && <Roster employees={employees} providers={providers} onChange={refreshEmployees} goMarket={() => setTab('market')} />}
         {tab === 'dash' && <Dashboard employees={employees} />}
@@ -78,6 +80,10 @@ function Market({ hiredSoulIds, onHire }: { hiredSoulIds: Set<string>; onHire: (
   const [loading, setLoading] = useState(false)
   const [hiring, setHiring] = useState<string | null>(null)
   const [preview, setPreview] = useState<TalentEntry | null>(null)
+  // 面试试聊（不落库）
+  const [chat, setChat] = useState<Array<{ role: 'user' | 'assistant'; content: string }>>([])
+  const [chatInput, setChatInput] = useState('')
+  const [trying, setTrying] = useState(false)
 
   useEffect(() => { const t = setTimeout(() => { setApplied(keyword.trim()); setPage(1) }, 300); return () => clearTimeout(t) }, [keyword])
   useEffect(() => {
@@ -96,7 +102,19 @@ function Market({ hiredSoulIds, onHire }: { hiredSoulIds: Set<string>; onHire: (
     finally { setHiring(null) }
   }
   async function interview(e: TalentEntry) {
+    setChat([]); setChatInput('')
     try { const full = await window.api.getTalentSoul(e.id) as TalentEntry | null; setPreview(full || e) } catch { setPreview(e) }
+  }
+  async function sendTry() {
+    if (!preview || !chatInput.trim() || trying) return
+    const next = [...chat, { role: 'user' as const, content: chatInput.trim() }]
+    setChat(next); setChatInput(''); setTrying(true)
+    try {
+      const res = await window.api.tryTalent(preview.id, next) as { text?: string; error?: string }
+      setChat([...next, { role: 'assistant', content: res.error ? `⚠️ ${res.error}` : (res.text || '（无回复）') }])
+    } catch (err) {
+      setChat([...next, { role: 'assistant', content: '⚠️ ' + (err as Error).message }])
+    } finally { setTrying(false) }
   }
 
   return (
@@ -171,7 +189,33 @@ function Market({ hiredSoulIds, onHire }: { hiredSoulIds: Set<string>; onHire: (
             </div>
             <div className="p-4">
               <div className="text-[11px] text-muted-foreground mb-1.5">岗位提示词（soul 人格）</div>
-              <pre className="whitespace-pre-wrap text-[12px] leading-relaxed text-muted-foreground bg-muted/40 border border-border rounded-lg p-3 max-h-[300px] overflow-auto">{preview.systemPrompt}</pre>
+              <pre className="whitespace-pre-wrap text-[12px] leading-relaxed text-muted-foreground bg-muted/40 border border-border rounded-lg p-3 max-h-[140px] overflow-auto">{preview.systemPrompt}</pre>
+
+              {/* 试聊：录用前临时功能测试（用该人格 + 推荐模型，不落库） */}
+              <div className="mt-3">
+                <div className="text-[11px] text-muted-foreground mb-1.5">💬 面试试聊 <span className="text-muted-foreground/60">· 录用前临时测试 TA 的回答（不保存）</span></div>
+                <div className="bg-muted/30 border border-border rounded-lg p-2.5 max-h-[200px] overflow-auto space-y-2 mb-2">
+                  {chat.length === 0 && <div className="text-[11px] text-muted-foreground/60 text-center py-3">给 TA 出个题，试试这个角色的回答 →</div>}
+                  {chat.map((m, i) => (
+                    <div key={i} className={cn('text-[12px] leading-relaxed', m.role === 'user' ? 'text-right' : '')}>
+                      <span className={cn('inline-block px-2.5 py-1.5 rounded-lg max-w-[85%] text-left whitespace-pre-wrap',
+                        m.role === 'user' ? 'bg-primary/15 text-foreground' : 'bg-card border border-border text-muted-foreground')}>
+                        {m.content}
+                      </span>
+                    </div>
+                  ))}
+                  {trying && <div className="text-[12px]"><span className="inline-block px-2.5 py-1.5 rounded-lg bg-card border border-border text-muted-foreground"><Loader2 size={11} className="inline animate-spin" /> 思考中…</span></div>}
+                </div>
+                <div className="flex gap-2">
+                  <input value={chatInput} onChange={e => setChatInput(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendTry() } }}
+                    placeholder="输入一句话面试 TA…" disabled={trying}
+                    className="flex-1 bg-card border border-border rounded-lg px-3 py-2 text-[13px] focus:outline-none focus:ring-1 focus:ring-primary/40 disabled:opacity-60" />
+                  <button onClick={sendTry} disabled={trying || !chatInput.trim()}
+                    className="px-3 py-2 rounded-lg bg-primary text-primary-foreground text-[13px] font-medium disabled:opacity-50">发送</button>
+                </div>
+              </div>
+
               <div className="flex gap-2 mt-3">
                 {hiredSoulIds.has(preview.id)
                   ? <span className="flex-1 text-sm px-3 py-2 rounded-lg bg-emerald-500/15 text-emerald-500 text-center font-medium">✓ 已入职</span>
@@ -313,6 +357,120 @@ function Dashboard({ employees }: { employees: EmployeeInfo[] }) {
             <span className="w-6 text-center">{medals[i]}</span><span className="flex-1 text-[12.5px] font-medium">{dept(e.dept).emoji} {e.name}</span>
             <span className="text-[11px] text-muted-foreground">{levelOf(e.stats.done).icon} {e.stats.out} 产出 · {e.stats.done} 完成</span></div>)}
         </div>
+      </div>
+    </div>
+  )
+}
+
+// ── 需求看板（派活 / 开工 的可见入口）──────────────────────────────────────────
+const BOARD_COLS: { key: string; name: string; color: string }[] = [
+  { key: 'proposed', name: '待应用', color: '#f0b429' },
+  { key: 'applying', name: '实现中', color: '#5b9bff' },
+  { key: 'done', name: '已完成', color: '#3ecf8e' }
+]
+function projName(p: string): string { return (p || '').split(/[\/]/).filter(Boolean).pop() || p }
+
+function Board({ employees, onChange, goMarket }: { employees: EmployeeInfo[]; onChange: () => void; goMarket: () => void }) {
+  const [requests, setRequests] = useState<VibeRequestInfo[]>([])
+  const [loading, setLoading] = useState(true)
+  const [applying, setApplying] = useState<string | null>(null)
+
+  const refresh = useCallback(() => {
+    window.api.vibeRequestListAll()
+      .then((r: VibeRequestInfo[]) => setRequests(r.filter(x => x.kind === 'change' || x.kind === 'bugfix')))
+      .catch(() => {}).finally(() => setLoading(false))
+  }, [])
+  useEffect(() => {
+    refresh()
+    // 实时：执行进度/完成时刷新看板与员工统计
+    const u1 = window.api.onVibeDone(() => { refresh(); onChange() })
+    const u2 = window.api.onVibeProgress(() => { refresh() })
+    return () => { u1?.(); u2?.() }
+  }, [refresh, onChange])
+
+  async function assign(req: VibeRequestInfo, employeeId: string | null) {
+    await window.api.vibeRequestSetAssignee(req.id, employeeId)
+    refresh(); onChange()
+  }
+  async function apply(req: VibeRequestInfo) {
+    if (!req.assigneeEmployeeId) { toast.error('请先给该需求指派一位员工'); return }
+    setApplying(req.id)
+    try {
+      const res = await window.api.vibeApply({ requestId: req.id }) as { started?: boolean; error?: string }
+      if (res?.error) toast.error('开工失败：' + res.error + '（该项目可能需先在 Vibe 中打开）')
+      else toast.success('已派活，员工开工中…')
+      refresh()
+    } catch (e) { toast.error('开工失败：' + (e as Error).message) }
+    finally { setApplying(null) }
+  }
+
+  if (loading) return <div className="text-center text-muted-foreground text-sm py-10"><Loader2 size={16} className="animate-spin inline" /> 加载需求…</div>
+
+  if (!requests.length) {
+    return (
+      <div className="grid place-items-center text-center text-muted-foreground" style={{ height: '56vh' }}>
+        <div>
+          <div className="text-5xl mb-3 opacity-80">🗂</div>
+          <h2 className="text-foreground font-semibold mb-1.5">还没有需求可派活</h2>
+          <p className="text-[12.5px] mb-1">需求来自 Vibe「构建」页：打开一个项目 → 用「新需求」描述任务，PM 会拆解成可执行任务。</p>
+          <p className="text-[12.5px] mb-4">需求出现在这里后，给它<strong>指派一位员工</strong>并点<strong>开工</strong>，员工就会用自己的模型与岗位人格去执行。</p>
+          <div className="flex gap-2 justify-center">
+            <button onClick={goMarket} className="px-4 py-2 rounded-lg border border-border text-sm">先去招募员工</button>
+            <button onClick={() => useUIStore.getState().setPage('vibe')} className="px-4 py-2 rounded-lg bg-primary text-primary-foreground font-medium text-sm">去 Vibe 提需求 →</button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  const empById = (id?: string | null) => employees.find(e => e.id === id)
+  return (
+    <div>
+      <div className="flex items-center mb-3">
+        <div className="text-xs text-muted-foreground">把需求指派给员工并「开工」，员工以其底层模型 + 岗位人格执行。</div>
+        <div className="flex-1" />
+        <button onClick={refresh} className="text-[11px] px-2.5 py-1 rounded-lg border border-border text-muted-foreground hover:text-foreground">刷新</button>
+      </div>
+      <div className="flex gap-3 items-start overflow-x-auto">
+        {BOARD_COLS.map(col => {
+          const items = requests.filter(r => r.status === col.key)
+          return (
+            <div key={col.key} className="flex-shrink-0 w-[300px] rounded-xl border border-border bg-card/40">
+              <div className="flex items-center gap-2 px-3 py-2.5">
+                <span className="w-2 h-2 rounded-sm" style={{ background: col.color }} />
+                <span className="font-semibold text-[12.5px]">{col.name}</span>
+                <span className="ml-auto text-[11px] text-muted-foreground bg-muted/60 border border-border rounded-full px-2">{items.length}</span>
+              </div>
+              <div className="px-2.5 pb-3 space-y-2.5">
+                {items.length === 0 && <div className="text-[11px] text-muted-foreground/50 text-center py-4 border border-dashed border-border rounded-lg">空</div>}
+                {items.map(r => {
+                  const emp = empById(r.assigneeEmployeeId)
+                  return (
+                    <div key={r.id} className="rounded-lg border border-border bg-card p-2.5">
+                      <div className="text-[13px] font-medium leading-snug">{r.title}</div>
+                      <div className="text-[10px] text-muted-foreground mt-0.5">📁 {projName(r.projectPath)} · {r.kind === 'bugfix' ? '缺陷' : '需求'}</div>
+                      <div className="flex items-center gap-1.5 mt-2">
+                        <span className="text-[11px]">👤</span>
+                        <select value={r.assigneeEmployeeId ?? ''} onChange={e => assign(r, e.target.value || null)}
+                          className="flex-1 bg-muted/40 border border-border rounded-md px-1.5 py-1 text-[11px] text-foreground focus:outline-none">
+                          <option value="">未指派</option>
+                          {employees.map(emp2 => <option key={emp2.id} value={emp2.id}>{emp2.name}</option>)}
+                        </select>
+                      </div>
+                      {emp && <div className="text-[10px] text-muted-foreground mt-1">🧠 {emp.modelId || '默认模型'}{r.status === 'applying' ? ' · 执行中…' : ''}</div>}
+                      {col.key === 'proposed' && (
+                        <button onClick={() => apply(r)} disabled={applying === r.id}
+                          className="w-full mt-2 text-[11px] py-1.5 rounded-lg bg-primary text-primary-foreground font-medium disabled:opacity-50">
+                          {applying === r.id ? <Loader2 size={11} className="animate-spin inline" /> : '▶'} 开工
+                        </button>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )
+        })}
       </div>
     </div>
   )

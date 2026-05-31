@@ -38,7 +38,7 @@ import {
 import { registerApprovedRoot } from '../services/path-allow'
 import {
   upsertProject, setProjectModel,
-  createRequest, listRequests, getRequest, updateRequestStatus, updateRequestSummary,
+  createRequest, listRequests, listAllRequests, getRequest, updateRequestStatus, updateRequestSummary,
   deleteRequest, deleteTasksForRequest, slugify, setRequestAssignee,
   createTask, listTasks, updateTaskStatus,
   appendMessage, listMessages,
@@ -783,6 +783,10 @@ export function vibeHandlers(): void {
   // ----- Requests / tasks / messages list --------------------------------
   ipcMain.handle(IPC.VIBE_REQUEST_LIST, async (_e, projectPath: string): Promise<VibeRequestInfo[]> => {
     return listRequests(path.resolve(projectPath)).map(toRequestInfo)
+  })
+
+  ipcMain.handle(IPC.VIBE_REQUEST_LIST_ALL, async (): Promise<VibeRequestInfo[]> => {
+    return listAllRequests().map(toRequestInfo)
   })
 
   ipcMain.handle(IPC.VIBE_REQUEST_SET_ASSIGNEE, async (_e, args: { requestId: string; employeeId: string | null }) => {

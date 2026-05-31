@@ -179,6 +179,7 @@ export const IPC = {
   VIBE_APPLY: 'vibe:apply',         // execute tasks
   // ---- Requests / tasks / messages ----
   VIBE_REQUEST_LIST: 'vibe:request-list',
+  VIBE_REQUEST_LIST_ALL: 'vibe:request-list-all',          // 跨项目所有需求（公司看板）
   VIBE_REQUEST_DELETE: 'vibe:request-delete',
   VIBE_REQUEST_SET_ASSIGNEE: 'vibe:request-set-assignee',  // 指派 AI 员工承接
   VIBE_TASK_LIST: 'vibe:task-list',
@@ -202,6 +203,7 @@ export const IPC = {
   // Talent pool (encrypted bundled catalog of agent personas / "招募人才")
   TALENT_BROWSE: 'talent:browse',
   TALENT_GET: 'talent:get',
+  TALENT_TRY: 'talent:try',     // 面试试聊：用候选 soul 人格临时对话一轮（不落库）
 
   // AI company employees (hired souls)
   EMP_LIST: 'emp:list',

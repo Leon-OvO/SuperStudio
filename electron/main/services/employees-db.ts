@@ -34,8 +34,9 @@ export function ensureCompany(): string {
 
 /** Pick a real {providerId, modelId} for a hired soul from the user's configured
  *  providers, biased toward the soul's recommended model family. Mirrors the
- *  fallback chain of resolveProjectModel (vibe.ts). */
-function resolveEmployeeModel(recModel: string): { providerId: string; modelId: string } {
+ *  fallback chain of resolveProjectModel (vibe.ts). Exported so the 面试 试聊
+ *  flow can resolve a model for an un-hired candidate too. */
+export function resolveEmployeeModel(recModel: string): { providerId: string; modelId: string } {
   const providers = getProviders()
   const settings = getSettings()
   const hint = (recModel || '').toLowerCase()
