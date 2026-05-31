@@ -2,7 +2,7 @@ import Store from 'electron-store'
 import { safeStorage, app } from 'electron'
 import fs from 'fs'
 import path from 'path'
-import { ProviderConfig, AppSettings, McpServerConfig, WebhookBot } from '../../../src/shared/ipc-types'
+import { ProviderConfig, AppSettings, McpServerConfig, WebhookBot, RemoteModelConf } from '../../../src/shared/ipc-types'
 
 interface StoreSchema {
   providers: ProviderConfig[]
@@ -10,17 +10,29 @@ interface StoreSchema {
   mcpServers: McpServerConfig[]
 }
 
+/** Built-in fallback default model NAMES used when no remote model.conf has been
+ *  fetched yet (offline / first launch / file not published). The remote
+ *  model.conf overrides these via the managed-default mechanism in model-conf.ts.
+ *  Single source of truth — referenced by the store defaults, the initial
+ *  `appliedModelConf` snapshot, and the settings-reset handler. */
+export const BUILTIN_MODEL_DEFAULTS: Required<RemoteModelConf> = {
+  defaultChatModel: '',
+  defaultImageModel: 'dall-e-3',
+  defaultVideoModel: 'doubao-seedance-2-0',
+  defaultEmbeddingModel: 'text-embedding-3-small',
+}
+
 const defaults: StoreSchema = {
   providers: [],
   mcpServers: [],
   settings: {
-    defaultChatModel: '',
+    defaultChatModel: BUILTIN_MODEL_DEFAULTS.defaultChatModel,
     defaultChatProviderId: '',
-    defaultImageModel: 'dall-e-3',
+    defaultImageModel: BUILTIN_MODEL_DEFAULTS.defaultImageModel,
     defaultImageProviderId: '',
-    defaultVideoModel: 'doubao-seedance-2-0',
+    defaultVideoModel: BUILTIN_MODEL_DEFAULTS.defaultVideoModel,
     defaultVideoProviderId: '',
-    defaultEmbeddingModel: 'text-embedding-3-small',
+    defaultEmbeddingModel: BUILTIN_MODEL_DEFAULTS.defaultEmbeddingModel,
     defaultEmbeddingProviderId: '',
     searchApiKey: '',
     searchProvider: 'bing',
@@ -42,6 +54,10 @@ const defaults: StoreSchema = {
     proxyMode: 'off',
     proxyHost: '',
     proxyPort: 0,
+    // Seed the managed-default snapshot with the built-in names, so on a fresh
+    // install every default still equals its snapshot → the first model.conf
+    // sync is free to update them. Diverges the moment the user picks their own.
+    appliedModelConf: { ...BUILTIN_MODEL_DEFAULTS },
   }
 }
 

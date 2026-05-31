@@ -8,6 +8,7 @@ import { DashboardPage } from './pages/Dashboard'
 import { ChatPage } from './pages/Chat'
 import { WorkflowPage } from './pages/Workflow'
 import { GalleryPage } from './pages/Gallery'
+import { VideoPage } from './pages/Video'
 import { KnowledgePage } from './pages/Knowledge'
 import { VibePage } from './pages/Vibe'
 import { SkillsPage } from './pages/Skills'
@@ -22,7 +23,7 @@ import { ChatModelSetup } from './components/ChatModelSetup'
 import { UpdateNotifier } from './components/UpdateNotifier'
 import { useScheduledNotifications } from './stores/scheduledNotifications'
 
-type PageId = 'dashboard' | 'chat' | 'workflow' | 'gallery' | 'knowledge' | 'vibe' | 'skills' | 'scheduler' | 'settings'
+type PageId = 'dashboard' | 'chat' | 'workflow' | 'gallery' | 'knowledge' | 'vibe' | 'skills' | 'scheduler' | 'video' | 'settings'
 
 export default function App() {
   const { currentPage, setPage, skin, setPendingWorkflowId } = useUIStore()
@@ -79,6 +80,20 @@ export default function App() {
     })()
     return () => { cancelled = true }
   }, [isLoggedIn])
+
+  // Remote model.conf may update the recommended default models a few seconds
+  // after launch. When it does, re-read settings (so the chat-setup gate clears)
+  // and nudge the pages that cache defaults to refresh via their existing
+  // focus-refresh path — without changing how the user manually edits defaults.
+  useEffect(() => {
+    const unsub = window.api.onModelConfApplied?.(() => {
+      window.api.getSettings().then((s) => {
+        setChatModelReady(!!(s.defaultChatProviderId && s.defaultChatModel))
+      }).catch(() => { /* non-fatal */ })
+      window.dispatchEvent(new Event('focus'))
+    })
+    return () => { unsub?.() }
+  }, [])
 
   // Apply skin class + .dark before first paint to avoid flash. The `.dark`
   // class stays in sync so existing `dark:` Tailwind variants keep working on
@@ -293,6 +308,7 @@ export default function App() {
           {currentPage === 'chat' && <ChatPage />}
           {currentPage === 'workflow' && <WorkflowPage />}
           {currentPage === 'gallery' && <GalleryPage />}
+          {currentPage === 'video' && <VideoPage />}
           {currentPage === 'knowledge' && <KnowledgePage />}
           {currentPage === 'vibe' && <VibePage />}
           {currentPage === 'skills' && <SkillsPage />}

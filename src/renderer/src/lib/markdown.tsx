@@ -9,6 +9,18 @@ interface MarkdownProps {
   /** Smaller code padding / tighter spacing when rendered inside a chat bubble. */
   compact?: boolean
   className?: string
+  /** When true, remote (http/https) images are NOT auto-fetched — they render as
+   *  a click-through link instead. Use for untrusted content (e.g. GitHub release
+   *  notes) so embedded `![](https://tracker/pixel.png)` can't leak the user's IP
+   *  and version on every app launch. data: and local images still render. */
+  restrictImages?: boolean
+}
+
+/** A remote image whose load is deferred behind an explicit user click, so it
+ *  never beacons on render. data:/blob:/local images are considered safe. */
+function isRemoteImage(src?: string): boolean {
+  if (!src) return false
+  return /^https?:\/\//i.test(src)
 }
 
 /**
@@ -16,7 +28,7 @@ interface MarkdownProps {
  * Supports tables, task lists, strikethrough, and proper inline/block code.
  * Code blocks expose a per-block copy button.
  */
-export function Markdown({ content, compact = false, className }: MarkdownProps) {
+export function Markdown({ content, compact = false, className, restrictImages = false }: MarkdownProps) {
   return (
     <div className={cn('markdown-body break-words', className)}>
       <ReactMarkdown
@@ -70,10 +82,20 @@ export function Markdown({ content, compact = false, className }: MarkdownProps)
           // Horizontal rule
           hr: () => <hr className="border-border my-3" />,
 
-          // Images — render inside a constrained container so they don't blow up the bubble
-          img: ({ src, alt }) => (
-            <img src={src} alt={alt || ''} className="max-w-full max-h-[400px] rounded-md my-2" />
-          ),
+          // Images — render inside a constrained container so they don't blow up the bubble.
+          // In restricted mode, a remote image is shown as a link rather than fetched,
+          // so untrusted markdown can't beacon out on render.
+          img: ({ src, alt }) => {
+            if (restrictImages && isRemoteImage(typeof src === 'string' ? src : undefined)) {
+              return (
+                <a href={typeof src === 'string' ? src : undefined} target="_blank" rel="noreferrer noopener"
+                   className="text-primary hover:underline text-sm">
+                  🖼 {alt || '图片'}（点击查看）
+                </a>
+              )
+            }
+            return <img src={src} alt={alt || ''} className="max-w-full max-h-[400px] rounded-md my-2" />
+          },
 
           // Code: distinguish inline vs block. `<pre>` wraps fenced code so we identify
           // blocks by the parent context — `inline` is provided by react-markdown.

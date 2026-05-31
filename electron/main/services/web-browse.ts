@@ -14,7 +14,7 @@
  * it visible regardless, because the user has to interact with it to log in.
  */
 
-import { BrowserWindow, session, Session, WebContents } from 'electron'
+import { BrowserWindow, session, Session, WebContents, shell } from 'electron'
 import fs from 'fs'
 
 const NAV_TIMEOUT_MS = 20_000
@@ -139,6 +139,24 @@ function ensureWindow(visible: boolean): BrowserWindow {
   // login flows (incl. bilibili h5) happen in-page or via full redirect, so
   // this doesn't block the common case.
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  // Re-inject the SuperStudio chrome bar after every navigation (dom-ready wipes
+  // the previous page's DOM). Best-effort: a failed inject must never block load.
+  win.webContents.on('dom-ready', () => {
+    if (win && !win.isDestroyed()) win.webContents.executeJavaScript(CHROME_JS).catch(() => {})
+  })
+  // Page→main channel for the chrome bar's open-external / close buttons. The
+  // window has no preload, so the injected handlers signal via console.log with
+  // a `__ss_chrome::` prefix; everything else is ignored.
+  win.webContents.on('console-message', (_e, _level, message) => {
+    if (typeof message !== 'string') return
+    const PFX = '__ss_chrome::open_external::'
+    if (message.startsWith(PFX)) {
+      const u = message.slice(PFX.length)
+      if (/^https?:\/\//i.test(u)) shell.openExternal(u).catch(() => {})
+    } else if (message === '__ss_chrome::close') {
+      closeBrowse()
+    }
+  })
   // A renderer crash must not leave a zombie window that later trips
   // window-all-closed → app.quit().
   win.webContents.on('render-process-gone', () => { closeBrowse() })
@@ -219,6 +237,9 @@ const EXTRACT_JS = `(() => {
     let els
     try { els = root.querySelectorAll('*') } catch (e) { return acc }
     for (const el of els) {
+      // Skip SuperStudio-injected chrome so the bar's text / hostname don't
+      // bleed into the scraped page content.
+      if (el.id && el.id.indexOf('__ss') === 0) continue
       if (el.shadowRoot) { acc.push(el.shadowRoot); allShadowRoots(el.shadowRoot, acc) }
     }
     return acc
@@ -318,16 +339,20 @@ const LOGIN_POLL_JS = `(() => {
     const root = document.documentElement
     const btn = document.createElement('button')
     btn.id = '__ss_login_btn'
-    btn.textContent = '✅ 我已登录完成，继续'
+    btn.innerHTML = '<span style="display:inline-flex;width:20px;height:20px;border-radius:6px;'
+      + 'background:rgba(255,255,255,.22);align-items:center;justify-content:center;font-size:12px;">\\u2726</span>'
+      + '<span>我已登录完成，继续</span>'
     Object.assign(btn.style, {
       position: 'fixed', right: '20px', bottom: '20px', zIndex: '2147483647',
-      padding: '12px 18px', background: '#4f46e5', color: '#fff', border: 'none',
-      borderRadius: '10px', fontSize: '15px', fontWeight: '600', cursor: 'pointer',
-      boxShadow: '0 6px 20px rgba(0,0,0,.35)', fontFamily: 'system-ui, sans-serif'
+      display: 'flex', alignItems: 'center', gap: '9px',
+      padding: '12px 18px', background: 'linear-gradient(135deg,#6366f1,#4f46e5)',
+      color: '#fff', border: 'none', borderRadius: '12px', fontSize: '15px',
+      fontWeight: '600', cursor: 'pointer', boxShadow: '0 8px 24px rgba(79,70,229,.45)',
+      fontFamily: 'system-ui,-apple-system,"Segoe UI",sans-serif'
     })
     btn.onclick = () => {
       window.__ssLogin.done = true
-      btn.textContent = '✅ 正在继续…'
+      btn.innerHTML = '<span>正在继续…</span>'
       btn.disabled = true
       btn.style.opacity = '.7'
     }
@@ -337,21 +362,28 @@ const LOGIN_POLL_JS = `(() => {
     Object.assign(ov.style, {
       position: 'fixed', inset: '0', zIndex: '2147483646', display: 'none',
       alignItems: 'center', justifyContent: 'center',
-      background: 'rgba(0,0,0,.6)', fontFamily: 'system-ui, sans-serif'
+      background: 'rgba(17,17,30,.55)', backdropFilter: 'blur(2px)',
+      fontFamily: 'system-ui,-apple-system,"Segoe UI",sans-serif'
     })
     const card = document.createElement('div')
     Object.assign(card.style, {
-      background: '#fff', color: '#111', padding: '28px 32px', borderRadius: '14px',
+      background: '#fff', color: '#111', padding: '26px 30px', borderRadius: '16px',
       maxWidth: '420px', textAlign: 'center', fontSize: '15px', lineHeight: '1.6',
-      boxShadow: '0 10px 48px rgba(0,0,0,.45)'
+      boxShadow: '0 20px 60px rgba(17,17,30,.4)', border: '1px solid rgba(0,0,0,.05)'
     })
-    card.innerHTML = '<div style="font-size:18px;font-weight:700;margin-bottom:10px;">请尽快完成登录</div>'
-      + '<div>检测到此页面仍需登录。请在本窗口完成登录后，点击右下角「我已登录完成，继续」按钮。</div>'
+    card.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;gap:9px;margin-bottom:12px;">'
+      + '<span style="display:inline-flex;width:30px;height:30px;border-radius:9px;'
+      + 'background:linear-gradient(135deg,#6366f1,#4f46e5);align-items:center;justify-content:center;'
+      + 'color:#fff;font-size:16px;box-shadow:0 3px 10px rgba(79,70,229,.4);">\\u2726</span>'
+      + '<span style="font-size:18px;font-weight:700;">请尽快完成登录</span></div>'
+      + '<div style="color:#4b5563;">检测到此页面仍需登录。请在本窗口完成登录后，点击右下角「我已登录完成，继续」按钮。</div>'
     const close = document.createElement('button')
     close.textContent = '我知道了，继续等待'
     Object.assign(close.style, {
-      marginTop: '18px', padding: '10px 18px', background: '#4f46e5', color: '#fff',
-      border: 'none', borderRadius: '8px', fontSize: '14px', cursor: 'pointer'
+      marginTop: '20px', padding: '10px 20px',
+      background: 'linear-gradient(135deg,#6366f1,#4f46e5)', color: '#fff',
+      border: 'none', borderRadius: '10px', fontSize: '14px', fontWeight: '600',
+      cursor: 'pointer', boxShadow: '0 6px 18px rgba(79,70,229,.4)'
     })
     close.onclick = () => { ov.style.display = 'none' }
     card.appendChild(close)
@@ -371,6 +403,154 @@ const LOGIN_POLL_JS = `(() => {
 })()`
 
 const SHOW_OVERLAY_JS = `(() => { if (window.__ssShowOverlay) window.__ssShowOverlay() })()`
+
+// SuperStudio-branded chrome injected on every page load (dom-ready) so the
+// shared browse window stops looking like a bare Chromium frame. A fixed 44px
+// top bar carries the brand mark, a click-to-copy URL pill, and refresh /
+// open-in-system-browser / close actions. Built inside a Shadow root attached to
+// an `all:initial` host so page CSS can't bleed into it (or vice-versa), and the
+// host id is `__ss_chrome_host` so SNAPSHOT_JS / EXTRACT_JS skip it (otherwise
+// the automation snapshot would surface our own buttons as click candidates and
+// the scraper would fold the bar text into page content).
+//
+// Page→main actions ride the console channel (open_external / close) because the
+// window has no preload to expose IPC; ensureWindow() listens for the
+// `__ss_chrome::` sentinels. Refresh + copy are pure in-page, no round-trip.
+const CHROME_BAR_H = 44
+const CHROME_JS = `(() => {
+  try {
+    var HOST_ID = '__ss_chrome_host'
+    var BAR_H = ${CHROME_BAR_H}
+    // Deliberately a pure fixed OVERLAY — we do NOT push page content down. A
+    // margin/padding offset clips the bottom BAR_H px of full-height
+    // (100vh + overflow:hidden) creator SPAs, which is exactly where the publish
+    // button lives — that would break web automation. Covering the top BAR_H px
+    // of a page's own header is purely cosmetic and never blocks interaction.
+    // Fresh DOM on every dom-ready, so the host normally won't exist. If it does
+    // (redundant call on the same page) just bail.
+    if (document.getElementById(HOST_ID)) return
+
+    var host = document.createElement('div')
+    host.id = HOST_ID
+    Object.assign(host.style, {
+      all: 'initial', position: 'fixed', top: '0', left: '0', right: '0',
+      height: BAR_H + 'px', zIndex: '2147483600'
+    })
+    var sr = host.attachShadow({ mode: 'open' })
+
+    var style = document.createElement('style')
+    style.textContent = '.btn{transition:background .15s,color .15s}.btn:hover{background:#eef0f3;color:#111827}.btn.close:hover{background:#fee2e2;color:#dc2626}.url:hover{background:#e9ebef !important}.toast{opacity:0;transition:opacity .2s}.toast.show{opacity:1}'
+    sr.appendChild(style)
+
+    var bar = document.createElement('div')
+    Object.assign(bar.style, {
+      position: 'fixed', top: '0', left: '0', right: '0', height: BAR_H + 'px',
+      display: 'flex', alignItems: 'center', gap: '10px', padding: '0 12px',
+      boxSizing: 'border-box', background: '#ffffff',
+      borderBottom: '1px solid rgba(0,0,0,.08)', boxShadow: '0 1px 3px rgba(0,0,0,.06)',
+      fontFamily: 'system-ui,-apple-system,"Segoe UI",sans-serif'
+    })
+
+    var brand = document.createElement('div')
+    Object.assign(brand.style, { display: 'flex', alignItems: 'center', gap: '8px', flexShrink: '0' })
+    var logo = document.createElement('div')
+    Object.assign(logo.style, {
+      width: '24px', height: '24px', borderRadius: '7px',
+      background: 'linear-gradient(135deg,#6366f1,#4f46e5)', display: 'flex',
+      alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: '14px',
+      boxShadow: '0 2px 6px rgba(79,70,229,.4)'
+    })
+    logo.textContent = '\\u2726'
+    var name = document.createElement('div')
+    Object.assign(name.style, { fontSize: '13px', fontWeight: '600', color: '#1e1e2e', letterSpacing: '.2px', whiteSpace: 'nowrap' })
+    name.textContent = 'SuperStudio'
+    brand.appendChild(logo); brand.appendChild(name)
+
+    var urlEl = document.createElement('div')
+    urlEl.className = 'url'
+    Object.assign(urlEl.style, {
+      flex: '1', minWidth: '0', display: 'flex', alignItems: 'center', gap: '6px',
+      height: '28px', padding: '0 12px', background: '#f3f4f6',
+      border: '1px solid rgba(0,0,0,.05)', borderRadius: '8px', cursor: 'pointer'
+    })
+    var lock = document.createElement('span')
+    Object.assign(lock.style, { fontSize: '11px', flexShrink: '0', lineHeight: '1' })
+    var hostText = document.createElement('span')
+    Object.assign(hostText.style, {
+      fontSize: '12.5px', color: '#374151', whiteSpace: 'nowrap',
+      overflow: 'hidden', textOverflow: 'ellipsis'
+    })
+    urlEl.appendChild(lock); urlEl.appendChild(hostText)
+
+    var ICON_RELOAD = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M3 21v-5h5"/></svg>'
+    var ICON_EXT = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>'
+    var ICON_CLOSE = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>'
+
+    var actions = document.createElement('div')
+    Object.assign(actions.style, { display: 'flex', alignItems: 'center', gap: '2px', flexShrink: '0' })
+    function mkBtn(cls, html, title, onClick) {
+      var b = document.createElement('button')
+      b.className = 'btn' + (cls ? ' ' + cls : '')
+      b.innerHTML = html
+      b.title = title
+      Object.assign(b.style, {
+        width: '30px', height: '30px', border: 'none', background: 'transparent',
+        borderRadius: '7px', color: '#4b5563', cursor: 'pointer', display: 'flex',
+        alignItems: 'center', justifyContent: 'center', padding: '0'
+      })
+      b.onclick = onClick
+      return b
+    }
+    actions.appendChild(mkBtn('', ICON_RELOAD, '刷新', function () { try { location.reload() } catch (e) {} }))
+    actions.appendChild(mkBtn('', ICON_EXT, '在系统浏览器中打开', function () { try { console.log('__ss_chrome::open_external::' + location.href) } catch (e) {} }))
+    actions.appendChild(mkBtn('close', ICON_CLOSE, '关闭浏览器', function () { try { console.log('__ss_chrome::close') } catch (e) {} }))
+
+    bar.appendChild(brand); bar.appendChild(urlEl); bar.appendChild(actions)
+    sr.appendChild(bar)
+
+    var toast = document.createElement('div')
+    toast.className = 'toast'
+    Object.assign(toast.style, {
+      position: 'fixed', top: '50px', left: '50%', transform: 'translateX(-50%)',
+      background: '#1e1e2e', color: '#fff', fontSize: '12px', padding: '6px 12px',
+      borderRadius: '8px', pointerEvents: 'none', zIndex: '2147483601'
+    })
+    sr.appendChild(toast)
+    var toastTimer = null
+    function showToast(msg) {
+      toast.textContent = msg
+      toast.classList.add('show')
+      if (toastTimer) clearTimeout(toastTimer)
+      toastTimer = setTimeout(function () { toast.classList.remove('show') }, 1400)
+    }
+    urlEl.onclick = function () {
+      try { navigator.clipboard.writeText(location.href) } catch (e) {}
+      showToast('已复制网址')
+    }
+
+    function updateUrl() {
+      try {
+        var isHttps = location.protocol === 'https:'
+        lock.textContent = isHttps ? '\\uD83D\\uDD12' : '\\u26A0\\uFE0F'
+        lock.style.color = isHttps ? '#16a34a' : '#d97706'
+        hostText.textContent = location.host + (location.pathname && location.pathname !== '/' ? location.pathname : '')
+        urlEl.title = location.href + '（点击复制）'
+      } catch (e) {}
+    }
+    updateUrl()
+
+    document.documentElement.appendChild(host)
+
+    // SPA route changes don't fire dom-ready — keep the URL text fresh and
+    // re-attach the bar if a client-side render swapped out documentElement.
+    if (window.__ssChromeTimer) clearInterval(window.__ssChromeTimer)
+    var lastHref = location.href
+    window.__ssChromeTimer = setInterval(function () {
+      if (location.href !== lastHref) { lastHref = location.href; updateUrl() }
+      if (!document.getElementById(HOST_ID)) document.documentElement.appendChild(host)
+    }, 1000)
+  } catch (e) { /* never let chrome injection break the page */ }
+})()`
 
 /** Navigate to a URL, wait for it to settle, nudge lazy content, then extract.
  *  Shared by the first open and the post-login re-fetch. */
@@ -668,6 +848,9 @@ const SNAPSHOT_JS = `new Promise((__ssResolve) => { setTimeout(() => { __ssResol
     let els
     try { els = root.querySelectorAll('*') } catch (e) { return acc }
     for (const el of els) {
+      // Skip SuperStudio-injected chrome (the branded top bar) so its buttons
+      // never surface as click candidates.
+      if (el.id && el.id.indexOf('__ss') === 0) continue
       if (el.shadowRoot) { acc.push(el.shadowRoot); allShadowRoots(el.shadowRoot, acc) }
     }
     return acc
@@ -766,6 +949,9 @@ const SNAPSHOT_JS = `new Promise((__ssResolve) => { setTimeout(() => { __ssResol
   const CAP_TOTAL = 260
   const add = (el) => {
     if (elements.length >= CAP_TOTAL || seen.has(el)) return false
+    // Never collect SuperStudio-injected chrome (top-bar buttons, login helper
+    // button) — they live under an id starting with __ss.
+    try { if (el.closest && el.closest('[id^="__ss"]')) return false } catch (e) {}
     seen.add(el)
     const ref = 'e' + i
     i++

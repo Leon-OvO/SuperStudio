@@ -189,7 +189,7 @@ function UpdateCheckButton({ currentVersion }: { currentVersion: string }) {
       onClick={check}
       disabled={checking || !currentVersion}
       className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md border border-border text-[11px] text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors disabled:opacity-50"
-      title="到 Gitee 检查是否有新版本"
+      title="到 GitHub 检查是否有新版本"
     >
       {checking ? <Loader2 size={10} className="animate-spin" /> : <RefreshCw size={10} />}
       检查更新

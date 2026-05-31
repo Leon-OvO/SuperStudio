@@ -8,6 +8,7 @@ import { galleryHandlers } from './gallery'
 import { kbHandlers } from './knowledge'
 import { workflowHandlers } from './workflows'
 import { imageEditHandlers } from './image-edit'
+import { videoHandlers } from './video'
 import { mcpHandlers } from './mcp'
 import { authHandlers } from './auth'
 import { dashboardHandlers } from './dashboard'
@@ -16,6 +17,7 @@ import { skillsHandlers } from './skills'
 import { terminalHandlers } from './terminal'
 import { systemHandlers } from './system'
 import { updaterHandlers } from './updater'
+import { modelConfHandlers } from './model-conf'
 import { schedulerHandlers } from './scheduler'
 import { logEntry, getEntriesFromDisk, clearEntries } from '../services/error-log'
 
@@ -36,12 +38,14 @@ export function registerIpcHandlers(): void {
     ['knowledge', kbHandlers],
     ['workflows', workflowHandlers],
     ['imageEdit', imageEditHandlers],
+    ['video', videoHandlers],
     ['mcp', mcpHandlers],
     ['vibe', vibeHandlers],
     ['skills', skillsHandlers],
     ['terminal', terminalHandlers],
     ['system', systemHandlers],
     ['updater', updaterHandlers],
+    ['modelConf', modelConfHandlers],
     ['scheduler', schedulerHandlers],
   ]
   for (const [name, register] of groups) {

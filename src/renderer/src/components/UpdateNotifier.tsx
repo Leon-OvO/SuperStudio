@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Download, X, Sparkles } from 'lucide-react'
+import { Markdown } from '../lib/markdown'
 
 interface UpdateInfo {
   hasUpdate: boolean
@@ -15,8 +16,8 @@ const DISMISS_KEY = 'updater:dismissedVersion'
 
 /**
  * Floating bottom-right card that pops up when the main process detects a
- * newer release on Gitee. Persists across navigation — user has to click
- * "下载新版本" (opens the Gitee release page) or "稍后" to dismiss.
+ * newer release on GitHub. Persists across navigation — user has to click
+ * "下载新版本" (opens the GitHub release page) or "稍后" to dismiss.
  *
  * Dismissal is per-version: if you skip 0.3.0, you'll still see the banner
  * when 0.3.1 ships. Stored in localStorage so the choice survives reloads.
@@ -74,10 +75,20 @@ export function UpdateNotifier() {
       </div>
 
       {info.body && (
-        <div className="px-4 pb-2 max-h-[140px] overflow-y-auto">
-          <pre className="text-[11px] text-muted-foreground/90 leading-relaxed whitespace-pre-wrap font-sans">
-            {info.body.length > 600 ? info.body.slice(0, 600) + '…' : info.body}
-          </pre>
+        // Release notes are GitHub-flavored markdown — render with the app's own
+        // Markdown component instead of dumping raw text. The card is only 360px
+        // wide, so scale headings/spacing down via arbitrary variants (parent
+        // descendant selectors out-specify the component's own inline text-xl etc),
+        // keeping the shared Markdown component untouched for the chat view.
+        // No char truncation: max-height + scroll bounds the size, and slicing
+        // markdown at a fixed offset can sever a code fence / table and break rendering.
+        <div
+          className="px-4 pb-2 max-h-[220px] overflow-y-auto text-[12px] text-muted-foreground/90
+            [&_h1]:text-sm [&_h2]:text-[13px] [&_h3]:text-xs [&_h4]:text-xs
+            [&_h1]:mt-2 [&_h1]:mb-1 [&_h2]:mt-2 [&_h2]:mb-1 [&_h3]:mt-1.5 [&_h3]:mb-0.5 [&_h4]:mt-1.5 [&_h4]:mb-0.5
+            [&_p]:my-1 [&_ul]:my-1 [&_ol]:my-1 [&_li]:leading-snug [&_table]:text-[11px] [&_table]:my-1"
+        >
+          <Markdown content={info.body} compact restrictImages />
         </div>
       )}
 

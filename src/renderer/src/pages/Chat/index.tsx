@@ -20,12 +20,17 @@ interface Attachment { name: string; path: string; mimeType: string }
 
 export function ChatPage() {
   const {
-    sessions, activeSessionId, messages, isRunning, sessionModel, mountedSpaceIds,
+    sessions, activeSessionId, messages, runningSessionIds, sessionModel, mountedSpaceIds,
     setSessions, setActiveSession, addSession, removeSession, updateSessionTitle,
     setMessages, addMessage, removeMessage, removeMessagesFrom, updateMessageContent,
-    setRunning, updateStep, clearSteps,
+    startRun, stopRun, updateStep,
     setSessionModel, setMountedSpaces
   } = useChatStore()
+
+  // "Running" from the active session's point of view — used to gate sending /
+  // editing in the current conversation. Navigation between sessions is NOT
+  // gated on this, so a stalled run never locks the user out of other chats.
+  const isRunning = activeSessionId !== null && runningSessionIds.includes(activeSessionId)
 
   const {
     pendingChatAttachments, setPendingChatAttachments,
@@ -35,8 +40,10 @@ export function ChatPage() {
   const unsubRef = useRef<Array<() => void>>([])
   const defaultModelRef = useRef<{ providerId: string; model: string } | null>(null)
   const defaultImageModelRef = useRef<{ providerId: string; model: string } | null>(null)
-  const lastSentRef = useRef<{ text: string; attachments?: Array<{ name: string; path: string; mimeType: string }> } | null>(null)
-  const pendingAutoRouteRef = useRef<{ intent: string } | null>(null)
+  // Keyed by sessionId — concurrent runs across sessions must not clobber each
+  // other's last-sent text (retry) or pending auto-route intent (DONE tagging).
+  const lastSentRef = useRef<Record<string, { text: string; attachments?: Array<{ name: string; path: string; mimeType: string }> }>>({})
+  const pendingAutoRouteRef = useRef<Record<string, { intent: string }>>({})
   const [imageParamsMap, setImageParamsMap] = React.useState<Record<string, ImageParams>>({})
   const [defaultImageModel, setDefaultImageModel] = React.useState<string>('')
   const [attachments, setAttachments] = React.useState<Attachment[]>([])
@@ -92,11 +99,11 @@ export function ChatPage() {
     })
     const u2 = window.api.onAgentDone((data: unknown) => {
       const d = data as { sessionId: string; content: string; messageId: string; toolCallLog?: Array<{ toolName: string; args: unknown; result: unknown }>; cancelled?: boolean; sessionTitle?: string; meta?: { model?: string; providerId?: string; providerName?: string; durationMs?: number } }
-      setRunning(false)
+      stopRun(d.sessionId)
       if (d.sessionTitle) updateSessionTitle(d.sessionId, d.sessionTitle)
       if (d.content) {
-        const autoRoute = pendingAutoRouteRef.current
-        pendingAutoRouteRef.current = null
+        const autoRoute = pendingAutoRouteRef.current[d.sessionId]
+        delete pendingAutoRouteRef.current[d.sessionId]
         addMessage(d.sessionId, {
           id: d.messageId || randomId(),
           sessionId: d.sessionId,
@@ -117,10 +124,10 @@ export function ChatPage() {
       }
     })
     const u3 = window.api.onAgentError((err: unknown) => {
-      setRunning(false)
       const e = err as { sessionId?: string; error?: string }
       console.error('Agent error:', err)
       const targetSessionId = e?.sessionId || useChatStore.getState().activeSessionId
+      if (targetSessionId) stopRun(targetSessionId)
       const errorText = e?.error || (typeof err === 'string' ? err : JSON.stringify(err))
       const isRetryable = isTransientError(errorText)
       if (targetSessionId) {
@@ -194,7 +201,9 @@ export function ChatPage() {
   }
 
   async function handleSelectSession(id: string) {
-    if (isRunning) return
+    // Navigation is always allowed — even while a run is in flight. The running
+    // agent keeps streaming into its own session (events are keyed by sessionId),
+    // so switching away never loses its result and never locks the user out.
     setActiveSession(id)
     if (!messages[id]) loadMessages(id)
     if (!sessionModel[id] && defaultModelRef.current) {
@@ -214,8 +223,7 @@ export function ChatPage() {
   }
 
   async function doSend(sessionId: string, text: string, attachments?: Array<{ name: string; path: string; mimeType: string }>) {
-    clearSteps()
-    setRunning(true)
+    startRun(sessionId)
     const override = sessionModel[sessionId]
     const imgParams = imageParamsMap[sessionId] || DEFAULT_IMAGE_PARAMS
     const imageSize = computeImageSize(imgParams.resolution, imgParams.ratio)
@@ -237,7 +245,8 @@ export function ChatPage() {
 
   async function handleSend(text: string, attachments?: Array<{ name: string; path: string; mimeType: string }>) {
     if (!activeSessionId || isRunning) return
-    lastSentRef.current = { text, attachments }
+    const sessionId = activeSessionId
+    lastSentRef.current[sessionId] = { text, attachments }
 
     // Auto-model routing: resolve before adding user message to avoid UI flicker
     try {
@@ -248,37 +257,38 @@ export function ChatPage() {
       if (settings.autoModelEnabled) {
         const route = await resolveModel(text, attachments ?? [], settings, providers)
         if (route) {
-          setSessionModel(activeSessionId, route.providerId, route.model)
-          pendingAutoRouteRef.current = { intent: route.intent }
+          setSessionModel(sessionId, route.providerId, route.model)
+          pendingAutoRouteRef.current[sessionId] = { intent: route.intent }
         }
       }
     } catch { /* routing failure is non-fatal */ }
 
     const userMsg: Message = {
       id: randomId(),
-      sessionId: activeSessionId,
+      sessionId,
       role: 'user',
       content: text,
       attachments: attachments?.map(a => ({ ...a, type: 'file' as const })),
       createdAt: Date.now()
     }
-    addMessage(activeSessionId, userMsg)
-    await doSend(activeSessionId, text, attachments)
+    addMessage(sessionId, userMsg)
+    await doSend(sessionId, text, attachments)
   }
 
   async function handleRetry() {
-    if (!activeSessionId || isRunning || !lastSentRef.current) return
-    const { text, attachments } = lastSentRef.current
-    await doSend(activeSessionId, text, attachments)
+    if (!activeSessionId || isRunning) return
+    const last = lastSentRef.current[activeSessionId]
+    if (!last) return
+    await doSend(activeSessionId, last.text, last.attachments)
   }
 
   async function handleStop() {
+    // The Stop button belongs to the active conversation, so stop that session's
+    // run. Unblock the UI immediately — the engine may still be stuck awaiting a
+    // hung tool call, in which case no AGENT_DONE/AGENT_ERROR would ever arrive to
+    // clear the running state. The engine discards its (now stale) result.
     if (!activeSessionId) return
-    // Unblock the UI immediately — the engine may still be stuck awaiting a
-    // hung tool call, in which case no AGENT_DONE/AGENT_ERROR would ever
-    // arrive to clear isRunning. The engine discards its (now stale) result.
-    setRunning(false)
-    clearSteps()
+    stopRun(activeSessionId)
     await window.api.stopAgent(activeSessionId)
   }
 
@@ -312,7 +322,7 @@ export function ChatPage() {
     const attachments = userMsg.attachments?.filter(a => a.type === 'file').map(a => ({
       name: a.name, path: a.path, mimeType: a.mimeType
     }))
-    lastSentRef.current = { text: userMsg.content, attachments }
+    lastSentRef.current[activeSessionId] = { text: userMsg.content, attachments }
     await doSend(activeSessionId, userMsg.content, attachments)
   }
 
@@ -379,7 +389,7 @@ export function ChatPage() {
 
   const currentMessages = activeSessionId ? (messages[activeSessionId] || []) : []
   const currentOverride = activeSessionId ? sessionModel[activeSessionId] : null
-  const canRetry = !isRunning && !!lastSentRef.current
+  const canRetry = !isRunning && !!(activeSessionId && lastSentRef.current[activeSessionId])
   const isImageMode = !!(currentOverride?.model && defaultImageModel && currentOverride.model === defaultImageModel)
   const activeSession = sessions.find(s => s.id === activeSessionId)
   const currentImageParams = activeSessionId ? (imageParamsMap[activeSessionId] || DEFAULT_IMAGE_PARAMS) : DEFAULT_IMAGE_PARAMS
@@ -393,7 +403,7 @@ export function ChatPage() {
         onNew={handleNewSession}
         onDelete={handleDeleteSession}
         onArchive={handleArchiveSession}
-        isRunning={isRunning}
+        runningSessionIds={runningSessionIds}
       />
       <SessionListResizer />
       <div className="flex-1 flex flex-col min-w-0">

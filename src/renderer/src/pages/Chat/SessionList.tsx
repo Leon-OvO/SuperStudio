@@ -10,7 +10,9 @@ import { useUIStore } from '../../stores/ui'
 interface Props {
   sessions: Session[]
   activeId: string | null
-  isRunning: boolean
+  /** Ids of sessions with an in-flight agent run (each shows a spinner on its
+   *  row). Navigation is never blocked — clicking any session always switches. */
+  runningSessionIds: string[]
   onSelect: (id: string) => void
   onNew: () => void
   onDelete: (id: string) => void
@@ -40,7 +42,7 @@ type Row =
 const HEADER_HEIGHT = 30
 const SESSION_HEIGHT = 38
 
-export function SessionList({ sessions, activeId, isRunning, onSelect, onNew, onDelete, onArchive }: Props) {
+export function SessionList({ sessions, activeId, runningSessionIds, onSelect, onNew, onDelete, onArchive }: Props) {
   const width = useUIStore(u => u.chatSidebarWidth)
   const [query, setQuery] = useState('')
   const [dateFilter, setDateFilter] = useState<DateFilter>({ kind: 'all' })
@@ -220,7 +222,7 @@ export function SessionList({ sessions, activeId, isRunning, onSelect, onNew, on
                     <SessionItem
                       session={row.session}
                       active={activeId === row.session.id}
-                      disabled={isRunning && activeId !== row.session.id}
+                      running={runningSessionIds.includes(row.session.id)}
                       onSelect={onSelect}
                       onDelete={onDelete}
                       onArchive={onArchive}
@@ -237,11 +239,11 @@ export function SessionList({ sessions, activeId, isRunning, onSelect, onNew, on
 }
 
 function SessionItem({
-  session, active, disabled, onSelect, onDelete, onArchive
+  session, active, running, onSelect, onDelete, onArchive
 }: {
   session: Session
   active: boolean
-  disabled: boolean
+  running: boolean
   onSelect: (id: string) => void
   onDelete: (id: string) => void
   onArchive: (id: string, archived: boolean) => void
@@ -254,17 +256,18 @@ function SessionItem({
         active
           ? 'bg-primary/10 text-foreground font-medium'
           : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground',
-        disabled && 'opacity-40 cursor-not-allowed',
         isArchived && !active && 'opacity-60'
       )}
-      onClick={() => !disabled && onSelect(session.id)}
+      onClick={() => onSelect(session.id)}
     >
       {active && (
         <span className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-4 bg-primary rounded-r-full" />
       )}
-      {isArchived
-        ? <Archive size={12} className="shrink-0 opacity-50" />
-        : <MessageSquare size={12} className="shrink-0 opacity-60" />}
+      {running
+        ? <Loader2 size={12} className="shrink-0 animate-spin text-primary" />
+        : isArchived
+          ? <Archive size={12} className="shrink-0 opacity-50" />
+          : <MessageSquare size={12} className="shrink-0 opacity-60" />}
       <span className="flex-1 truncate leading-tight">{session.title}</span>
       {session.totalCostUsd != null && session.totalCostUsd > 0 && (
         <span

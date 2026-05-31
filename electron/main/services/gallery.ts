@@ -55,10 +55,26 @@ export function listGallery(filters?: { type?: string; source?: string }): Galle
   return dbAll<GalleryItem>(sql, params)
 }
 
+/** Set or replace the thumbnail file for an existing gallery item.
+ *  Used by the Video page after the renderer extracts a still frame. */
+export function updateGalleryThumbnail(id: number, thumbnailPath: string): boolean {
+  const row = dbGet<{ id: number }>(`SELECT id FROM gallery WHERE id = ?`, [id])
+  if (!row) return false
+  dbRun(`UPDATE gallery SET thumbnail_path = ? WHERE id = ?`, [thumbnailPath, id])
+  invalidateDbCache()
+  registerApproved(thumbnailPath)
+  return true
+}
+
 export function deleteGalleryItem(id: number): void {
-  const item = dbGet<{ file_path: string }>(`SELECT file_path FROM gallery WHERE id = ?`, [id])
+  const item = dbGet<{ file_path: string; thumbnail_path: string | null }>(
+    `SELECT file_path, thumbnail_path FROM gallery WHERE id = ?`, [id]
+  )
   if (item?.file_path) {
     try { fs.unlinkSync(item.file_path) } catch { /* ignore */ }
+  }
+  if (item?.thumbnail_path) {
+    try { fs.unlinkSync(item.thumbnail_path) } catch { /* ignore */ }
   }
   dbRun(`DELETE FROM gallery WHERE id = ?`, [id])
 }

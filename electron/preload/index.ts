@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { IPC, type ScheduledTask, type ScheduledTaskRun, type ScheduledTaskInput, type ScheduledRunCompletedEvent } from '../../src/shared/ipc-types'
+import { IPC, type ScheduledTask, type ScheduledTaskRun, type ScheduledTaskInput, type ScheduledRunCompletedEvent, type VideoGenerateRequest, type VideoGenerateResult, type VideoProgressEvent } from '../../src/shared/ipc-types'
 
 // Expose type-safe IPC bridge to renderer
 const api = {
@@ -137,10 +137,18 @@ const api = {
     ipcRenderer.invoke(IPC.IMAGE_OVERWRITE, params),
 
   // --- Video ---
-  generateVideo: (params: unknown) => ipcRenderer.invoke(IPC.VIDEO_GENERATE, params),
-  onVideoProgress: (cb: (event: unknown) => void) => {
-    ipcRenderer.on(IPC.VIDEO_PROGRESS, (_e, data) => cb(data))
-    return () => ipcRenderer.removeAllListeners(IPC.VIDEO_PROGRESS)
+  generateVideo: (params: VideoGenerateRequest) =>
+    ipcRenderer.invoke(IPC.VIDEO_GENERATE, params) as Promise<VideoGenerateResult>,
+  cancelVideo: (args: { clientJobId: string }) =>
+    ipcRenderer.invoke(IPC.VIDEO_CANCEL, args) as Promise<{ ok: boolean }>,
+  saveVideoThumbnail: (args: { galleryId: number; base64: string; ext?: 'jpg' | 'png' | 'webp' }) =>
+    ipcRenderer.invoke(IPC.VIDEO_SAVE_THUMBNAIL, args) as Promise<{
+      ok: boolean; thumbnailPath?: string; error?: string
+    }>,
+  onVideoProgress: (cb: (event: VideoProgressEvent) => void) => {
+    const listener = (_e: unknown, data: VideoProgressEvent) => cb(data)
+    ipcRenderer.on(IPC.VIDEO_PROGRESS, listener)
+    return () => ipcRenderer.removeListener(IPC.VIDEO_PROGRESS, listener)
   },
 
   // --- File operations ---
@@ -198,7 +206,7 @@ const api = {
   // --- App version ---
   appVersion: () => ipcRenderer.invoke(IPC.APP_VERSION),
 
-  // --- Updater (Gitee-backed manual check; toast on startup if outdated) ---
+  // --- Updater (GitHub-backed manual check; toast on startup if outdated) ---
   checkForUpdate: () => ipcRenderer.invoke(IPC.UPDATER_CHECK) as Promise<{
     hasUpdate: boolean
     currentVersion: string
@@ -213,6 +221,18 @@ const api = {
     const listener = (_e: unknown, info: unknown) => cb(info)
     ipcRenderer.on(IPC.UPDATER_AVAILABLE, listener)
     return () => ipcRenderer.removeListener(IPC.UPDATER_AVAILABLE, listener)
+  },
+
+  // --- Remote model.conf (managed default models from GitHub) ---
+  syncModelConf: () => ipcRenderer.invoke(IPC.MODEL_CONF_SYNC) as Promise<{
+    ok: boolean
+    applied: string[]
+    error?: string
+  }>,
+  onModelConfApplied: (cb: (info: { applied: string[] }) => void) => {
+    const listener = (_e: unknown, info: { applied: string[] }) => cb(info)
+    ipcRenderer.on(IPC.MODEL_CONF_APPLIED, listener)
+    return () => ipcRenderer.removeListener(IPC.MODEL_CONF_APPLIED, listener)
   },
 
   // --- System integration (auto-launch + Explorer right-click menu) ---

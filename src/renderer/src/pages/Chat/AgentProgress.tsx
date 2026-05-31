@@ -2,23 +2,22 @@ import { useChatStore } from '../../stores/chat'
 import { CheckCircle, XCircle, Loader2, ChevronDown, ChevronUp, Film } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import { cn } from '../../lib/utils'
-
-interface VideoProgressEvent {
-  sessionId: string
-  jobId: string
-  elapsedSeconds: number
-  status: 'waiting' | 'done' | 'failed'
-}
+import type { VideoProgressEvent } from '../../../../shared/ipc-types'
 
 export function AgentProgress() {
-  const { isRunning, currentSteps, activeSessionId } = useChatStore()
+  const { runningSessionIds, stepsBySession, activeSessionId } = useChatStore()
+  // Only reflect a run that belongs to the session currently on screen.
+  const isRunning = activeSessionId !== null && runningSessionIds.includes(activeSessionId)
+  const currentSteps = activeSessionId ? (stepsBySession[activeSessionId] ?? []) : []
   const [expanded, setExpanded] = useState(true)
   const [videoProgress, setVideoProgress] = useState<VideoProgressEvent | null>(null)
 
   useEffect(() => {
     const unsub = window.api.onVideoProgress((event: unknown) => {
       const e = event as VideoProgressEvent
-      if (e.sessionId === activeSessionId) {
+      // Chat-initiated video jobs use the sessionId as their clientJobId
+      // (video.ts emit() falls back to sessionId when no explicit job id is set).
+      if (e.clientJobId === activeSessionId) {
         setVideoProgress(e)
       }
     })
@@ -30,7 +29,9 @@ export function AgentProgress() {
     if (!isRunning) setVideoProgress(null)
   }, [isRunning])
 
-  if (!isRunning && currentSteps.length === 0) return null
+  // Steps are cleared on run start/stop, so a non-empty list always belongs to
+  // the in-flight run. Hide the panel unless that run is the active session's.
+  if (!isRunning) return null
 
   const latestStep = currentSteps[currentSteps.length - 1]
 
@@ -67,7 +68,7 @@ export function AgentProgress() {
                     <div className="flex-1 h-1 bg-muted rounded-full overflow-hidden">
                       <div
                         className="h-full bg-primary transition-all duration-1000"
-                        style={{ width: `${Math.min((videoProgress.elapsedSeconds / 600) * 100, 95)}%` }}
+                        style={{ width: `${Math.min((videoProgress.elapsedSeconds / Math.max(videoProgress.etaSeconds ?? 600, 1)) * 100, 95)}%` }}
                       />
                     </div>
                     <span className="text-muted-foreground text-[10px] shrink-0">

@@ -31,7 +31,7 @@ interface GenerateImageResult {
   referencesIgnored?: boolean
 }
 
-function isTransientNetworkError(err: unknown): boolean {
+export function isTransientNetworkError(err: unknown): boolean {
   const msg = (err as Error)?.message?.toLowerCase() ?? ''
   const causeMsg = String((err as Error & { cause?: unknown })?.cause ?? '').toLowerCase()
   const full = `${msg} ${causeMsg}`

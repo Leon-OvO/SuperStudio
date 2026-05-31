@@ -14,8 +14,14 @@ interface ChatState {
   sessions: Session[]
   activeSessionId: string | null
   messages: Record<string, Message[]>
-  isRunning: boolean
-  currentSteps: AgentStep[]
+  /** Ids of every session whose agent run is currently in flight. The engine
+   *  runs one agent per session concurrently (Map<sessionId, AbortController>),
+   *  so this must be a set — a single id would let a second session's run clobber
+   *  the first's tracked state and leave its spinner stuck. */
+  runningSessionIds: string[]
+  /** Progress steps keyed by session. Global state here would mean switching to
+   *  / starting another session wipes the in-flight session's step list. */
+  stepsBySession: Record<string, AgentStep[]>
   mountedSpaceIds: string[]
   /** Per-session model override: sessionId -> { providerId, model } */
   sessionModel: Record<string, { providerId: string; model: string }>
@@ -30,9 +36,13 @@ interface ChatState {
   removeMessage: (sessionId: string, messageId: string) => void
   removeMessagesFrom: (sessionId: string, messageId: string) => void
   updateMessageContent: (sessionId: string, messageId: string, content: string) => void
-  setRunning: (running: boolean) => void
+  /** Mark a session's run as started (also resets that session's step list). */
+  startRun: (sessionId: string) => void
+  /** Clear a session's running state. Only ever touches the given session, so a
+   *  stale DONE/ERROR from one session can't unblock or disturb another. */
+  stopRun: (sessionId: string) => void
   updateStep: (step: AgentProgressEvent) => void
-  clearSteps: () => void
+  clearSteps: (sessionId: string) => void
   setMountedSpaces: (ids: string[]) => void
   setSessionModel: (sessionId: string, providerId: string, model: string) => void
 }
@@ -41,8 +51,8 @@ export const useChatStore = create<ChatState>((set) => ({
   sessions: [],
   activeSessionId: null,
   messages: {},
-  isRunning: false,
-  currentSteps: [],
+  runningSessionIds: [],
+  stepsBySession: {},
   mountedSpaceIds: [],
   sessionModel: {},
 
@@ -75,9 +85,17 @@ export const useChatStore = create<ChatState>((set) => ({
       [sessionId]: (s.messages[sessionId] || []).map(m => m.id === messageId ? { ...m, content } : m)
     }
   })),
-  setRunning: (running) => set({ isRunning: running, currentSteps: running ? [] : [] }),
+  startRun: (sessionId) => set(s => ({
+    runningSessionIds: s.runningSessionIds.includes(sessionId)
+      ? s.runningSessionIds
+      : [...s.runningSessionIds, sessionId],
+    stepsBySession: { ...s.stepsBySession, [sessionId]: [] }
+  })),
+  stopRun: (sessionId) => set(s => ({
+    runningSessionIds: s.runningSessionIds.filter(id => id !== sessionId)
+  })),
   updateStep: (event) => set(s => {
-    const steps = [...s.currentSteps]
+    const steps = [...(s.stepsBySession[event.sessionId] || [])]
     const idx = steps.findIndex(st => st.index === event.stepIndex)
     const step: AgentStep = {
       index: event.stepIndex,
@@ -89,9 +107,11 @@ export const useChatStore = create<ChatState>((set) => ({
     }
     if (idx >= 0) steps[idx] = step
     else steps.push(step)
-    return { currentSteps: steps }
+    return { stepsBySession: { ...s.stepsBySession, [event.sessionId]: steps } }
   }),
-  clearSteps: () => set({ currentSteps: [] }),
+  clearSteps: (sessionId) => set(s => ({
+    stepsBySession: { ...s.stepsBySession, [sessionId]: [] }
+  })),
   setMountedSpaces: (ids) => set({ mountedSpaceIds: ids }),
   setSessionModel: (sessionId, providerId, model) => set(s => ({
     sessionModel: { ...s.sessionModel, [sessionId]: { providerId, model } }

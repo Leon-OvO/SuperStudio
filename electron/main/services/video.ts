@@ -1,17 +1,34 @@
 import { getProviders } from './store'
 import fs from 'fs'
 import path from 'path'
+import { Readable } from 'stream'
+import { pipeline } from 'stream/promises'
 import { app, BrowserWindow } from 'electron'
 import { randomUUID } from 'crypto'
-import { IPC } from '../../../src/shared/ipc-types'
+import { IPC, type VideoProgressEvent } from '../../../src/shared/ipc-types'
+import { estimateVideoEta } from '../../../src/shared/video-eta'
+import { pickAdapter, type VideoJobInput, type AdapterContext } from './video-adapters'
 
 interface VideoParams {
   prompt: string
+  /** Forwarded to the adapter as a separate field; adapters that don't honor
+   *  it simply drop it from the request body. */
+  negativePrompt?: string
   referenceImagePath?: string
+  /** Controls which field the reference image lands in (image / last_frame /
+   *  image_reference). Defaults to 'first' when a reference is present. */
+  frameRole?: 'first' | 'last' | 'reference'
+  /** UI aspect; adapters translate to whatever shape their API expects. */
+  aspect?: '9:16' | '1:1' | '16:9'
+  /** Reproducibility seed; forwarded to adapters that support it. */
+  seed?: number
   duration?: number
   settings: { defaultVideoProviderId: string; defaultVideoModel: string; dataDirectory?: string }
   win: BrowserWindow
   sessionId: string
+  /** When set, progress events use this id instead of sessionId so the renderer
+   *  can pin updates to a specific job card (sessionId is reused for chat sessions). */
+  clientJobId?: string
   /** Honored during polling + download so the Stop button can short-circuit a long job. */
   abortSignal?: AbortSignal
 }
@@ -48,85 +65,77 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 }
 
 export async function generateVideo(params: VideoParams): Promise<{ path?: string; error?: string }> {
-  const { prompt, referenceImagePath, duration, settings, win, sessionId, abortSignal } = params
+  const { prompt, negativePrompt, referenceImagePath, frameRole, aspect, seed, duration, settings, win, sessionId, clientJobId, abortSignal } = params
   const providers = getProviders()
   const provider = providers.find(p => p.id === settings.defaultVideoProviderId)
   if (!provider) throw new Error('Video provider not configured')
 
-  const baseUrl = (provider.baseUrl || 'https://api.openai.com').replace(/\/v1\/?$/, '')
-
-  // Submit job — pass the signal so the initial POST is also abortable.
-  const body: Record<string, unknown> = {
-    model: settings.defaultVideoModel,
+  const adapter = pickAdapter(provider, settings.defaultVideoModel)
+  const ctx: AdapterContext = { provider, model: settings.defaultVideoModel, abortSignal }
+  const input: VideoJobInput = {
     prompt,
-    n: 1
+    negativePrompt,
+    duration,
+    aspect,
+    seed,
+    referenceImagePath,
+    frameRole
   }
-  if (typeof duration === 'number' && duration > 0) {
-    body.duration = duration
+
+  const eta = estimateVideoEta(settings.defaultVideoModel, duration ?? 5)
+  const startTime = Date.now()
+
+  const emit = (status: VideoProgressEvent['status'], extras: Partial<VideoProgressEvent> = {}): void => {
+    if (win.isDestroyed()) return
+    const payload: VideoProgressEvent = {
+      clientJobId: clientJobId ?? sessionId,
+      status,
+      elapsedSeconds: Math.floor((Date.now() - startTime) / 1000),
+      etaSeconds: eta,
+      ...extras
+    }
+    win.webContents.send(IPC.VIDEO_PROGRESS, payload)
   }
-  if (referenceImagePath && fs.existsSync(referenceImagePath)) {
-    const imgData = fs.readFileSync(referenceImagePath)
-    body.image = `data:image/png;base64,${imgData.toString('base64')}`
-  }
+
+  emit('submitting')
 
   throwIfAborted(abortSignal)
-  const submitRes = await fetch(`${baseUrl}/v1/videos/generations`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${provider.apiKey}`
-    },
-    body: JSON.stringify(body),
-    signal: abortSignal
-  })
-  if (!submitRes.ok) {
-    const err = await submitRes.text()
-    throw new Error(`Video submission failed: ${err}`)
-  }
-  const submitData = await submitRes.json() as { id?: string; data?: Array<{ url?: string }> }
+  const submitResult = await adapter.submit(ctx, input)
 
-  if (submitData.data?.[0]?.url) {
-    return downloadVideo(submitData.data[0].url, settings.dataDirectory, abortSignal)
+  // Sync path — adapter already has the final URL, skip the polling loop.
+  if (submitResult.kind === 'sync') {
+    emit('downloading')
+    const out = await downloadVideo(submitResult.url, settings.dataDirectory, abortSignal)
+    emit('succeeded')
+    return out
   }
 
-  const jobId = submitData.id
-  if (!jobId) throw new Error('No job ID returned from video API')
+  const jobId = submitResult.jobId
+  emit('queued', { jobId })
 
   const MAX_WAIT_MS = 10 * 60 * 1000
-  const POLL_INTERVAL = 5000
-  const startTime = Date.now()
-  let elapsed = 0
+  const POLL_INTERVAL = adapter.pollIntervalMs ?? 5000
+  let elapsedMs = 0
 
-  while (elapsed < MAX_WAIT_MS) {
+  while (elapsedMs < MAX_WAIT_MS) {
     await sleep(POLL_INTERVAL, abortSignal)
-    elapsed = Date.now() - startTime
+    elapsedMs = Date.now() - startTime
 
-    win.webContents.send(IPC.VIDEO_PROGRESS, {
-      sessionId,
-      jobId,
-      elapsedSeconds: Math.floor(elapsed / 1000),
-      status: 'waiting'
-    })
+    emit('running', { jobId })
 
     throwIfAborted(abortSignal)
-    const pollRes = await fetch(`${baseUrl}/v1/videos/generations/${jobId}`, {
-      headers: { Authorization: `Bearer ${provider.apiKey}` },
-      signal: abortSignal
-    })
-    if (!pollRes.ok) continue
+    const pollResult = await adapter.poll(ctx, jobId)
 
-    const pollData = await pollRes.json() as {
-      status?: string
-      data?: Array<{ url?: string }>
-      error?: { message: string }
+    if (pollResult.kind === 'done') {
+      emit('downloading', { jobId })
+      const out = await downloadVideo(pollResult.url, settings.dataDirectory, abortSignal)
+      emit('succeeded', { jobId })
+      return out
     }
-
-    if (pollData.status === 'succeeded' && pollData.data?.[0]?.url) {
-      return downloadVideo(pollData.data[0].url, settings.dataDirectory, abortSignal)
+    if (pollResult.kind === 'failed') {
+      throw new Error(`Video generation failed: ${pollResult.error}`)
     }
-    if (pollData.status === 'failed') {
-      throw new Error(`Video generation failed: ${pollData.error?.message || 'Unknown error'}`)
-    }
+    // pending → continue
   }
   throw new Error('Video generation timed out after 10 minutes')
 }
@@ -138,16 +147,23 @@ async function downloadVideo(url: string, dataDirectory?: string, signal?: Abort
 
   const filename = `${randomUUID()}.mp4`
   const filePath = path.join(videosDir, filename)
-  // Race the fetch+read against the abort signal so a multi-hundred-MB
-  // download is interrupted cleanly when the user clicks Stop.
+  // Stream the response straight to disk instead of buffering the whole clip in
+  // memory and blocking the event loop on a synchronous write — a 10s clip can
+  // be 50-200MB. The abort signal (passed to fetch) tears down the body stream,
+  // so Stop interrupts the download cleanly; clean up the partial file on error.
   const res = await Promise.race([
     fetch(url, { signal }),
     abortRejection(signal)
   ])
-  const buffer = await Promise.race([
-    res.arrayBuffer(),
-    abortRejection(signal)
-  ])
-  fs.writeFileSync(filePath, Buffer.from(buffer))
+  if (!res.ok || !res.body) {
+    throw new Error(`Video download failed: HTTP ${res.status}`)
+  }
+  try {
+    await pipeline(Readable.fromWeb(res.body as Parameters<typeof Readable.fromWeb>[0]), fs.createWriteStream(filePath))
+  } catch (err) {
+    try { fs.unlinkSync(filePath) } catch { /* ignore — partial file cleanup is best-effort */ }
+    if (signal?.aborted) throw new AbortedError()
+    throw err
+  }
   return { path: filePath }
 }

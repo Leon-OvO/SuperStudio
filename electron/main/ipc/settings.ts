@@ -1,7 +1,7 @@
 import { ipcMain, dialog, BrowserWindow } from 'electron'
 import fs from 'fs'
 import { IPC } from '../../../src/shared/ipc-types'
-import { getSettings, saveSettings, getProviders, saveProvider, deleteProvider, getMcpServers, saveMcpServer, deleteMcpServer } from '../services/store'
+import { getSettings, saveSettings, getProviders, saveProvider, deleteProvider, getMcpServers, saveMcpServer, deleteMcpServer, BUILTIN_MODEL_DEFAULTS } from '../services/store'
 import type { McpServerConfig, ProviderConfig } from '../../../src/shared/ipc-types'
 import { getAllKeys, storeAllKeys } from '../auth-store'
 import { apiGetKeyPlaintext, apiListKeys, apiListSubscriptionKeys } from '../supercode-api'
@@ -85,13 +85,10 @@ export function settingsHandlers(): void {
   ipcMain.handle(IPC.SETTINGS_RESET, async () => {
     // Reset AppSettings to defaults
     const defaults = {
-      defaultChatModel: '',
+      ...BUILTIN_MODEL_DEFAULTS,
       defaultChatProviderId: '',
-      defaultImageModel: 'dall-e-3',
       defaultImageProviderId: '',
-      defaultVideoModel: 'doubao-seedance-2-0',
       defaultVideoProviderId: '',
-      defaultEmbeddingModel: 'text-embedding-3-small',
       defaultEmbeddingProviderId: '',
       searchApiKey: '',
       searchProvider: 'tavily' as const,
@@ -104,6 +101,9 @@ export function settingsHandlers(): void {
       autoModelSmartModel: '',
       buildRecentProjectDirs: [],
       vibeAutoApply: false,
+      // Re-seed the managed-default snapshot so a post-reset model.conf sync
+      // can repopulate recommended defaults from scratch.
+      appliedModelConf: { ...BUILTIN_MODEL_DEFAULTS },
     }
     saveSettings(defaults)
     // Delete all providers

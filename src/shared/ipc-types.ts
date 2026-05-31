@@ -38,7 +38,10 @@ export const IPC = {
 
   // Video generation
   VIDEO_GENERATE: 'video:generate',
+  VIDEO_CANCEL: 'video:cancel',
   VIDEO_PROGRESS: 'video:progress',   // main → renderer (event)
+  /** Persist a renderer-extracted thumbnail for an existing gallery video. */
+  VIDEO_SAVE_THUMBNAIL: 'video:save-thumbnail',
 
   // File operations
   FILE_READ: 'file:read',
@@ -80,10 +83,14 @@ export const IPC = {
   // App-level (version)
   APP_VERSION: 'app:version',
 
-  // Updater (Gitee-backed manual + startup version check)
+  // Updater (GitHub-backed manual + startup version check)
   UPDATER_CHECK: 'updater:check',           // renderer → main (manual button)
-  UPDATER_OPEN_RELEASE: 'updater:open',     // renderer → main (open Gitee release page in browser)
+  UPDATER_OPEN_RELEASE: 'updater:open',     // renderer → main (open GitHub release page in browser)
   UPDATER_AVAILABLE: 'updater:available',   // main → renderer (event — fires only when remote > current)
+
+  // Remote model.conf — GitHub-hosted recommended default models (managed defaults)
+  MODEL_CONF_SYNC: 'model-conf:sync',       // renderer → main (manual refresh)
+  MODEL_CONF_APPLIED: 'model-conf:applied', // main → renderer (event — defaults were updated)
 
   // System integration — OS-level settings (auto-launch + Explorer context menu)
   APP_SET_AUTO_LAUNCH: 'app:set-auto-launch',
@@ -230,6 +237,56 @@ export interface AgentProgressEvent {
   artifact?: { type: 'image' | 'video'; path: string; thumbnailPath?: string }
 }
 
+// Video generation
+export interface VideoGenerateRequest {
+  /** Client-generated UUID. Echoed back in every progress event so the renderer
+   *  can pin updates to the right card. Also serves as the cancel handle. */
+  clientJobId: string
+  /** Optional one-off provider override — the Video page lets the user pick
+   *  any provider's video model, not just the configured default. When unset,
+   *  falls back to settings.defaultVideoProviderId / defaultVideoModel. */
+  providerOverrideId?: string
+  modelOverride?: string
+  prompt: string
+  /** Things to avoid in the output. Sent as a separate `negative_prompt` field
+   *  to providers that support it; ignored otherwise. */
+  negativePrompt?: string
+  /** Base64-encoded reference / first-frame / last-frame image. Optional. */
+  referenceImageBase64?: string
+  /** Filename hint for the staged temp file (only used for extension detection). */
+  referenceFileName?: string
+  /** How the reference image should be used. Maps to provider-specific fields:
+   *  first → `image` (standard first frame), last → `last_frame`, reference →
+   *  `image_reference` (style guide). Defaults to 'first' if a reference image
+   *  is provided without specifying. */
+  frameRole?: 'first' | 'last' | 'reference'
+  durationSec?: number
+  aspect?: '9:16' | '1:1' | '16:9'
+  /** Reproducibility seed. Only set when the user locks a seed in the UI; when
+   *  omitted the provider randomizes. Whether it's honored depends on the model. */
+  seed?: number
+}
+
+export interface VideoGenerateResult {
+  ok: boolean
+  galleryId?: number
+  path?: string
+  error?: string
+  /** True when the failure was caused by the user clicking cancel. */
+  canceled?: boolean
+}
+
+export interface VideoProgressEvent {
+  clientJobId: string
+  /** Provider-side job id, only known after the initial submit succeeds. */
+  jobId?: string
+  status: 'submitting' | 'queued' | 'running' | 'downloading' | 'succeeded' | 'failed'
+  elapsedSeconds: number
+  /** Best-effort total seconds we expect this job to take (model-specific). */
+  etaSeconds?: number
+  message?: string
+}
+
 // Gallery item
 export interface GalleryItem {
   id: number
@@ -361,9 +418,27 @@ export interface AppSettings {
   proxyHost?: string
   /** Custom proxy port, e.g. 7890. Only used when proxyMode === 'custom'. */
   proxyPort?: number
+
+  /** Internal bookkeeping for the remote model.conf "managed default" mechanism.
+   *  Snapshot of the default model NAMES last pushed by model.conf. A field is
+   *  only re-applied from a newer model.conf when the current value still equals
+   *  this snapshot (i.e. the user hasn't manually picked their own model). Once
+   *  the user changes a default in Settings, it diverges from this snapshot and
+   *  model.conf stops touching it. Not shown in any UI. */
+  appliedModelConf?: RemoteModelConf
 }
 
 export type ProxyMode = 'off' | 'system' | 'custom'
+
+/** Shape of the GitHub-hosted `model.conf` (parsed as JSON). All fields are
+ *  optional model NAMES — the client resolves which logged-in provider serves
+ *  the model, so providerIds are intentionally NOT part of this contract. */
+export interface RemoteModelConf {
+  defaultChatModel?: string
+  defaultImageModel?: string
+  defaultVideoModel?: string
+  defaultEmbeddingModel?: string
+}
 
 /** Snapshot of OS-level toggle state, read back from the actual platform — so
  *  the UI can show what's really registered even if the store is out of sync

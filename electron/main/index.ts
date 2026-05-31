@@ -475,13 +475,22 @@ app.whenReady().then(async () => {
   const { initTray } = await import('./services/tray')
   initTray(() => mainWindow)
 
-  // Background update check (Gitee). Silent unless a new version is found —
+  // Background update check (GitHub). Silent unless a new version is found —
   // then the renderer's UpdateNotifier listener shows a toast.
   try {
     const { scheduleStartupCheck } = await import('./services/updater')
     scheduleStartupCheck(() => mainWindow)
   } catch (e) {
     console.warn('[startup] updater schedule failed:', (e as Error).message)
+  }
+
+  // Remote model.conf — pull recommended default models from GitHub and apply
+  // them under the managed-default policy (never clobbers a user's manual pick).
+  try {
+    const { scheduleModelConfSync } = await import('./services/model-conf')
+    scheduleModelConfSync(() => mainWindow)
+  } catch (e) {
+    console.warn('[startup] model.conf sync schedule failed:', (e as Error).message)
   }
 
   // Scheduled prompts — start the per-task tick loop. Catches up on any
