@@ -90,6 +90,11 @@ function rootPaths(): string[] {
   const roots: string[] = []
   try { roots.push(app.getPath('userData')) } catch { /* ignore */ }
   try { roots.push(app.getPath('temp')) } catch { /* ignore */ }
+  // The agent's filesystem instructions tell it to default-save generated files
+  // (e.g. XLSX from file_write) to the desktop, so the desktop must be writable
+  // without an explicit per-file approval — otherwise the sandbox would break
+  // the documented default-save flow.
+  try { roots.push(app.getPath('desktop')) } catch { /* ignore */ }
   return roots.map(normalize)
 }
 

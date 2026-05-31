@@ -41,6 +41,10 @@ export interface McpCallResult {
 export interface McpCallContext {
   /** Used when persisting artifacts to gallery so they're filterable per session. */
   sessionId?: string
+  /** Abort the in-flight tool call when the user presses Stop. Forwarded to the
+   *  MCP SDK's callTool request options so the underlying request is cancelled,
+   *  not just ignored. */
+  signal?: AbortSignal
 }
 
 interface ConnectedClient {
@@ -257,11 +261,16 @@ class McpManager {
     if (!tool) throw new Error(`MCP tool not found: ${qualifiedName}`)
     const entry = this.clients.get(tool.serverId)
     if (!entry) throw new Error(`MCP server not connected for tool: ${qualifiedName}`)
+    if (ctx.signal?.aborted) throw new Error(`工具调用已取消 ${qualifiedName}`)
     const result = await withTimeout(
-      entry.client.callTool({
-        name: tool.toolName,
-        arguments: (args ?? {}) as Record<string, unknown>
-      }),
+      entry.client.callTool(
+        {
+          name: tool.toolName,
+          arguments: (args ?? {}) as Record<string, unknown>
+        },
+        undefined,
+        ctx.signal ? { signal: ctx.signal } : undefined
+      ),
       TOOL_CALL_TIMEOUT_MS,
       `工具调用 ${qualifiedName}`
     )

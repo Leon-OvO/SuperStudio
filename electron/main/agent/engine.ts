@@ -16,7 +16,9 @@ import { buildSkillTools } from './skill-tools'
 import { notifyTaskComplete } from '../services/tray'
 import { dbRun, dbAll, dbGet } from '../db/sqlite'
 import { computeCost } from '../services/model-pricing'
-import { buildAutoTitle, computeToolAllowSet, parseSizeFromMessage, friendlyError } from './pure'
+import { isApproved, registerApproved, invalidateDbCache } from '../services/path-allow'
+import { agentRunSemaphore } from './semaphore'
+import { buildAutoTitle, computeToolAllowSet, parseSizeFromMessage, friendlyError, truncateToolResult } from './pure'
 import { randomUUID } from 'crypto'
 import path from 'path'
 import fs from 'fs'
@@ -81,6 +83,16 @@ export async function runAgent(
     win.webContents.send(IPC.AGENT_PROGRESS, { ...event, sessionId })
   }
 
+  // Bound global concurrency: a burst of scheduled tasks (or many windows) must
+  // not spawn unbounded simultaneous LLM streams + browsers. The run is already
+  // registered in runningAgents, so Stop/supersede works while it waits here.
+  const releaseSlot = await agentRunSemaphore.acquire()
+  if (isStaleRun()) {
+    releaseSlot()
+    if (runningAgents.get(sessionId) === abort) runningAgents.delete(sessionId)
+    return
+  }
+
   try {
     // Save user message
     const userMsgId = randomUUID()
@@ -97,6 +109,7 @@ export async function runAgent(
     console.error('[Agent] failed to save user message', e)
     win.webContents.send(IPC.AGENT_ERROR, { sessionId, error: `保存用户消息失败：${String(e)}` })
     runningAgents.delete(sessionId)
+    releaseSlot()
     return
   }
 
@@ -171,7 +184,8 @@ export async function runAgent(
             message: mt.toolName
           })
           try {
-            const { text, artifacts } = await mcpManager.callTool(mt.qualifiedName, args, { sessionId })
+            if (abort.signal.aborted) return '[MCP aborted]'
+            const { text, artifacts } = await mcpManager.callTool(mt.qualifiedName, args, { sessionId, signal: abort.signal })
 
             // Emit a "done" event per image/video artifact so the chat progress
             // panel can render a thumbnail for each. Audio doesn't fit the
@@ -244,12 +258,14 @@ export async function runAgent(
             'available, that one is preferred over this builtin.',
           parameters: z.object({ query: z.string().describe('Search query') }),
           execute: async ({ query }) => {
-            emit({ stepIndex: stepIndex++, stepName: 'Web Search', toolName: 'web_search', status: 'running', message: `Searching: ${query}` })
+            const myIdx = stepIndex++
+            if (abort.signal.aborted) return '[web_search aborted]'
+            emit({ stepIndex: myIdx, stepName: 'Web Search', toolName: 'web_search', status: 'running', message: `Searching: ${query}` })
             const result = await searchWeb(query, settings.searchApiKey, settings.searchProvider, 5, { searxngUrl: settings.searxngUrl, browserVisible: settings.searchBrowserVisible })
             const doneMsg = result.fallbackReason
               ? `Found ${result.results.length} via ${result.source} (fallback: ${result.fallbackReason})`
               : `Found ${result.results.length} via ${result.source}`
-            emit({ stepIndex: stepIndex - 1, stepName: 'Web Search', toolName: 'web_search', status: 'done', message: doneMsg })
+            emit({ stepIndex: myIdx, stepName: 'Web Search', toolName: 'web_search', status: 'done', message: doneMsg })
             toolCallLog.push({ toolName: 'web_search', args: { query }, result })
             return result
           }
@@ -273,7 +289,9 @@ export async function runAgent(
             'opened window and call web_open again. Prefer web_search for open-ended "find me X" queries.',
           parameters: z.object({ url: z.string().describe('Absolute http(s) URL to open') }),
           execute: async ({ url }) => {
-            emit({ stepIndex: stepIndex++, stepName: 'Browser Open', toolName: 'web_open', status: 'running', message: url })
+            const myIdx = stepIndex++
+            if (abort.signal.aborted) return '[web_open aborted]'
+            emit({ stepIndex: myIdx, stepName: 'Browser Open', toolName: 'web_open', status: 'running', message: url })
             try {
               // In scheduled/headless runs nobody can log in, so don't block on a
               // login wall — report needsLogin and let the agent give a partial answer.
@@ -321,12 +339,12 @@ export async function runAgent(
                 : elemsCount !== undefined
                   ? `已读取页面（${elemsCount} 个可操作元素）`
                   : `已读取页面（${result.text.length} 字 · ${result.links.length} 链接）`
-              emit({ stepIndex: stepIndex - 1, stepName: 'Browser Open', toolName: 'web_open', status: 'done', message: doneMsg })
+              emit({ stepIndex: myIdx, stepName: 'Browser Open', toolName: 'web_open', status: 'done', message: doneMsg })
               toolCallLog.push({ toolName: 'web_open', args: { url }, result: merged })
               return merged
             } catch (err) {
               const msg = (err as Error).message || String(err)
-              emit({ stepIndex: stepIndex - 1, stepName: 'Browser Open', toolName: 'web_open', status: 'error', message: msg })
+              emit({ stepIndex: myIdx, stepName: 'Browser Open', toolName: 'web_open', status: 'error', message: msg })
               toolCallLog.push({ toolName: 'web_open', args: { url }, result: { error: msg } })
               return `[web_open error] ${msg}`
             }
@@ -341,17 +359,19 @@ export async function runAgent(
             'Requires web_open to have opened a page first.',
           parameters: z.object({}),
           execute: async () => {
-            emit({ stepIndex: stepIndex++, stepName: 'Page Snapshot', toolName: 'web_snapshot', status: 'running' })
+            const myIdx = stepIndex++
+            if (abort.signal.aborted) return '[web_snapshot aborted]'
+            emit({ stepIndex: myIdx, stepName: 'Page Snapshot', toolName: 'web_snapshot', status: 'running' })
             try {
               const result = await snapshotPage()
-              emit({ stepIndex: stepIndex - 1, stepName: 'Page Snapshot', toolName: 'web_snapshot', status: 'done', message: `${result.elements.length} 个可交互元素` })
+              emit({ stepIndex: myIdx, stepName: 'Page Snapshot', toolName: 'web_snapshot', status: 'done', message: `${result.elements.length} 个可交互元素` })
               toolCallLog.push({ toolName: 'web_snapshot', args: {}, result })
               return result
             } catch (err) {
               const msg = (err as Error).message || String(err)
               const attempts = (err as Error & { attempts?: Array<{ idx: number; waitMs: number; execMs: number; ok: boolean; error?: string }> }).attempts
               const stack = (err as Error).stack?.split('\n').slice(0, 4).join('\n')
-              emit({ stepIndex: stepIndex - 1, stepName: 'Page Snapshot', toolName: 'web_snapshot', status: 'error', message: msg })
+              emit({ stepIndex: myIdx, stepName: 'Page Snapshot', toolName: 'web_snapshot', status: 'error', message: msg })
               // Persist the retry breakdown + stack head into toolCallLog so the
               // exported JSON shows exactly why the snapshot couldn't be obtained.
               toolCallLog.push({ toolName: 'web_snapshot', args: {}, result: { error: msg, _debug: { attempts, stack } } })
@@ -373,16 +393,18 @@ export async function runAgent(
             text: z.string().nullable().describe('Exact visible text of the button/link to click (e.g. "发布"). Fallback when the element has no ref. Pass null when using ref.')
           }),
           execute: async ({ ref, text }) => {
+            const myIdx = stepIndex++
             const label = ref || (text ? `text:${text}` : '')
-            emit({ stepIndex: stepIndex++, stepName: 'Click', toolName: 'web_click', status: 'running', message: label })
+            if (abort.signal.aborted) return '[web_click aborted]'
+            emit({ stepIndex: myIdx, stepName: 'Click', toolName: 'web_click', status: 'running', message: label })
             try {
               const result = await actOnPage({ type: 'click', ref: ref ?? undefined, text: text ?? undefined })
-              emit({ stepIndex: stepIndex - 1, stepName: 'Click', toolName: 'web_click', status: result.ok ? 'done' : 'error', message: result.error })
+              emit({ stepIndex: myIdx, stepName: 'Click', toolName: 'web_click', status: result.ok ? 'done' : 'error', message: result.error })
               toolCallLog.push({ toolName: 'web_click', args: { ref, text }, result })
               return result
             } catch (err) {
               const msg = (err as Error).message || String(err)
-              emit({ stepIndex: stepIndex - 1, stepName: 'Click', toolName: 'web_click', status: 'error', message: msg })
+              emit({ stepIndex: myIdx, stepName: 'Click', toolName: 'web_click', status: 'error', message: msg })
               toolCallLog.push({ toolName: 'web_click', args: { ref, text }, result: { error: msg } })
               return `[web_click error] ${msg}`
             }
@@ -401,16 +423,18 @@ export async function runAgent(
             kind: z.enum(['fill', 'select']).nullable().describe('"select" to pick a <select> option; null/"fill" for text inputs')
           }),
           execute: async ({ ref, value, kind }) => {
+            const myIdx = stepIndex++
             const type = kind === 'select' ? 'select' as const : 'fill' as const
-            emit({ stepIndex: stepIndex++, stepName: 'Fill', toolName: 'web_fill', status: 'running', message: ref })
+            if (abort.signal.aborted) return '[web_fill aborted]'
+            emit({ stepIndex: myIdx, stepName: 'Fill', toolName: 'web_fill', status: 'running', message: ref })
             try {
               const result = await actOnPage({ type, ref, value })
-              emit({ stepIndex: stepIndex - 1, stepName: 'Fill', toolName: 'web_fill', status: result.ok ? 'done' : 'error', message: result.error })
+              emit({ stepIndex: myIdx, stepName: 'Fill', toolName: 'web_fill', status: result.ok ? 'done' : 'error', message: result.error })
               toolCallLog.push({ toolName: 'web_fill', args: { ref, value, kind }, result })
               return result
             } catch (err) {
               const msg = (err as Error).message || String(err)
-              emit({ stepIndex: stepIndex - 1, stepName: 'Fill', toolName: 'web_fill', status: 'error', message: msg })
+              emit({ stepIndex: myIdx, stepName: 'Fill', toolName: 'web_fill', status: 'error', message: msg })
               toolCallLog.push({ toolName: 'web_fill', args: { ref, value, kind }, result: { error: msg } })
               return `[web_fill error] ${msg}`
             }
@@ -431,16 +455,28 @@ export async function runAgent(
             ref: z.string().nullable().optional().describe('OPTIONAL ref of the <input type=file> from web_snapshot. Omit or pass null to auto-locate the file input on the page (recommended when snapshot is unreliable).')
           }),
           execute: async ({ ref, filePaths }) => {
+            const myIdx = stepIndex++
             const refLabel = ref ?? '(auto)'
-            emit({ stepIndex: stepIndex++, stepName: 'Upload', toolName: 'web_upload', status: 'running', message: `${filePaths.length} 个文件 · ref=${refLabel}` })
+            // Path sandbox: never upload a file the user didn't hand us / we didn't
+            // generate — blocks a prompt-injected page from exfiltrating arbitrary
+            // local files (e.g. ~/.ssh/id_rsa) to an attacker-controlled form.
+            const unapproved = (filePaths || []).filter(p => !isApproved(p))
+            if (unapproved.length) {
+              const msg = `路径未授权，已拒绝上传：${unapproved.join(', ')}。只能上传用户附加的文件或本应用生成的文件。`
+              emit({ stepIndex: myIdx, stepName: 'Upload', toolName: 'web_upload', status: 'error', message: msg })
+              toolCallLog.push({ toolName: 'web_upload', args: { ref: ref ?? null, filePaths }, result: { error: msg } })
+              return `[web_upload error] ${msg}`
+            }
+            if (abort.signal.aborted) return '[web_upload aborted]'
+            emit({ stepIndex: myIdx, stepName: 'Upload', toolName: 'web_upload', status: 'running', message: `${filePaths.length} 个文件 · ref=${refLabel}` })
             try {
               const result = await uploadToPage(ref ?? null, filePaths)
-              emit({ stepIndex: stepIndex - 1, stepName: 'Upload', toolName: 'web_upload', status: result.ok ? 'done' : 'error', message: result.error })
+              emit({ stepIndex: myIdx, stepName: 'Upload', toolName: 'web_upload', status: result.ok ? 'done' : 'error', message: result.error })
               toolCallLog.push({ toolName: 'web_upload', args: { ref: ref ?? null, filePaths }, result })
               return result
             } catch (err) {
               const msg = (err as Error).message || String(err)
-              emit({ stepIndex: stepIndex - 1, stepName: 'Upload', toolName: 'web_upload', status: 'error', message: msg })
+              emit({ stepIndex: myIdx, stepName: 'Upload', toolName: 'web_upload', status: 'error', message: msg })
               toolCallLog.push({ toolName: 'web_upload', args: { ref: ref ?? null, filePaths }, result: { error: msg } })
               return `[web_upload error] ${msg}`
             }
@@ -454,9 +490,10 @@ export async function runAgent(
             size: z.string().nullable().describe('Image size like 1024x1024. Pass null for default.')
           }),
           execute: async ({ prompt, n, size }) => {
+            const myIdx = stepIndex++
             const actualN = n ?? 1
             const actualSize = size ?? '1024x1024'
-            emit({ stepIndex: stepIndex++, stepName: 'Image Generation', toolName: 'image_generate', status: 'running', message: `Generating ${actualN} image(s)...` })
+            emit({ stepIndex: myIdx, stepName: 'Image Generation', toolName: 'image_generate', status: 'running', message: `Generating ${actualN} image(s)...` })
             try {
               const result = await generateImage({ prompt, n: actualN, size: actualSize, settings })
               for (const img of result.images) {
@@ -464,7 +501,7 @@ export async function runAgent(
                   type: 'image', filePath: img.path, prompt,
                   source: 'chat', sessionId, modelName: settings.defaultImageModel
                 })
-                emit({ stepIndex: stepIndex - 1, stepName: 'Image Generation', toolName: 'image_generate', status: 'done',
+                emit({ stepIndex: myIdx, stepName: 'Image Generation', toolName: 'image_generate', status: 'done',
                   artifact: { type: 'image', path: img.path } })
               }
               toolCallLog.push({ toolName: 'image_generate', args: { prompt, n: actualN, size: actualSize }, result })
@@ -474,7 +511,7 @@ export async function runAgent(
               // whole streamText turn — otherwise one failed image kills any
               // parallel work the model queued (e.g. opening another page).
               const msg = (err as Error).message || String(err)
-              emit({ stepIndex: stepIndex - 1, stepName: 'Image Generation', toolName: 'image_generate', status: 'error', message: msg })
+              emit({ stepIndex: myIdx, stepName: 'Image Generation', toolName: 'image_generate', status: 'error', message: msg })
               toolCallLog.push({ toolName: 'image_generate', args: { prompt, n: actualN, size: actualSize }, result: { error: msg } })
               return `[image_generate error] ${msg}`
             }
@@ -487,7 +524,8 @@ export async function runAgent(
             referenceImagePath: z.string().nullable().describe('Path to reference image for image-to-video, or null for text-to-video')
           }),
           execute: async ({ prompt, referenceImagePath }) => {
-            emit({ stepIndex: stepIndex++, stepName: 'Video Generation', toolName: 'video_generate', status: 'running', message: 'Generating video...' })
+            const myIdx = stepIndex++
+            emit({ stepIndex: myIdx, stepName: 'Video Generation', toolName: 'video_generate', status: 'running', message: 'Generating video...' })
             try {
               const result = await generateVideo({ prompt, referenceImagePath: referenceImagePath ?? undefined, settings, win, sessionId, abortSignal: abort.signal })
               if (result.path) {
@@ -495,7 +533,7 @@ export async function runAgent(
                   type: 'video', filePath: result.path, prompt,
                   source: 'chat', sessionId, modelName: settings.defaultVideoModel
                 })
-                emit({ stepIndex: stepIndex - 1, stepName: 'Video Generation', toolName: 'video_generate', status: 'done',
+                emit({ stepIndex: myIdx, stepName: 'Video Generation', toolName: 'video_generate', status: 'done',
                   artifact: { type: 'video', path: result.path } })
               }
               toolCallLog.push({ toolName: 'video_generate', args: { prompt, referenceImagePath }, result })
@@ -505,7 +543,7 @@ export async function runAgent(
               // whole streamText turn — mirrors image_generate so one failed video
               // doesn't kill parallel work the model queued.
               const msg = (err as Error).message || String(err)
-              emit({ stepIndex: stepIndex - 1, stepName: 'Video Generation', toolName: 'video_generate', status: 'error', message: msg })
+              emit({ stepIndex: myIdx, stepName: 'Video Generation', toolName: 'video_generate', status: 'error', message: msg })
               toolCallLog.push({ toolName: 'video_generate', args: { prompt, referenceImagePath }, result: { error: msg } })
               return `[video_generate error] ${msg}`
             }
@@ -519,9 +557,16 @@ export async function runAgent(
             question: z.string().describe('What to analyze or extract from the image')
           }),
           execute: async ({ imagePath, question }) => {
-            emit({ stepIndex: stepIndex++, stepName: 'Vision Analysis', toolName: 'vision_analyze', status: 'running' })
+            const myIdx = stepIndex++
+            if (!isApproved(imagePath)) {
+              const msg = `路径未授权：${imagePath}。只能分析用户附加的图片或本应用生成的图片。`
+              emit({ stepIndex: myIdx, stepName: 'Vision Analysis', toolName: 'vision_analyze', status: 'error', message: msg })
+              toolCallLog.push({ toolName: 'vision_analyze', args: { imagePath, question }, result: { error: msg } })
+              return `[vision_analyze error] ${msg}`
+            }
+            emit({ stepIndex: myIdx, stepName: 'Vision Analysis', toolName: 'vision_analyze', status: 'running' })
             const result = await analyzeImage(imagePath, question, settings)
-            emit({ stepIndex: stepIndex - 1, stepName: 'Vision Analysis', toolName: 'vision_analyze', status: 'done' })
+            emit({ stepIndex: myIdx, stepName: 'Vision Analysis', toolName: 'vision_analyze', status: 'done' })
             toolCallLog.push({ toolName: 'vision_analyze', args: { imagePath, question }, result })
             return result
           }
@@ -531,12 +576,21 @@ export async function runAgent(
           description: 'Read and extract text content from XLSX, DOCX, PPTX, or PDF files',
           parameters: z.object({ filePath: z.string().describe('Absolute path to the file') }),
           execute: async ({ filePath }) => {
-            emit({ stepIndex: stepIndex++, stepName: 'File Read', toolName: 'file_read', status: 'running', message: path.basename(filePath) })
+            const myIdx = stepIndex++
+            if (!isApproved(filePath)) {
+              const msg = `路径未授权：${filePath}。只能读取用户附加的文件或本应用生成的文件；请让用户先把文件拖入或粘贴进来。`
+              emit({ stepIndex: myIdx, stepName: 'File Read', toolName: 'file_read', status: 'error', message: msg })
+              toolCallLog.push({ toolName: 'file_read', args: { filePath }, result: { error: msg } })
+              return `[file_read error] ${msg}`
+            }
+            emit({ stepIndex: myIdx, stepName: 'File Read', toolName: 'file_read', status: 'running', message: path.basename(filePath) })
             // abort.signal lets Stop interrupt a long PDF/PPTX parse
             const result = await readFile(filePath, abort.signal)
-            emit({ stepIndex: stepIndex - 1, stepName: 'File Read', toolName: 'file_read', status: 'done' })
+            emit({ stepIndex: myIdx, stepName: 'File Read', toolName: 'file_read', status: 'done' })
             toolCallLog.push({ toolName: 'file_read', args: { filePath }, result })
-            return result
+            // Cap the model-facing copy so a huge PDF/XLSX dump can't blow the
+            // context window; the full result stays in toolCallLog for export.
+            return truncateToolResult(result)
           }
         }),
         file_write: tool({
@@ -555,18 +609,34 @@ export async function runAgent(
             operationsJson: z.string().describe('JSON string: array of operation objects. Must be valid JSON.')
           }),
           execute: async ({ filePath, operationsJson }) => {
-            emit({ stepIndex: stepIndex++, stepName: 'File Write', toolName: 'file_write', status: 'running', message: path.basename(filePath) })
+            const myIdx = stepIndex++
+            // Path sandbox: only allow writing under an approved location (user
+            // attachment dir, app data, or the desktop default). A brand-new file
+            // is allowed if its parent dir is approved; we then register it.
+            if (!isApproved(filePath) && !isApproved(path.dirname(filePath))) {
+              const msg = `路径未授权：${filePath}。请写入桌面、应用数据目录，或用户已授权的位置。`
+              emit({ stepIndex: myIdx, stepName: 'File Write', toolName: 'file_write', status: 'error', message: msg })
+              toolCallLog.push({ toolName: 'file_write', args: { filePath }, result: { error: msg } })
+              return `[file_write error] ${msg}`
+            }
+            emit({ stepIndex: myIdx, stepName: 'File Write', toolName: 'file_write', status: 'running', message: path.basename(filePath) })
             let operations: Array<{ sheet: string; action: string; params: Record<string, unknown> }>
             try {
               operations = JSON.parse(operationsJson)
               if (!Array.isArray(operations)) throw new Error('operationsJson must be a JSON array')
             } catch (parseErr) {
+              // Recoverable: return the error as a tool result (don't throw) so the
+              // model can fix its JSON and retry instead of the whole turn aborting.
               const errMsg = `file_write operationsJson 解析失败：${(parseErr as Error).message}. 收到内容: ${operationsJson.slice(0, 200)}`
-              emit({ stepIndex: stepIndex - 1, stepName: 'File Write', toolName: 'file_write', status: 'error', message: errMsg })
-              throw new Error(errMsg)
+              emit({ stepIndex: myIdx, stepName: 'File Write', toolName: 'file_write', status: 'error', message: errMsg })
+              toolCallLog.push({ toolName: 'file_write', args: { filePath }, result: { error: errMsg } })
+              return `[file_write error] ${errMsg}`
             }
             const result = await writeFile({ filePath, operations: operations as Parameters<typeof writeFile>[0]['operations'] })
-            emit({ stepIndex: stepIndex - 1, stepName: 'File Write', toolName: 'file_write', status: 'done',
+            // Register the written file so a subsequent file_read of it passes the sandbox.
+            registerApproved(filePath)
+            invalidateDbCache()
+            emit({ stepIndex: myIdx, stepName: 'File Write', toolName: 'file_write', status: 'done',
               message: result.backupPath ? `Backup: ${result.backupPath}` : undefined })
             toolCallLog.push({ toolName: 'file_write', args: { filePath, operations }, result })
             return result
@@ -615,9 +685,10 @@ export async function runAgent(
           allowCustom: z.boolean().nullable().describe('Also show a free-text "其他…" input. Pass null = true.')
         }),
         execute: async ({ question, options, allowCustom }) => {
+          const myIdx = stepIndex++
           const payload = { question, options, allowCustom: allowCustom ?? true }
-          emit({ stepIndex: stepIndex++, stepName: '等待选择', toolName: 'ask_user', status: 'running', message: question })
-          emit({ stepIndex: stepIndex - 1, stepName: '等待选择', toolName: 'ask_user', status: 'done' })
+          emit({ stepIndex: myIdx, stepName: '等待选择', toolName: 'ask_user', status: 'running', message: question })
+          emit({ stepIndex: myIdx, stepName: '等待选择', toolName: 'ask_user', status: 'done' })
           toolCallLog.push({ toolName: 'ask_user', args: payload, result: payload })
           return '已把选项以可点击卡片的形式展示给用户。请立即停止输出，不要替用户做决定，也不要继续生成后续内容——等待用户点击后的下一条消息。'
         }
@@ -654,6 +725,31 @@ export async function runAgent(
       console.log(`[Agent] merged skill tools (${Object.keys(skillTools).join(', ')}) for ${runtimeSkills.length} runtime skill(s), bash=${includeBash}`)
     }
 
+    // Loop guard: a model can get stuck re-issuing the SAME tool call with the
+    // SAME args (a documented web_snapshot/web_click failure mode), burning the
+    // whole 30-step budget + the user's tokens. Wrap every tool so the 4th+
+    // identical call short-circuits with a corrective message instead of running.
+    const repeatCounts = new Map<string, number>()
+    const REPEAT_LIMIT = 3
+    const guardedTools: Record<string, Tool> = {}
+    for (const [name, t] of Object.entries(tools)) {
+      const origExec = (t as Tool & { execute?: (a: unknown, o: unknown) => Promise<unknown> }).execute
+      if (typeof origExec !== 'function') { guardedTools[name] = t; continue }
+      guardedTools[name] = {
+        ...t,
+        execute: async (args: unknown, opts: unknown) => {
+          let key = name
+          try { key = name + ':' + JSON.stringify(args ?? {}) } catch { /* unserializable args → key on name only */ }
+          const n = (repeatCounts.get(key) ?? 0) + 1
+          repeatCounts.set(key, n)
+          if (n > REPEAT_LIMIT) {
+            return `[${name}] 你已用相同参数调用了 ${n - 1} 次，结果不会改变。请换一种方法（不同参数 / 不同工具），或停止并直接回复用户——不要再用相同参数重试。`
+          }
+          return origExec(args, opts)
+        }
+      } as Tool
+    }
+
     const result = streamText({
       model,
       system: systemPrompt,
@@ -665,7 +761,7 @@ export async function runAgent(
         console.error('[Agent] streamText onError', error)
         streamErr = error as Error
       },
-      tools
+      tools: guardedTools
     })
 
     // Collect full response text
@@ -819,6 +915,7 @@ export async function runAgent(
   } finally {
     // Only evict our own entry — a newer run for this session must survive.
     if (runningAgents.get(sessionId) === abort) runningAgents.delete(sessionId)
+    releaseSlot()
   }
 }
 
