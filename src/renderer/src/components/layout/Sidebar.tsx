@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 import {
   MessageSquare, Zap, Image, Film, BookOpen, Code2, Sparkles, CalendarClock, Settings,
-  Sun, Moon, Languages, PanelLeftClose, PanelLeftOpen, type LucideIcon
+  Building2, Sun, Moon, Languages, PanelLeftClose, PanelLeftOpen, type LucideIcon
 } from 'lucide-react'
 import { useUIStore } from '../../stores/ui'
 import { useScheduledNotifications } from '../../stores/scheduledNotifications'
@@ -20,6 +20,7 @@ export function Sidebar() {
   const navItems = [
     { id: 'chat' as const, icon: MessageSquare, label: t('nav.chat') },
     { id: 'vibe' as const, icon: Code2, label: t('nav.vibe') },
+    { id: 'company' as const, icon: Building2, label: t('nav.company') },
     { id: 'video' as const, icon: Film, label: t('nav.video') },
     { id: 'workflow' as const, icon: Zap, label: t('nav.workflow') },
     { id: 'gallery' as const, icon: Image, label: t('nav.gallery') },

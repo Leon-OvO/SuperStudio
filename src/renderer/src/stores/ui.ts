@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 
-type Page = 'dashboard' | 'chat' | 'workflow' | 'gallery' | 'knowledge' | 'vibe' | 'skills' | 'scheduler' | 'video' | 'settings'
+type Page = 'dashboard' | 'chat' | 'workflow' | 'gallery' | 'knowledge' | 'vibe' | 'skills' | 'scheduler' | 'video' | 'company' | 'settings'
 type Theme = 'light' | 'dark'
 /** Skin = whole-app color palette. Replaces the old binary light/dark toggle —
  *  each skin maps to a light-or-dark base so Monaco / xterm can still pick a
