@@ -33,39 +33,25 @@ export function Sidebar() {
   return (
     <aside
       className={cn(
-        'flex flex-col py-3 gap-0.5 bg-sidebar border-r border-sidebar-border shrink-0 px-2 transition-[width] duration-200',
-        expanded ? 'w-[148px]' : 'w-[52px] items-center'
+        'flex flex-col py-3 gap-1.5 bg-sidebar border-r border-sidebar-border shrink-0 px-1.5 items-center transition-[width] duration-200',
+        expanded ? 'w-[78px]' : 'w-[56px]'
       )}
     >
       {/* Collapse / expand toggle — the logo + wordmark live in the TitleBar,
-          so we deliberately don't repeat them here. */}
-      {expanded ? (
-        <button
-          onClick={() => setSidebarExpanded(false)}
-          title={t('nav.collapse')}
-          className="group w-full h-8 mb-2 rounded-lg flex items-center gap-2 px-2.5 text-muted-foreground/70 hover:text-foreground hover:bg-accent transition-colors"
-        >
-          <span className="flex-1 text-left text-[11px] font-medium tracking-wide truncate">
-            {t('nav.collapse')}
-          </span>
-          <PanelLeftClose
-            size={15}
-            strokeWidth={1.75}
-            className="shrink-0 opacity-70 group-hover:opacity-100 transition-opacity"
-          />
-        </button>
-      ) : (
-        <NavButton
-          icon={PanelLeftOpen}
-          iconSize={16}
-          label={t('nav.expand')}
-          expanded={false}
-          onClick={() => setSidebarExpanded(true)}
-        />
-      )}
+          so we deliberately don't repeat them here. Icon-only to keep the
+          stacked nav clean; the action is described by its tooltip. */}
+      <button
+        onClick={() => setSidebarExpanded(!expanded)}
+        title={expanded ? t('nav.collapse') : t('nav.expand')}
+        className="group w-full h-7 mb-1 rounded-lg flex items-center justify-center text-muted-foreground/60 hover:text-foreground hover:bg-accent transition-colors"
+      >
+        {expanded
+          ? <PanelLeftClose size={15} strokeWidth={1.75} className="opacity-70 group-hover:opacity-100 transition-opacity" />
+          : <PanelLeftOpen size={15} strokeWidth={1.75} className="opacity-70 group-hover:opacity-100 transition-opacity" />}
+      </button>
 
       {/* Main nav */}
-      <div className="w-full flex flex-col gap-0.5">
+      <div className="w-full flex flex-col gap-1">
         {navItems.map(({ id, icon, label }) => (
           <NavButton
             key={id}
@@ -82,19 +68,16 @@ export function Sidebar() {
       <div className="flex-1" />
 
       {/* Bottom utilities */}
-      <div className="w-full flex flex-col gap-0.5">
+      <div className="w-full flex flex-col gap-1 pt-1.5 border-t border-sidebar-border/60">
         <NavButton
           icon={Languages}
-          iconSize={16}
           label={t('nav.languageSwitch')}
           expanded={expanded}
           onClick={() => setLanguage(lang === 'zh' ? 'en' : 'zh')}
           cornerBadge={lang.toUpperCase()}
-          trailing={lang.toUpperCase()}
         />
         <NavButton
           icon={theme === 'dark' ? Sun : Moon}
-          iconSize={16}
           label={themeLabel}
           expanded={expanded}
           onClick={toggleTheme}
@@ -112,7 +95,7 @@ export function Sidebar() {
 }
 
 function NavButton({
-  icon: Icon, iconSize = 17, label, active = false, expanded, onClick, dot = false, cornerBadge, trailing
+  icon: Icon, iconSize = 20, label, active = false, expanded, onClick, dot = false, cornerBadge
 }: {
   icon: LucideIcon
   iconSize?: number
@@ -121,38 +104,37 @@ function NavButton({
   expanded: boolean
   onClick: () => void
   dot?: boolean
-  /** Tiny badge over the icon, collapsed mode only (e.g. current language code). */
+  /** Tiny badge over the icon (e.g. current language code). */
   cornerBadge?: ReactNode
-  /** Trailing element shown after the label, expanded mode only. */
-  trailing?: ReactNode
 }) {
   return (
     <button
       onClick={onClick}
       title={expanded ? undefined : label}
       className={cn(
-        'w-full h-9 rounded-lg flex items-center transition-all relative group',
-        expanded ? 'px-2.5 gap-2.5' : 'justify-center',
+        // Stacked card: icon on top, label below, everything centered.
+        'w-full rounded-xl flex flex-col items-center justify-center transition-all relative group',
+        expanded ? 'gap-1 py-2 px-1' : 'py-2.5',
         active
-          ? 'bg-primary/10 text-primary shadow-sm'
+          ? 'bg-primary/12 text-primary shadow-sm ring-1 ring-primary/15'
           : 'text-muted-foreground hover:bg-accent hover:text-foreground'
       )}
     >
-      {active && (
-        <span className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-5 bg-primary rounded-r-full -ml-2" />
-      )}
-      <span className="relative shrink-0 flex items-center justify-center">
+      <span className="relative flex items-center justify-center">
         <Icon size={iconSize} strokeWidth={active ? 2 : 1.75} />
         {dot && (
-          <span className="absolute -top-1 -right-1.5 w-1.5 h-1.5 rounded-full bg-red-500 ring-1 ring-sidebar" />
+          <span className="absolute -top-1 -right-1.5 w-1.5 h-1.5 rounded-full bg-red-500 ring-2 ring-sidebar" />
         )}
-        {!expanded && cornerBadge != null && (
-          <span className="absolute -right-2 -bottom-1.5 text-[8px] font-bold leading-none">{cornerBadge}</span>
+        {cornerBadge != null && (
+          <span className="absolute -right-2.5 -bottom-1.5 px-0.5 text-[8px] font-bold leading-none text-muted-foreground/80">
+            {cornerBadge}
+          </span>
         )}
       </span>
-      {expanded && <span className="flex-1 text-left text-[13px] truncate">{label}</span>}
-      {expanded && trailing != null && (
-        <span className="text-[10px] font-semibold text-muted-foreground/70 shrink-0">{trailing}</span>
+      {expanded && (
+        <span className="text-[10.5px] leading-tight text-center line-clamp-2 max-w-full px-0.5 font-medium">
+          {label}
+        </span>
       )}
       {!expanded && (
         <span className="pointer-events-none absolute left-full ml-2 px-2 py-1 rounded-md bg-foreground/90 text-background text-[11px] whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity z-50 shadow-lg">
