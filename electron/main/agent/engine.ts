@@ -453,7 +453,7 @@ export async function runAgent(
           }
         }),
         image_generate: tool({
-          description: 'Generate one or more images from a text prompt. Pass null for n/size to use defaults (1 image at 1024x1024). n is clamped to 1-4.',
+          description: 'Generate one or more images from a text prompt. Pass null for n/size to use defaults (1 image at 1024x1024). n is clamped to 1-4. Returns { images: [{ path }] }; each `path` can be passed directly to web_upload.filePaths or video_generate.referenceImagePath. Prefer a rich, detailed prompt (subject, style, composition, lighting) over the user\'s terse wording. The UI renders images inline — do not echo paths or wrap them in markdown.',
           parameters: z.object({
             prompt: z.string().describe('Detailed image generation prompt'),
             n: z.number().nullable().describe('Number of images, 1-4 (clamped). Pass null for default 1.'),
@@ -487,24 +487,34 @@ export async function runAgent(
           }
         }),
         video_generate: tool({
-          description: 'Generate a video from text prompt or reference image. Pass null for referenceImagePath if not doing image-to-video.',
+          description: 'Generate a video from a text prompt or a reference image (image-to-video). Pass null for referenceImagePath for pure text-to-video; you may pass a `path` returned by image_generate to animate that image. Returns { path }. The UI renders the video inline — do not echo the path or wrap it in markdown.',
           parameters: z.object({
             prompt: z.string().describe('Video generation prompt'),
             referenceImagePath: z.string().nullable().describe('Path to reference image for image-to-video, or null for text-to-video')
           }),
           execute: async ({ prompt, referenceImagePath }) => {
             emit({ stepIndex: stepIndex++, stepName: 'Video Generation', toolName: 'video_generate', status: 'running', message: 'Generating video...' })
-            const result = await generateVideo({ prompt, referenceImagePath: referenceImagePath ?? undefined, settings, win, sessionId, abortSignal: abort.signal })
-            if (result.path) {
-              await saveGalleryItem({
-                type: 'video', filePath: result.path, prompt,
-                source: 'chat', sessionId, modelName: settings.defaultVideoModel
-              })
-              emit({ stepIndex: stepIndex - 1, stepName: 'Video Generation', toolName: 'video_generate', status: 'done',
-                artifact: { type: 'video', path: result.path } })
+            try {
+              const result = await generateVideo({ prompt, referenceImagePath: referenceImagePath ?? undefined, settings, win, sessionId, abortSignal: abort.signal })
+              if (result.path) {
+                await saveGalleryItem({
+                  type: 'video', filePath: result.path, prompt,
+                  source: 'chat', sessionId, modelName: settings.defaultVideoModel
+                })
+                emit({ stepIndex: stepIndex - 1, stepName: 'Video Generation', toolName: 'video_generate', status: 'done',
+                  artifact: { type: 'video', path: result.path } })
+              }
+              toolCallLog.push({ toolName: 'video_generate', args: { prompt, referenceImagePath }, result })
+              return result
+            } catch (err) {
+              // Return the error as a tool result instead of letting it abort the
+              // whole streamText turn — mirrors image_generate so one failed video
+              // doesn't kill parallel work the model queued.
+              const msg = (err as Error).message || String(err)
+              emit({ stepIndex: stepIndex - 1, stepName: 'Video Generation', toolName: 'video_generate', status: 'error', message: msg })
+              toolCallLog.push({ toolName: 'video_generate', args: { prompt, referenceImagePath }, result: { error: msg } })
+              return `[video_generate error] ${msg}`
             }
-            toolCallLog.push({ toolName: 'video_generate', args: { prompt, referenceImagePath }, result })
-            return result
           }
         }),
         ...(mcpHasVision ? {} : {
@@ -901,7 +911,7 @@ function buildSystemPrompt(kbContext: string, mcpTools: McpTool[] = [], skills: 
     try { return app.getPath('desktop') } catch { return '' }
   })()
 
-  const base = `You are SuperStudio, a powerful AI productivity assistant. You can generate images, create videos, search the web, analyze files, and manipulate Excel data. Always be helpful and proactive. When a task requires multiple steps, execute them all without asking for confirmation between steps.`
+  const base = `You are SuperStudio, a powerful AI productivity assistant. You can generate images, create videos, search the web, analyze files, and manipulate Excel data. Always be helpful and proactive. When a task requires multiple steps, execute them all without asking for confirmation between steps.\nAlways reply in the user's language — default to 简体中文 unless the user writes in another language, in which case match it.`
 
   // The model has no inherent sense of "now" — left unanchored it falls back to
   // its training-cutoff year (e.g. 2025) and bakes that into web_search queries,
