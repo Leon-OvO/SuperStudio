@@ -8,7 +8,8 @@ import { saveGalleryItem } from '../services/gallery'
 import { createLLMClient } from '../services/llm'
 import { getSettings } from '../services/store'
 import { generateText } from 'ai'
-import { topologicalSort } from './pure'
+import { topologicalLevels } from './pure'
+import { agentRunSemaphore } from './semaphore'
 
 interface WorkflowNode {
   id: string
@@ -41,23 +42,40 @@ export async function executeWorkflow(
     win.webContents.send(IPC.WORKFLOW_NODE_STATUS, { workflowId, nodeId, status, message })
   }
 
-  const order = topologicalSort(nodes, edges)
+  // Execute by topological LEVELS: every node in a level has its dependencies
+  // satisfied and is independent of its siblings, so the whole level runs in
+  // parallel (bounded by the shared agent semaphore). nodeOutputs is keyed by
+  // id, so concurrent writes target distinct keys — no race.
+  const levels = topologicalLevels(nodes, edges)
+  let failFastStop = false
 
-  for (const nodeId of order) {
-    if (abort.signal.aborted) break
-    const node = nodes.find(n => n.id === nodeId)
-    if (!node) continue
-
-    emit(nodeId, 'running')
-    try {
-      const input = resolveInputs(node, edges, nodeOutputs)
-      const output = await executeNode(node, input, variables, settings, win, workflowId)
-      nodeOutputs[nodeId] = output
-      emit(nodeId, 'done')
-    } catch (err) {
-      emit(nodeId, 'error', (err as Error).message ?? String(err))
-      break
-    }
+  for (const level of levels) {
+    if (abort.signal.aborted || failFastStop) break
+    await Promise.all(level.map(async (nodeId) => {
+      if (abort.signal.aborted || failFastStop) return
+      const node = nodes.find(n => n.id === nodeId)
+      if (!node) return
+      emit(nodeId, 'running')
+      try {
+        const input = resolveInputs(node, edges, nodeOutputs)
+        const output = await agentRunSemaphore.run(() =>
+          executeNode(node, input, variables, settings, win, workflowId))
+        nodeOutputs[nodeId] = output
+        emit(nodeId, 'done')
+      } catch (err) {
+        const msg = (err as Error).message ?? String(err)
+        emit(nodeId, 'error', msg)
+        // Per-node error policy (default fail-fast preserves prior behavior).
+        // 'continue' / 'skip-downstream' record an error sentinel and let the
+        // rest of the workflow proceed; downstream resolveInputs sees it.
+        const policy = typeof node.data?.errorPolicy === 'string' ? node.data.errorPolicy : 'fail-fast'
+        if (policy === 'continue' || policy === 'skip-downstream') {
+          nodeOutputs[nodeId] = { error: msg }
+        } else {
+          failFastStop = true
+        }
+      }
+    }))
   }
 
   runningWorkflows.delete(workflowId)
