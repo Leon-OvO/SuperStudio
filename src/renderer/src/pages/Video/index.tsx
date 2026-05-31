@@ -7,6 +7,7 @@ import {
   PanelLeftClose, PanelLeftOpen, FolderOpen
 } from 'lucide-react'
 import { cn } from '../../lib/utils'
+import { useT } from '../../lib/i18n'
 import { toast } from '../../components/ui/Toast'
 import { useConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { Select, type SelectOption } from '../../components/ui/Select'
@@ -100,6 +101,7 @@ function parseGalleryNote(note: string): { prompt: string; aspect?: VideoJob['as
 // ──────────────────────────────────────────────────────────────────────────
 
 export function VideoPage() {
+  const t = useT()
   const jobs = useVideoJobsStore(s => s.jobs)
   const galleryEpoch = useVideoJobsStore(s => s.galleryEpoch)
   const submitJob = useVideoJobsStore(s => s.submit)
@@ -442,7 +444,7 @@ export function VideoPage() {
         <aside className="w-[340px] shrink-0 border-r border-border bg-card/40 flex flex-col">
           <div className="px-4 py-3 border-b border-border flex items-center gap-2 shrink-0">
             <Film size={15} className="text-primary" />
-            <h2 className="text-sm font-semibold flex-1">视频生成</h2>
+            <h2 className="text-sm font-semibold flex-1">{t('video.title')}</h2>
             <button
               onClick={() => setParamsOpen(false)}
               title="收起参数面板"
@@ -454,7 +456,7 @@ export function VideoPage() {
 
           <div className="flex-1 overflow-y-auto px-4 py-4 space-y-5">
             {/* Model */}
-            <Field label="模型">
+            <Field label={t('video.model')}>
               {!hasAnyModel ? (
                 <p className="text-[11px] text-muted-foreground/70 px-2.5 py-1.5 rounded-lg bg-muted/40 border border-dashed border-border">
                   请先在「设置」中添加 Provider 并配置模型
@@ -476,7 +478,7 @@ export function VideoPage() {
             </Field>
 
             {/* Reference image */}
-            <Field label="参考图 / 首帧" hint="可作为首帧 / 尾帧 / 风格参考 · 支持拖拽、粘贴">
+            <Field label={t('video.reference')} hint="可作为首帧 / 尾帧 / 风格参考 · 支持拖拽、粘贴">
               <input ref={fileInputRef} type="file" accept="image/*" hidden onChange={handleReferenceFile} />
               <div
                 onDragOver={handleDragOver}
@@ -526,7 +528,7 @@ export function VideoPage() {
                               : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground'
                           )}
                         >
-                          {r === 'first' ? '首帧' : r === 'last' ? '尾帧' : '风格参考'}
+                          {r === 'first' ? t('video.frameFirst') : r === 'last' ? t('video.frameLast') : t('video.frameStyle')}
                         </button>
                       ))}
                     </div>
@@ -550,7 +552,7 @@ export function VideoPage() {
             </Field>
 
             {/* Prompt */}
-            <Field label="提示词" trailing={
+            <Field label={t('video.prompt')} trailing={
               <span className="text-[10px] text-muted-foreground/60">{prompt.length} / 800</span>
             }>
               <textarea
@@ -566,7 +568,7 @@ export function VideoPage() {
             <Disclosure
               open={negativeOpen}
               onToggle={() => setNegativeOpen(o => !o)}
-              label="负面提示词"
+              label={t('video.negative')}
               hint="不希望出现的元素"
             >
               <textarea
@@ -579,7 +581,7 @@ export function VideoPage() {
             </Disclosure>
 
             {/* Aspect */}
-            <Field label="画面比例">
+            <Field label={t('video.aspect')}>
               <div className="grid grid-cols-3 gap-1.5">
                 {ASPECTS.map(a => (
                   <button
@@ -609,7 +611,7 @@ export function VideoPage() {
             </Field>
 
             {/* Duration */}
-            <Field label="时长">
+            <Field label={t('video.duration')}>
               <div className="flex gap-1.5">
                 {DURATIONS.map(d => (
                   <button
@@ -632,7 +634,7 @@ export function VideoPage() {
             <Disclosure
               open={advancedOpen}
               onToggle={() => setAdvancedOpen(o => !o)}
-              label="高级参数"
+              label={t('video.advanced')}
               hint="运镜 / 种子"
             >
               <div className="space-y-4 pt-1">
@@ -721,7 +723,7 @@ export function VideoPage() {
               className="w-full py-2.5 rounded-lg bg-primary text-primary-foreground font-medium text-sm hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity flex items-center justify-center gap-2 shadow-sm"
             >
               <Film size={14} />
-              生成视频
+              {t('video.generate')}
               <span className="text-[10px] opacity-70">约 {formatDuration(estimateVideoEta(model, duration))}</span>
             </button>
           </div>
@@ -741,7 +743,7 @@ export function VideoPage() {
       {/* ── Right: Tasks + history ──────────────────────────────────────── */}
       <div className="flex-1 flex flex-col overflow-hidden">
         <header className="px-6 py-3 border-b border-border flex items-center gap-3 shrink-0">
-          <h2 className="text-base font-semibold">任务</h2>
+          <h2 className="text-base font-semibold">{t('video.tasks')}</h2>
           {activeJobs.length > 0 && (
             <span className="text-[10px] px-2 py-0.5 rounded-full bg-primary/10 text-primary font-medium">
               {activeJobs.length} 进行中
@@ -756,7 +758,7 @@ export function VideoPage() {
               onClick={reloadHistory}
               className="px-2 py-1 rounded-md hover:bg-muted hover:text-foreground transition-colors"
             >
-              刷新
+              {t('video.refresh')}
             </button>
           </div>
         </header>
@@ -764,7 +766,7 @@ export function VideoPage() {
         <div className="flex-1 overflow-y-auto px-6 py-5 space-y-6">
           {activeJobs.length > 0 && (
             <section>
-              <SectionHeader label="进行中" count={activeJobs.length} />
+              <SectionHeader label={t('video.sectionActive')} count={activeJobs.length} />
               <div className="space-y-2.5">
                 {activeJobs.map(j => (
                   <ActiveJobCard key={j.id} job={j} onCancel={() => cancelJob(j.id)} />
@@ -775,7 +777,7 @@ export function VideoPage() {
 
           {failedJobs.length > 0 && (
             <section>
-              <SectionHeader label="未完成" count={failedJobs.length} />
+              <SectionHeader label={t('video.sectionFailed')} count={failedJobs.length} />
               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
                 {failedJobs.map(j => (
                   <FailedJobCard key={j.id} job={j} onDismiss={() => removeJob(j.id)} />
@@ -786,7 +788,7 @@ export function VideoPage() {
 
           {history.length > 0 && (
             <section>
-              <SectionHeader label="历史" count={history.length} />
+              <SectionHeader label={t('video.sectionHistory')} count={history.length} />
               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
                 {history.map(item => (
                   <HistoryCard
@@ -807,7 +809,7 @@ export function VideoPage() {
             <div className="flex-1 flex items-center justify-center py-24">
               <div className="text-center text-muted-foreground text-sm">
                 <p className="text-3xl mb-3">🎬</p>
-                <p>填好左侧参数，点击「生成视频」开始</p>
+                <p>{t('video.empty')}</p>
                 {!model && (
                   <p className="text-[11px] text-muted-foreground/60 mt-2">
                     提示：先在左侧选择视频模型，或在「设置 → 默认模型」配置默认模型

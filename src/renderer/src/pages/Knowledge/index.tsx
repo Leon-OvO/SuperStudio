@@ -4,6 +4,7 @@ import {
   Eye, Edit3, FileSpreadsheet, X, ArrowLeft, CheckCircle2
 } from 'lucide-react'
 import { cn, formatDate } from '../../lib/utils'
+import { useT } from '../../lib/i18n'
 import { renderMarkdown } from '../../lib/markdown'
 import { useInputDialog } from '../../components/ui/InputDialog'
 import { useConfirmDialog } from '../../components/ui/ConfirmDialog'
@@ -53,6 +54,7 @@ interface ImportProgress {
 type TabKind = 'pages' | 'sources'
 
 export function KnowledgePage() {
+  const t = useT()
   const [spaces, setSpaces] = useState<Space[]>([])
   const [activeSpace, setActiveSpace] = useState<string | null>(null)
   const [tab, setTab] = useState<TabKind>('pages')
@@ -255,7 +257,7 @@ export function KnowledgePage() {
             onClick={createSpace}
             className="w-full flex items-center gap-2 px-3 py-2 rounded-md bg-primary/10 hover:bg-primary/20 text-sm transition-colors"
           >
-            <Plus size={14} /> 新建空间
+            <Plus size={14} /> {t('kb.newSpace')}
           </button>
         </div>
         <div className="flex-1 overflow-y-auto p-2 space-y-0.5">
@@ -293,7 +295,7 @@ export function KnowledgePage() {
               value={searchQuery}
               onChange={e => setSearchQuery(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter') runSearch() }}
-              placeholder="语义搜索…"
+              placeholder={t('kb.searchPlaceholder')}
               className="flex-1 px-2 py-1 rounded-md bg-card border border-border text-xs outline-none focus:ring-1 focus:ring-ring"
             />
             <button onClick={runSearch} className="p-1 rounded text-muted-foreground hover:text-foreground">
@@ -312,7 +314,7 @@ export function KnowledgePage() {
                     tab === 'pages' ? 'bg-accent text-foreground' : 'text-muted-foreground hover:bg-accent/50'
                   )}
                 >
-                  <FileText size={11} /> 页面 {pages.length > 0 && <span className="text-muted-foreground/60">({pages.length})</span>}
+                  <FileText size={11} /> {t('kb.tabPages')} {pages.length > 0 && <span className="text-muted-foreground/60">({pages.length})</span>}
                 </button>
                 <button
                   onClick={() => setTab('sources')}
@@ -321,13 +323,13 @@ export function KnowledgePage() {
                     tab === 'sources' ? 'bg-accent text-foreground' : 'text-muted-foreground hover:bg-accent/50'
                   )}
                 >
-                  <FileSpreadsheet size={11} /> 文件 {sources.length > 0 && <span className="text-muted-foreground/60">({sources.length})</span>}
+                  <FileSpreadsheet size={11} /> {t('kb.tabFiles')} {sources.length > 0 && <span className="text-muted-foreground/60">({sources.length})</span>}
                 </button>
               </div>
 
               {tab === 'pages' ? (
                 <button onClick={createPage} className="w-full flex items-center justify-center gap-1 px-2 py-1 rounded text-xs bg-primary/10 hover:bg-primary/20">
-                  <Plus size={12} /> 新建页面
+                  <Plus size={12} /> {t('kb.newPage')}
                 </button>
               ) : (
                 <button
@@ -336,7 +338,7 @@ export function KnowledgePage() {
                   className="w-full flex items-center justify-center gap-1 px-2 py-1 rounded text-xs bg-card border border-border hover:bg-accent disabled:opacity-50"
                 >
                   {importProgress ? <Loader2 size={12} className="animate-spin" /> : <Upload size={12} />}
-                  {importProgress ? '导入中…' : '导入文件'}
+                  {importProgress ? t('kb.importing') : t('kb.importFile')}
                 </button>
               )}
 
@@ -364,7 +366,7 @@ export function KnowledgePage() {
                     if (s) toggleGlobal(s)
                   }}
                 />
-                <span className="flex-1">作为全局上下文</span>
+                <span className="flex-1">{t('kb.globalContext')}</span>
                 <button
                   onClick={reindexSpace}
                   disabled={reindexing}
@@ -383,10 +385,10 @@ export function KnowledgePage() {
           {searchResults ? (
             <div className="space-y-2">
               <button onClick={() => setSearchResults(null)} className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
-                <ArrowLeft size={11} /> 返回列表
+                <ArrowLeft size={11} /> {t('kb.backToList')}
               </button>
               {searchResults.length === 0 ? (
-                <p className="text-xs text-muted-foreground">没有匹配的结果。</p>
+                <p className="text-xs text-muted-foreground">{t('kb.noResults')}</p>
               ) : searchResults.map((r, i) => (
                 <button
                   key={i}
@@ -404,7 +406,7 @@ export function KnowledgePage() {
             </div>
           ) : tab === 'pages' ? (
             pages.length === 0 ? (
-              <p className="text-xs text-muted-foreground/60 p-2">暂无页面，点上方「新建页面」开始。</p>
+              <p className="text-xs text-muted-foreground/60 p-2">{t('kb.emptyPages')}</p>
             ) : pages.map(p => (
               <div
                 key={p.id}
@@ -428,7 +430,7 @@ export function KnowledgePage() {
             ))
           ) : (
             sources.length === 0 ? (
-              <p className="text-xs text-muted-foreground/60 p-2">暂无导入文件，点上方「导入文件」开始。</p>
+              <p className="text-xs text-muted-foreground/60 p-2">{t('kb.emptySources')}</p>
             ) : sources.map(s => (
               <div
                 key={s.id}
@@ -467,7 +469,7 @@ export function KnowledgePage() {
           />
         ) : (
           <div className="h-full flex items-center justify-center text-muted-foreground text-sm">
-            {activeSpace ? '选择或新建一个页面开始编辑。' : '请先在左侧选择一个知识空间。'}
+            {activeSpace ? t('kb.editorEmptyPage') : t('kb.editorEmptySpace')}
           </div>
         )}
       </div>
@@ -491,6 +493,7 @@ function PageEditor({
   highlightSnippet: string | null
   onClose: () => void
 }) {
+  const t = useT()
   const [title, setTitle] = useState(initial.title)
   const [content, setContent] = useState(initial.content)
   const [status, setStatus] = useState<SaveStatus>('idle')
@@ -564,7 +567,7 @@ function PageEditor({
           value={title}
           onChange={e => setTitle(e.target.value)}
           className="flex-1 bg-transparent text-lg font-semibold outline-none"
-          placeholder="页面标题"
+          placeholder={t('kb.pageTitlePlaceholder')}
         />
 
         <SaveStatusBadge status={status} dirty={dirty} indexError={indexError} />
@@ -576,14 +579,14 @@ function PageEditor({
             className={cn('px-2 py-1 flex items-center gap-1', mode === 'edit' ? 'bg-accent' : 'text-muted-foreground hover:bg-accent/50')}
             title="编辑模式"
           >
-            <Edit3 size={11} /> 编辑
+            <Edit3 size={11} /> {t('kb.modeEdit')}
           </button>
           <button
             onClick={() => setMode('preview')}
             className={cn('px-2 py-1 flex items-center gap-1 border-l border-border', mode === 'preview' ? 'bg-accent' : 'text-muted-foreground hover:bg-accent/50')}
             title="预览模式"
           >
-            <Eye size={11} /> 预览
+            <Eye size={11} /> {t('kb.modePreview')}
           </button>
         </div>
 

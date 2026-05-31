@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { GitBranch, MessageSquare, Pencil, Check, X, Download, ChevronDown } from 'lucide-react'
 import { cn } from '../../lib/utils'
+import { useT } from '../../lib/i18n'
 
 // ImageParams + helpers live here for backward compat — used by ChatPage + ChatInput
 export interface ImageParams {
@@ -45,6 +46,7 @@ interface Props {
  * top-right actions. Click the title (or the pencil) to rename inline.
  */
 export function ChatHeader({ sessionId, sessionTitle, onSaveAsWorkflow, onRename, onExport }: Props) {
+  const t = useT()
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(sessionTitle)
   const [exportOpen, setExportOpen] = useState(false)
@@ -100,7 +102,7 @@ export function ChatHeader({ sessionId, sessionTitle, onSaveAsWorkflow, onRename
   if (!sessionId) {
     return (
       <div className="px-5 py-3 border-b border-border/60 flex items-center gap-2 bg-card/30">
-        <span className="text-xs text-muted-foreground/60">未选择对话</span>
+        <span className="text-xs text-muted-foreground/60">{t('chatHeader.noSession')}</span>
       </div>
     )
   }
@@ -126,7 +128,7 @@ export function ChatHeader({ sessionId, sessionTitle, onSaveAsWorkflow, onRename
           <button
             onMouseDown={(e) => e.preventDefault()}  // keep input focus, don't trigger onBlur first
             onClick={commit}
-            title="保存 (Enter)"
+            title={t('chatHeader.saveTitle')}
             className="p-1 rounded text-green-600 hover:bg-green-500/10"
           >
             <Check size={14} />
@@ -134,7 +136,7 @@ export function ChatHeader({ sessionId, sessionTitle, onSaveAsWorkflow, onRename
           <button
             onMouseDown={(e) => e.preventDefault()}
             onClick={cancel}
-            title="取消 (Esc)"
+            title={t('chatHeader.cancelTitle')}
             className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-muted/60"
           >
             <X size={14} />
@@ -144,12 +146,12 @@ export function ChatHeader({ sessionId, sessionTitle, onSaveAsWorkflow, onRename
         <>
           <button
             onClick={() => onRename && setEditing(true)}
-            title={onRename ? '点击重命名对话' : sessionTitle}
+            title={onRename ? t('chatHeader.renameTitle') : sessionTitle}
             disabled={!onRename}
             className="flex-1 min-w-0 group flex items-center gap-1.5 text-left disabled:cursor-default"
           >
             <h2 className="truncate text-base font-medium">
-              {sessionTitle || '未命名对话'}
+              {sessionTitle || t('chatHeader.untitled')}
             </h2>
             {onRename && (
               <Pencil size={11} className="opacity-0 group-hover:opacity-60 transition-opacity shrink-0 text-muted-foreground" />
@@ -159,14 +161,14 @@ export function ChatHeader({ sessionId, sessionTitle, onSaveAsWorkflow, onRename
             <div ref={exportWrapRef} className="relative">
               <button
                 onClick={() => setExportOpen(o => !o)}
-                title="导出当前对话"
+                title={t('chatHeader.exportTitle')}
                 className={cn(
                   'flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors',
                   exportOpen && 'bg-muted/60 text-foreground'
                 )}
               >
                 <Download size={12} />
-                导出
+                {t('chatHeader.export')}
                 <ChevronDown size={10} className={cn('transition-transform', exportOpen && 'rotate-180')} />
               </button>
               {exportOpen && (
@@ -192,11 +194,11 @@ export function ChatHeader({ sessionId, sessionTitle, onSaveAsWorkflow, onRename
           {onSaveAsWorkflow && (
             <button
               onClick={onSaveAsWorkflow}
-              title="把当前对话转换为可视化工作流"
+              title={t('chatHeader.saveAsWorkflowTitle')}
               className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors"
             >
               <GitBranch size={12} />
-              保存为工作流
+              {t('chatHeader.saveAsWorkflow')}
             </button>
           )}
         </>

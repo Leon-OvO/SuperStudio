@@ -15,6 +15,7 @@ import { NodeInspector } from './NodeInspector'
 import { useUIStore } from '../../stores/ui'
 import { useConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { toast } from '../../components/ui/Toast'
+import { useT } from '../../lib/i18n'
 
 interface WorkflowMeta {
   id: string
@@ -47,6 +48,7 @@ function WorkflowEditor() {
   const idCounter = useRef(0)
   const { pendingWorkflowId, setPendingWorkflowId } = useUIStore()
   const dlg = useConfirmDialog()
+  const t = useT()
 
   useEffect(() => { loadWorkflows() }, [])
 
@@ -268,7 +270,7 @@ function WorkflowEditor() {
             onClick={newWorkflow}
             className="w-full flex items-center gap-2 px-3 py-2 rounded-md bg-primary/10 hover:bg-primary/20 text-sm transition-colors"
           >
-            <Plus size={14} /> 新建工作流
+            <Plus size={14} /> {t('wf.newWorkflow')}
           </button>
         </div>
         <div className="flex-1 overflow-y-auto p-2 space-y-0.5">
@@ -304,15 +306,15 @@ function WorkflowEditor() {
             className="flex-1 bg-transparent font-medium outline-none"
           />
           <button onClick={saveWorkflow} className="btn-secondary">
-            <Save size={14} /> 保存
+            <Save size={14} /> {t('wf.save')}
           </button>
           {running ? (
             <button onClick={stopWf} className="btn-primary !bg-destructive">
-              <StopIcon size={14} /> 停止
+              <StopIcon size={14} /> {t('wf.stop')}
             </button>
           ) : (
             <button onClick={runWorkflow} disabled={!currentId} className="btn-primary">
-              <Play size={14} /> 运行
+              <Play size={14} /> {t('wf.run')}
             </button>
           )}
         </header>
@@ -361,7 +363,7 @@ function WorkflowEditor() {
       {variableForm && (
         <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
           <div className="bg-popover border border-border rounded-xl shadow-2xl p-6 w-[400px] max-w-full">
-            <h2 className="text-base font-semibold mb-4">填写工作流变量</h2>
+            <h2 className="text-base font-semibold mb-4">{t('wf.fillVariables')}</h2>
             <div className="space-y-3">
               {Object.keys(variableForm).map(varName => (
                 <div key={varName}>
@@ -380,13 +382,13 @@ function WorkflowEditor() {
                 onClick={() => setVariableForm(null)}
                 className="btn-secondary"
               >
-                取消
+                {t('wf.cancel')}
               </button>
               <button
                 onClick={() => doRunWorkflow(variableForm)}
                 className="btn-primary"
               >
-                开始运行
+                {t('wf.startRun')}
               </button>
             </div>
           </div>

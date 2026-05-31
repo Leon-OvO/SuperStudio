@@ -5,6 +5,7 @@ import {
   Search, ChevronLeft, ChevronRight, ChevronDown, Shield, FileText
 } from 'lucide-react'
 import { cn } from '../../lib/utils'
+import { useT } from '../../lib/i18n'
 import { toast } from '../../components/ui/Toast'
 import { useConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { useInputDialog } from '../../components/ui/InputDialog'
@@ -75,6 +76,7 @@ export function SkillsPage() {
   const [keyword, setKeyword] = useState('')
   const [appliedKeyword, setAppliedKeyword] = useState('')
 
+  const t = useT()
   const dlg = useConfirmDialog()
   const inputDlg = useInputDialog()
 
@@ -259,16 +261,16 @@ export function SkillsPage() {
           <Sparkles size={16} className="text-primary" />
         </div>
         <div className="flex-1">
-          <h1 className="text-base font-semibold leading-tight">技能中心</h1>
+          <h1 className="text-base font-semibold leading-tight">{t('skills.title')}</h1>
           <p className="text-[11px] text-muted-foreground/70 leading-tight">
             收纳常用 prompt + 工具白名单的技能包，按场景启用
           </p>
         </div>
         <nav className="flex items-center gap-0.5 bg-muted/40 p-0.5 rounded-lg">
           {[
-            { id: 'installed' as Tab, label: `已安装 (${installed.length})`, Icon: Package },
-            { id: 'browse' as Tab, label: '发现', Icon: Globe },
-            { id: 'sources' as Tab, label: '源', Icon: Link2 }
+            { id: 'installed' as Tab, label: `${t('skills.tabInstalled')} (${installed.length})`, Icon: Package },
+            { id: 'browse' as Tab, label: t('skills.tabBrowse'), Icon: Globe },
+            { id: 'sources' as Tab, label: t('skills.tabSources'), Icon: Link2 }
           ].map(({ id, label, Icon }) => (
             <button
               key={id}
@@ -344,6 +346,7 @@ function InstalledTab({
   onUpgrade: (s: InstalledSkillInfo) => void
   onRefresh: () => void
 }) {
+  const t = useT()
   const [page, setPage] = useState(1)
   const [keyword, setKeyword] = useState('')
   const [appliedKeyword, setAppliedKeyword] = useState('')
@@ -392,8 +395,8 @@ function InstalledTab({
     return (
       <EmptyState
         icon={Sparkles}
-        title="还没安装任何技能"
-        message="点上方「发现」浏览推荐技能，或在「源」里添加自定义仓库。"
+        title={t('skills.emptyInstalledTitle')}
+        message={t('skills.emptyInstalledMessage')}
       />
     )
   }
@@ -401,7 +404,7 @@ function InstalledTab({
   return (
     <div className="max-w-4xl mx-auto px-6 py-6 space-y-4">
       <div className="flex items-center gap-2 flex-wrap">
-        <h2 className="text-sm font-semibold whitespace-nowrap">我的技能</h2>
+        <h2 className="text-sm font-semibold whitespace-nowrap">{t('skills.mySkills')}</h2>
         <span className="text-[11px] text-muted-foreground/60 whitespace-nowrap">
           {filtered.length === list.length
             ? `${list.length} 个 · 已启用 ${enabledCount} · 内置 ${builtinCount}`
@@ -414,7 +417,7 @@ function InstalledTab({
           <input
             value={keyword}
             onChange={(e) => setKeyword(e.target.value)}
-            placeholder="搜索已安装…"
+            placeholder={t('skills.searchInstalledPlaceholder')}
             className="h-7 pl-6 pr-7 w-52 text-xs rounded-md border border-border bg-card focus:outline-none focus:ring-1 focus:ring-primary/40"
           />
           {keyword && (
@@ -791,6 +794,7 @@ function BrowseTab({
   onRefresh: () => void
   onInstall: (entry: SkillRegistryEntryInfo, sourceUrl: string) => void
 }) {
+  const t = useT()
   // Dedupe across registries (same id only shown once, first source wins).
   // Bundled skills no longer appear here — they auto-install as built-ins.
   const merged = useMemo(() => {
@@ -823,7 +827,7 @@ function BrowseTab({
   return (
     <div className="max-w-4xl mx-auto px-6 py-6 space-y-4">
       <div className="flex items-center gap-2 flex-wrap">
-        <h2 className="text-sm font-semibold whitespace-nowrap">推荐技能</h2>
+        <h2 className="text-sm font-semibold whitespace-nowrap">{t('skills.recommended')}</h2>
         <span className="text-[11px] text-muted-foreground/60 whitespace-nowrap">
           共 {grandTotal.toLocaleString()} 个 · 第 {page} / {totalPages.toLocaleString()} 页
         </span>
@@ -834,7 +838,7 @@ function BrowseTab({
           <input
             value={keyword}
             onChange={(e) => onKeywordChange(e.target.value)}
-            placeholder="搜索技能…"
+            placeholder={t('skills.searchPlaceholder')}
             className="h-7 pl-6 pr-7 w-52 text-xs rounded-md border border-border bg-card focus:outline-none focus:ring-1 focus:ring-primary/40"
           />
           {keyword && (
@@ -853,7 +857,7 @@ function BrowseTab({
           className="flex items-center gap-1 h-7 px-2.5 text-xs rounded-md border border-border bg-card hover:bg-accent disabled:opacity-50"
         >
           {browsing ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />}
-          刷新
+          {t('skills.refresh')}
         </button>
       </div>
 
@@ -879,8 +883,8 @@ function BrowseTab({
       ) : merged.length === 0 ? (
         <EmptyState
           icon={Globe}
-          title={keyword ? `没有找到匹配「${keyword}」的技能` : '暂无可用技能'}
-          message={keyword ? '换个关键词试试，或清空搜索框查看全部。' : '检查源是否启用，或添加你自己的仓库。'}
+          title={keyword ? `没有找到匹配「${keyword}」的技能` : t('skills.browseEmptyTitle')}
+          message={keyword ? '换个关键词试试，或清空搜索框查看全部。' : t('skills.browseEmptyMessage')}
         />
       ) : (
         <>
@@ -1009,6 +1013,7 @@ function RegistryCard({
   installing: boolean
   onInstall: () => void
 }) {
+  const t = useT()
   return (
     <div className="rounded-xl border border-border bg-card p-4 flex flex-col">
       <div className="flex items-start gap-3">
@@ -1035,7 +1040,7 @@ function RegistryCard({
       <div className="mt-3 pt-3 border-t border-border/60 flex items-center justify-between text-[11px]">
         <span className="text-muted-foreground/60 truncate">来自 {sourceLabel}</span>
         {installed ? (
-          <span className="text-emerald-600 dark:text-emerald-400 font-medium">已安装</span>
+          <span className="text-emerald-600 dark:text-emerald-400 font-medium">{t('skills.installed')}</span>
         ) : (
           <button
             onClick={onInstall}
@@ -1043,7 +1048,7 @@ function RegistryCard({
             className="flex items-center gap-1 h-6 px-2 rounded-md bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50 font-medium"
           >
             {installing ? <Loader2 size={10} className="animate-spin" /> : <Download size={10} />}
-            安装
+            {t('skills.install')}
           </button>
         )}
       </div>
@@ -1063,17 +1068,18 @@ function SourcesTab({
   onDelete: (s: SkillSourceInfo) => void
   onToggle: (s: SkillSourceInfo) => void
 }) {
+  const t = useT()
   return (
     <div className="max-w-2xl mx-auto px-6 py-6 space-y-3">
       <div className="flex items-center gap-2">
-        <h2 className="text-sm font-semibold">技能源</h2>
+        <h2 className="text-sm font-semibold">{t('skills.sourcesTitle')}</h2>
         <span className="text-[11px] text-muted-foreground/60">{sources.length} 个</span>
         <div className="flex-1" />
         <button
           onClick={onAdd}
           className="flex items-center gap-1 h-7 px-2.5 text-xs rounded-md bg-primary text-primary-foreground hover:opacity-90"
         >
-          <Plus size={11} /> 添加源
+          <Plus size={11} /> {t('skills.addSource')}
         </button>
       </div>
 

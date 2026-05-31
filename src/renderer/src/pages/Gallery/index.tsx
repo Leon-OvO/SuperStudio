@@ -206,10 +206,10 @@ export function GalleryPage() {
 
         {/* Category tabs */}
         <div className="flex items-center gap-1 text-xs">
-          <FilterBtn active={filter === 'all'} count={counts.all} onClick={() => setFilter('all')}>全部</FilterBtn>
-          <FilterBtn active={filter === 'image'} count={counts.image} onClick={() => setFilter('image')}>图片</FilterBtn>
-          <FilterBtn active={filter === 'video'} count={counts.video} onClick={() => setFilter('video')}>视频</FilterBtn>
-          <FilterBtn active={filter === 'audio'} count={counts.audio} onClick={() => setFilter('audio')}>音频</FilterBtn>
+          <FilterBtn active={filter === 'all'} count={counts.all} onClick={() => setFilter('all')}>{t('gallery.filterAll')}</FilterBtn>
+          <FilterBtn active={filter === 'image'} count={counts.image} onClick={() => setFilter('image')}>{t('gallery.filterImage')}</FilterBtn>
+          <FilterBtn active={filter === 'video'} count={counts.video} onClick={() => setFilter('video')}>{t('gallery.filterVideo')}</FilterBtn>
+          <FilterBtn active={filter === 'audio'} count={counts.audio} onClick={() => setFilter('audio')}>{t('gallery.filterAudio')}</FilterBtn>
         </div>
 
         {/* Search */}
@@ -219,7 +219,7 @@ export function GalleryPage() {
             type="text"
             value={query}
             onChange={e => setQuery(e.target.value)}
-            placeholder="搜索素材…"
+            placeholder={t('gallery.searchPlaceholder')}
             className="w-full pl-8 pr-3 py-1.5 text-xs rounded-lg bg-muted/60 border border-transparent focus:border-border focus:bg-background outline-none placeholder:text-muted-foreground/40 transition-all"
           />
           {query && (
@@ -233,10 +233,10 @@ export function GalleryPage() {
           value={source}
           onChange={setSource}
           options={[
-            { value: 'all', label: '全部来源' },
-            { value: 'chat', label: '对话' },
-            { value: 'workflow', label: '工作流' },
-            { value: 'import', label: '导入' }
+            { value: 'all', label: t('gallery.sourceAll') },
+            { value: 'chat', label: t('gallery.sourceChat') },
+            { value: 'workflow', label: t('gallery.sourceWorkflow') },
+            { value: 'import', label: t('gallery.sourceImport') }
           ]}
           size="sm"
           title="按来源筛选"
@@ -248,7 +248,7 @@ export function GalleryPage() {
           title="从本地导入图片 / 视频 / 音频"
           className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50 transition-opacity shrink-0"
         >
-          <Upload size={12} /> {importing ? '导入中…' : '导入'}
+          <Upload size={12} /> {importing ? t('gallery.importing') : t('gallery.import')}
         </button>
       </header>
 
@@ -257,7 +257,7 @@ export function GalleryPage() {
         <div className="px-6 py-2 border-b border-border/60 flex items-center gap-3 text-xs text-muted-foreground shrink-0">
           <button onClick={toggleAll} className="flex items-center gap-1.5 hover:text-foreground transition-colors">
             {allSelected ? <CheckSquare size={13} /> : <Square size={13} />}
-            {allSelected ? '取消全选' : '全选'}
+            {allSelected ? t('gallery.deselectAll') : t('gallery.selectAll')}
           </button>
           {selected.size > 0 ? (
             <>
@@ -268,20 +268,20 @@ export function GalleryPage() {
                   className="flex items-center gap-1.5 hover:text-foreground transition-colors"
                   title="将选中的图片用作下次对话的参考图"
                 >
-                  <ImagePlus size={12} /> 用作参考图
+                  <ImagePlus size={12} /> {t('gallery.useAsReference')}
                 </button>
                 <button
                   onClick={handleBatchSave}
                   className="flex items-center gap-1.5 hover:text-foreground transition-colors"
                   title="将选中项导出到本地文件夹"
                 >
-                  <FolderDown size={12} /> 保存到文件夹
+                  <FolderDown size={12} /> {t('gallery.saveToFolder')}
                 </button>
                 <button
                   onClick={handleBatchDelete}
                   className="flex items-center gap-1.5 text-destructive hover:opacity-80 transition-opacity"
                 >
-                  <Trash2 size={12} /> 删除选中
+                  <Trash2 size={12} /> {t('gallery.deleteSelected')}
                 </button>
                 <span className="text-muted-foreground/50">{filtered.length} 项</span>
               </div>
@@ -293,7 +293,7 @@ export function GalleryPage() {
       )}
 
       {loading ? (
-        <p className="text-center text-muted-foreground text-sm py-20">加载中…</p>
+        <p className="text-center text-muted-foreground text-sm py-20">{t('gallery.loading')}</p>
       ) : filtered.length === 0 ? (
         <div className="flex-1 flex items-center justify-center">
           <div className="text-center text-muted-foreground text-sm">
@@ -302,14 +302,14 @@ export function GalleryPage() {
             </p>
             <p>
               {query
-                ? '未找到匹配的内容'
+                ? t('gallery.emptySearch')
                 : filter === 'audio'
-                ? '暂无音频，点击「导入」添加，或用支持音频的工具生成。'
+                ? t('gallery.emptyAudio')
                 : filter === 'video'
-                ? '暂无视频，去「对话」「工作流」生成，或点击「导入」添加。'
+                ? t('gallery.emptyVideo')
                 : filter === 'image'
-                ? '暂无图片，去「对话」「工作流」生成，或点击「导入」添加。'
-                : '暂无素材，去「对话」「工作流」生成，或点击「导入」添加本地文件。'}
+                ? t('gallery.emptyImage')
+                : t('gallery.emptyAll')}
             </p>
           </div>
         </div>
@@ -642,6 +642,7 @@ function PreviewModal({ items, index, onIndexChange, onClose, onDelete, onUseAsR
   const item = items[index]
   const [toast, setToast] = useState<string | null>(null)
   const dlg = useConfirmDialog()
+  const t = useT()
 
   const hasPrev = index > 0
   const hasNext = index < items.length - 1
@@ -782,14 +783,14 @@ function PreviewModal({ items, index, onIndexChange, onClose, onDelete, onUseAsR
         <div className="flex items-center gap-1.5 bg-white/10 backdrop-blur rounded-full p-1">
           {item.type === 'image' && (
             <>
-              <ToolbarButton onClick={() => onEdit(item)} icon={<Wand2 size={13} />} label="编辑" />
-              <ToolbarButton onClick={() => onUseAsReference(item)} icon={<ImagePlus size={13} />} label="用作参考图" />
-              <ToolbarButton onClick={handleCopy} icon={<Copy size={13} />} label="复制" hint="Ctrl+C" />
+              <ToolbarButton onClick={() => onEdit(item)} icon={<Wand2 size={13} />} label={t('gallery.edit')} />
+              <ToolbarButton onClick={() => onUseAsReference(item)} icon={<ImagePlus size={13} />} label={t('gallery.useAsReference')} />
+              <ToolbarButton onClick={handleCopy} icon={<Copy size={13} />} label={t('gallery.copy')} hint="Ctrl+C" />
             </>
           )}
-          <ToolbarButton onClick={handleSaveAs} icon={<Download size={13} />} label="另存为" />
-          <ToolbarButton onClick={handleReveal} icon={<FolderOpen size={13} />} label="文件夹中显示" />
-          <ToolbarButton onClick={handleDeleteCurrent} icon={<Trash2 size={13} />} label="删除" danger />
+          <ToolbarButton onClick={handleSaveAs} icon={<Download size={13} />} label={t('gallery.saveAs')} />
+          <ToolbarButton onClick={handleReveal} icon={<FolderOpen size={13} />} label={t('gallery.revealInFolder')} />
+          <ToolbarButton onClick={handleDeleteCurrent} icon={<Trash2 size={13} />} label={t('gallery.delete')} danger />
         </div>
 
         {/* Metadata panel */}

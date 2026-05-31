@@ -1,6 +1,7 @@
 import { Plus, LayoutTemplate } from 'lucide-react'
 import { useState } from 'react'
 import { NODE_DEFINITIONS, WORKFLOW_TEMPLATES, type NodeKind, type WorkflowTemplate } from './nodes'
+import { useT } from '../../lib/i18n'
 
 interface Props {
   onAdd: (kind: NodeKind) => void
@@ -10,6 +11,7 @@ interface Props {
 export function NodePalette({ onAdd, onLoadTemplate }: Props) {
   const kinds = Object.keys(NODE_DEFINITIONS) as NodeKind[]
   const [tab, setTab] = useState<'nodes' | 'templates'>('nodes')
+  const t = useT()
 
   return (
     <div className="border-t border-border flex flex-col max-h-[45%]">
@@ -18,13 +20,13 @@ export function NodePalette({ onAdd, onLoadTemplate }: Props) {
           onClick={() => setTab('nodes')}
           className={`flex-1 px-3 py-1.5 transition-colors ${tab === 'nodes' ? 'bg-accent font-medium' : 'text-muted-foreground hover:bg-accent/50'}`}
         >
-          节点
+          {t('wf.tabNodes')}
         </button>
         <button
           onClick={() => setTab('templates')}
           className={`flex-1 px-3 py-1.5 transition-colors flex items-center justify-center gap-1 ${tab === 'templates' ? 'bg-accent font-medium' : 'text-muted-foreground hover:bg-accent/50'}`}
         >
-          <LayoutTemplate size={11} /> 模板
+          <LayoutTemplate size={11} /> {t('wf.tabTemplates')}
         </button>
       </div>
       <div className="overflow-y-auto p-2 space-y-0.5">

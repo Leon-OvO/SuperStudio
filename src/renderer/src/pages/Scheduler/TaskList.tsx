@@ -7,6 +7,7 @@ import type { ScheduledTask } from '../../../../shared/ipc-types'
 import { scheduleLabel, formatNextFire } from './scheduleLabel'
 import { TEMPLATES, type ScheduledTaskTemplate } from './templates'
 import { useScheduledNotifications } from '../../stores/scheduledNotifications'
+import { useT } from '../../lib/i18n'
 
 interface Props {
   onEdit: (task: ScheduledTask | null, fromTemplate?: ScheduledTaskTemplate) => void
@@ -23,6 +24,7 @@ export function TaskList({ onEdit, onOpenDetail, onOpenBots }: Props) {
   const unreadMap = useScheduledNotifications(s => s.unread)
   const clearUnread = useScheduledNotifications(s => s.clear)
   const dlg = useConfirmDialog()
+  const t = useT()
 
   async function refresh() {
     try {
@@ -94,7 +96,7 @@ export function TaskList({ onEdit, onOpenDetail, onOpenBots }: Props) {
       {/* Header */}
       <div className="px-6 py-4 border-b border-border flex items-center justify-between shrink-0">
         <div>
-          <h1 className="text-lg font-semibold text-foreground">定时任务</h1>
+          <h1 className="text-lg font-semibold text-foreground">{t('sched.title')}</h1>
           <p className="text-xs text-muted-foreground mt-0.5">
             到点自动跑一段 prompt，结果写进专属对话。{tasks.length}/{MAX_TASKS}
           </p>
@@ -106,7 +108,7 @@ export function TaskList({ onEdit, onOpenDetail, onOpenBots }: Props) {
             title="配置通知机器人（钉钉 / 飞书 / 企业微信）"
           >
             <Bot size={13} />
-            通知机器人
+            {t('sched.notifyBots')}
           </button>
           <button
             onClick={() => atLimit ? toast.error('最多 20 个任务。删除或暂停一些再试。') : onEdit(null)}
@@ -120,7 +122,7 @@ export function TaskList({ onEdit, onOpenDetail, onOpenBots }: Props) {
             title={atLimit ? '最多 20 个任务。删除或暂停一些再试。' : '新建任务'}
           >
             <Plus size={13} />
-            新建任务
+            {t('sched.newTask')}
           </button>
         </div>
       </div>
@@ -128,7 +130,7 @@ export function TaskList({ onEdit, onOpenDetail, onOpenBots }: Props) {
       {/* Body */}
       <div className="flex-1 overflow-y-auto px-6 py-4">
         {loading ? (
-          <p className="text-center text-sm text-muted-foreground py-12">加载中…</p>
+          <p className="text-center text-sm text-muted-foreground py-12">{t('sched.loading')}</p>
         ) : emptyState ? (
           <EmptyState onPick={tpl => onEdit(null, tpl)} />
         ) : (
@@ -167,6 +169,7 @@ function TaskCard({
   onOpen: () => void
   onTriggerNow: () => void
 }) {
+  const t = useT()
   return (
     <div
       className={cn(
@@ -198,7 +201,7 @@ function TaskCard({
             />
           )}
           {!task.enabled && (
-            <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground">已暂停</span>
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground">{t('sched.paused')}</span>
           )}
           {task.consecutiveFailures >= 3 && task.enabled && (
             <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-600 dark:text-amber-400">
@@ -261,10 +264,11 @@ function TaskCard({
 }
 
 function EmptyState({ onPick }: { onPick: (tpl: ScheduledTaskTemplate) => void }) {
+  const t = useT()
   return (
     <div className="max-w-2xl mx-auto py-8">
       <div className="text-center mb-6">
-        <h2 className="text-base font-medium text-foreground">从模板开始</h2>
+        <h2 className="text-base font-medium text-foreground">{t('sched.startFromTemplate')}</h2>
         <p className="text-xs text-muted-foreground mt-1">选一个常用场景，自动填好 prompt 和时间。也可直接「新建任务」从零开始。</p>
       </div>
       <div className="grid grid-cols-2 gap-3">
