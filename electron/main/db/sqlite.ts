@@ -169,6 +169,31 @@ function createTables(): void {
     );
     CREATE INDEX IF NOT EXISTS idx_vibe_messages_request ON vibe_messages(request_id, created_at);
 
+    -- AI Company: a company is the top-level org owning the employee roster
+    -- (cross-project assets). Default single "我的工作室" seeded on first use.
+    CREATE TABLE IF NOT EXISTS companies (
+      id         TEXT PRIMARY KEY,
+      name       TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+
+    -- AI Company: an employee = a hired soul (talent-pool persona) with a chosen
+    -- underlying model. soul_id references the encrypted talent catalog id.
+    CREATE TABLE IF NOT EXISTS employees (
+      id          TEXT PRIMARY KEY,
+      company_id  TEXT NOT NULL,
+      soul_id     TEXT NOT NULL,
+      name        TEXT NOT NULL,
+      dept        TEXT NOT NULL,
+      avatar      TEXT,
+      provider_id TEXT,
+      model_id    TEXT,
+      status      TEXT NOT NULL DEFAULT 'idle',   -- idle | busy
+      stats       TEXT NOT NULL DEFAULT '{}',      -- JSON EmployeeStats
+      hired_at    INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_employees_company ON employees(company_id);
+
     -- Skills: installed prompt + tool-whitelist bundles. Per design:
     -- skill = a reusable persona/preset that combines a system-prompt fragment
     -- with an optional tool whitelist, optionally scoped to specific scenarios
@@ -283,6 +308,9 @@ function applyMigrations(): void {
   // v8: scheduled-task webhook notification — links a task to a globally
   // configured bot (DingTalk/Feishu/WeChat Work) by id; null = no notification.
   try { db.run(`ALTER TABLE scheduled_tasks ADD COLUMN webhook_bot_id TEXT`) } catch { /* already exists */ }
+  // v9: AI Company — a requirement can be assigned to an employee, whose soul
+  // persona + chosen model drives that request's task execution.
+  try { db.run(`ALTER TABLE vibe_requests ADD COLUMN assignee_employee_id TEXT`) } catch { /* already exists */ }
 }
 
 // Helper: run a query and save

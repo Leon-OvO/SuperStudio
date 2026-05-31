@@ -235,6 +235,13 @@ const api = {
     ipcRenderer.invoke(IPC.TALENT_BROWSE, args),
   getTalentSoul: (id: string) => ipcRenderer.invoke(IPC.TALENT_GET, id),
 
+  // --- AI company employees ---
+  listEmployees: () => ipcRenderer.invoke(IPC.EMP_LIST),
+  hireEmployee: (soulId: string) => ipcRenderer.invoke(IPC.EMP_HIRE, soulId),
+  fireEmployee: (id: string) => ipcRenderer.invoke(IPC.EMP_FIRE, id),
+  setEmployeeModel: (args: { id: string; providerId: string; modelId: string }) => ipcRenderer.invoke(IPC.EMP_SET_MODEL, args),
+  setEmployeeDept: (args: { id: string; dept: string }) => ipcRenderer.invoke(IPC.EMP_SET_DEPT, args),
+
   // --- Remote model.conf (managed default models from GitHub) ---
   syncModelConf: () => ipcRenderer.invoke(IPC.MODEL_CONF_SYNC) as Promise<{
     ok: boolean
