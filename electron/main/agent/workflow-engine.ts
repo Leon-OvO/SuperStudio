@@ -8,6 +8,7 @@ import { saveGalleryItem } from '../services/gallery'
 import { createLLMClient } from '../services/llm'
 import { getSettings } from '../services/store'
 import { generateText } from 'ai'
+import { topologicalSort } from './pure'
 
 interface WorkflowNode {
   id: string
@@ -268,27 +269,3 @@ function inferHandleByValue(value: unknown, _sourceId: string): string {
   return 'text'
 }
 
-function topologicalSort(nodes: WorkflowNode[], edges: WorkflowEdge[]): string[] {
-  const inDegree: Record<string, number> = {}
-  const adj: Record<string, string[]> = {}
-
-  for (const n of nodes) { inDegree[n.id] = 0; adj[n.id] = [] }
-  for (const e of edges) {
-    if (!adj[e.source]) continue
-    adj[e.source].push(e.target)
-    inDegree[e.target] = (inDegree[e.target] || 0) + 1
-  }
-
-  const queue = nodes.filter(n => inDegree[n.id] === 0).map(n => n.id)
-  const result: string[] = []
-
-  while (queue.length) {
-    const id = queue.shift()!
-    result.push(id)
-    for (const next of adj[id]) {
-      inDegree[next]--
-      if (inDegree[next] === 0) queue.push(next)
-    }
-  }
-  return result
-}

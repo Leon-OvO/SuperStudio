@@ -8,6 +8,7 @@ import path from 'path'
 import type { McpServerConfig } from '../../../src/shared/ipc-types'
 import { getMcpServers, getSettings } from './store'
 import { saveGalleryItem } from './gallery'
+import { flattenMcpTools } from '../agent/pure'
 
 /**
  * MCP tool as exposed to the rest of the app — already prefixed with the
@@ -217,14 +218,7 @@ class McpManager {
     const client = await this.connect(config)
     const slug = slugify(config.name)
     const res = await withTimeout(client.listTools(), LIST_TOOLS_TIMEOUT_MS, `列出工具 "${config.name}"`)
-    const tools: McpTool[] = (res.tools ?? []).map(t => ({
-      serverId: config.id,
-      serverName: config.name,
-      qualifiedName: `${slug}__${t.name}`,
-      toolName: t.name,
-      description: t.description,
-      inputSchema: (t.inputSchema as Record<string, unknown>) ?? { type: 'object', properties: {} }
-    }))
+    const tools: McpTool[] = flattenMcpTools(config.id, config.name, slug, res.tools ?? [])
     const entry = this.clients.get(config.id)
     if (entry) {
       entry.toolsCache = tools
