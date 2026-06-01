@@ -1380,32 +1380,35 @@ function buildActJs(action: PageAction): string {
       }
       el = best
       if (!el) {
-        // 穷尽诊断：① 任意标签里文本=「发布」的元素(tag|class|尺寸|display|nav) —— 判断按钮在不在
-        // DOM、是否被隐藏/被 nav 误判；② .ce-btn / .bg-red 计数 —— 小红书发布按钮的标志类；
-        // ③ 弹窗/遮罩计数 —— 是否有图片裁剪/确认框挡住发布栏。
+        // 全景诊断：URL/标题 + 可见弹窗的 class + 页面上所有「下一步/确认/完成/发布/提交」类
+        // 候选(任意标签|尺寸|是否可见) —— 判断 agent 卡在哪个视图、真正该点的是什么。
         let diag = ''
         try {
-          const hits = []
-          let ceBtn = 0, bgRed = 0
+          const NEXT_RE = /^(发布|立即发布|提交|确认|确定|完成|保存|下一步|继续|next|continue|publish|submit|post|done|save)$/i
+          const acts = [], modalCls = []
           for (const r of roots) {
             let all; try { all = r.querySelectorAll('*') } catch (e) { continue }
             for (const e of all) {
               try {
-                const cls = e.getAttribute && (e.getAttribute('class') || '')
-                if (/\\bce-btn\\b/.test(cls)) ceBtn++
-                if (/\\bbg-red\\b/.test(cls)) bgRed++
-                if (e.childElementCount === 0 && norm(e.textContent || '') === want) {
-                  if (hits.length < 12) {
+                const cls = (e.getAttribute && e.getAttribute('class')) || ''
+                if (modalCls.length < 6 && /\\b([\\w-]*(modal|dialog|popup|drawer|overlay|mask)[\\w-]*)\\b/i.test(cls)) {
+                  let vis = false; try { const rr = e.getBoundingClientRect(); vis = rr.width > 30 && rr.height > 30 } catch (x) {}
+                  if (vis) modalCls.push(cls.slice(0, 26))
+                }
+                if (acts.length < 16 && e.childElementCount <= 1) {
+                  const t = norm(e.textContent || e.value || '')
+                  if (t && NEXT_RE.test(t)) {
                     let rc = '?'; try { const r2 = e.getBoundingClientRect(); rc = Math.round(r2.width) + 'x' + Math.round(r2.height) } catch (x) {}
-                    let disp = ''; try { disp = (e.ownerDocument.defaultView || window).getComputedStyle(e).display } catch (x) {}
-                    hits.push((e.tagName || '').toLowerCase() + '.' + (cls || '').slice(0, 18) + '|' + rc + '|' + disp + (inNavLike(e) ? '|nav' : ''))
+                    acts.push((e.tagName || '').toLowerCase() + '·' + t.slice(0, 6) + '·' + cls.slice(0, 16) + '|' + rc + (inNavLike(e) ? '|nav' : ''))
                   }
                 }
               } catch (x) {}
             }
           }
-          let modals = 0; try { modals = document.querySelectorAll('[role="dialog"],.modal,.d-modal,[class*="modal"],[class*="dialog"],[class*="popup"]').length } catch (e) {}
-          diag = ' || 穷尽诊断 「' + want + '」元素' + hits.length + '个：' + (hits.join(' ; ') || '无') + ' | ce-btn=' + ceBtn + ' bg-red=' + bgRed + ' modal=' + modals + ' roots=' + roots.length
+          let title = ''; try { title = (document.title || '').slice(0, 30) } catch (e) {}
+          diag = ' || 全景 url=' + location.host + location.pathname.slice(0, 28) + ' 标题=' + title
+               + ' 弹窗[' + (modalCls.join(' , ') || '无') + ']'
+               + ' 动作候选' + acts.length + '：' + (acts.join(' ; ') || '无') + ' roots=' + roots.length
         } catch (e) {}
         return { ok: false, finalUrl: location.href, error: '已滚动到底部仍找不到表单内文字为「' + action.text + '」的提交按钮（侧栏已排除）。' + diag }
       }
