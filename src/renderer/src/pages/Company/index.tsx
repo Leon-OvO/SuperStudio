@@ -432,6 +432,105 @@ function RequestFlow({ tasks, employees }: { tasks?: VibeTaskInfo[]; employees: 
   )
 }
 
+// 单个像素工位：显示器 + 头像 + 桌面 + 铭牌；忙碌时亮屏辉光 + 头顶任务气泡 + 头像浮动。
+type DeskTask = { taskTitle: string; reqTitle: string; pct: number; count: number }
+function Desk({ employee: e, task }: { employee: EmployeeInfo; task?: DeskTask }) {
+  const d = dept(e.dept)
+  const lv = levelOf(e.stats.done)
+  const busy = e.status === 'busy' || !!task
+  const tok = (e.stats.tokensIn ?? 0) + (e.stats.tokensOut ?? 0)
+  const screenStyle = (busy
+    ? { borderColor: d.color, background: d.color + '22', '--glow': d.color }
+    : { borderColor: 'hsl(var(--border))', background: 'hsl(var(--muted))' }) as React.CSSProperties
+  return (
+    <div
+      className="relative flex flex-col items-center w-[120px] pt-8"
+      title={`${e.name} · ${d.label}\n🧠 ${e.modelId || '默认模型'}\n完成 ${e.stats.done} · 产出 ${e.stats.out} · 🪙 ${formatTokens(tok)} · 💰 ${formatCostUsd(e.stats.cost ?? 0)}`}
+    >
+      {/* 头顶任务气泡（仅忙碌） */}
+      {busy && (
+        <div className="absolute top-0 left-1/2 -translate-x-1/2 z-10 w-[128px]">
+          <div className="rounded-md border bg-card px-1.5 py-1 shadow-[2px_2px_0_rgba(0,0,0,0.12)]" style={{ borderColor: d.color }}>
+            <div className="flex items-center gap-1 text-[9.5px] leading-tight">
+              <span className="office-type shrink-0" style={{ color: d.color }}>▍</span>
+              <span className="truncate text-foreground/90">{task ? task.taskTitle : '工作中…'}</span>
+            </div>
+            {task && task.count > 1 && <div className="text-[8.5px] text-muted-foreground mt-0.5">+{task.count - 1} 个任务并行</div>}
+          </div>
+          <div className="mx-auto w-0 h-0 border-l-4 border-r-4 border-t-4 border-l-transparent border-r-transparent" style={{ borderTopColor: d.color }} />
+        </div>
+      )}
+      {/* 显示器 */}
+      <div className={cn('w-[58px] h-[40px] rounded-[4px] border-2 grid place-items-center', busy && 'office-glow')} style={screenStyle}>
+        {busy
+          ? <span className="text-[11px] font-bold tabular-nums" style={{ color: d.color }}>{task ? task.pct + '%' : '···'}</span>
+          : <span className="text-[12px] opacity-40">💤</span>}
+      </div>
+      {/* 支架 */}
+      <div className="w-2 h-1.5 bg-muted-foreground/30" />
+      <div className="w-7 h-1 bg-muted-foreground/30 rounded-sm" />
+      {/* 头像（坐在桌前），桌面略微盖住下缘营造“坐着”的层次 */}
+      <div
+        className={cn('w-9 h-9 rounded-full grid place-items-center text-lg border-2 z-[1] -mb-2.5', busy && 'office-bob')}
+        style={{ borderColor: d.color, background: d.color + '1f' }}
+      >
+        {d.emoji}
+      </div>
+      {/* 桌面 */}
+      <div className="w-full h-[16px] rounded-[3px] border shadow-[2px_2px_0_rgba(0,0,0,0.1)]" style={{ background: d.color + '14', borderColor: d.color + '55' }} />
+      {/* 铭牌 */}
+      <div className="mt-1.5 text-center leading-tight">
+        <div className="text-[11px] font-medium truncate max-w-[116px]">{e.name}</div>
+        <div className="flex items-center justify-center gap-1 text-[9.5px] mt-0.5">
+          <span title={lv.name}>{lv.icon}</span>
+          {busy
+            ? <span style={{ color: d.color }}>● 忙碌</span>
+            : <span className="text-muted-foreground/55">空闲</span>}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// 像素办公室平面图：一间“房间”里平铺所有员工的工位，实时反映谁在忙、在干什么。
+function OfficeFloor({ employees, currentTaskByEmp, onGoMarket }: {
+  employees: EmployeeInfo[]
+  currentTaskByEmp: Map<string, DeskTask>
+  onGoMarket: () => void
+}) {
+  if (!employees.length) {
+    return (
+      <div className="grid place-items-center text-center text-muted-foreground rounded-xl border-2 border-dashed border-border" style={{ height: '46vh' }}>
+        <div>
+          <div className="text-5xl mb-3 opacity-80">🪑</div>
+          <h2 className="text-foreground font-semibold mb-1.5">办公室空空如也</h2>
+          <p className="text-[12.5px] mb-4 max-w-sm">还没有员工入职 —— 去人才市场招募你的第一位 AI 员工，TA 就会出现在这里的工位上。</p>
+          <button onClick={onGoMarket} className="px-4 py-2 rounded-lg bg-primary text-primary-foreground font-medium text-sm">🛒 去人才市场招募</button>
+        </div>
+      </div>
+    )
+  }
+  const busy = employees.filter(e => e.status === 'busy' || currentTaskByEmp.has(e.id)).length
+  return (
+    <div className="rounded-xl border-2 border-border overflow-hidden">
+      {/* 门牌 */}
+      <div className="flex items-center gap-2 px-3 py-2 border-b-2 border-border bg-card/60">
+        <span className="text-sm">🏢</span>
+        <span className="font-semibold text-[12.5px]">办公室</span>
+        <span className="text-[10.5px] text-muted-foreground">· 忙碌 <b className="text-foreground">{busy}</b> / 共 {employees.length} 人</span>
+        {busy === 0 && <span className="text-[10.5px] text-muted-foreground/60">· 全员空闲，去看板派活让大家动起来</span>}
+      </div>
+      {/* 工位区（地板纹理） */}
+      <div
+        className="p-4 flex flex-wrap gap-x-3 gap-y-6 justify-center"
+        style={{ backgroundImage: 'repeating-linear-gradient(45deg, hsl(var(--muted) / 0.18) 0 12px, transparent 12px 24px)' }}
+      >
+        {employees.map(e => <Desk key={e.id} employee={e} task={currentTaskByEmp.get(e.id)} />)}
+      </div>
+    </div>
+  )
+}
+
 export function Board({ employees, onChange, goMarket, goWorkbench }: { employees: EmployeeInfo[]; onChange: () => void; goMarket: () => void; goWorkbench?: () => void }) {
   const dlg = useConfirmDialog()
   const [requests, setRequests] = useState<VibeRequestInfo[]>([])
@@ -443,6 +542,8 @@ export function Board({ employees, onChange, goMarket, goWorkbench }: { employee
   // 折叠的分组（默认两组都展开）。
   const [closedGroups, setClosedGroups] = useState<Set<string>>(new Set())
   const [tasksByReq, setTasksByReq] = useState<Record<string, VibeTaskInfo[]>>({})
+  // 看板两种视图：办公室（像素工位，默认）/ 流程图（需求执行进度）。
+  const [view, setView] = useState<'office' | 'flow'>('office')
   const debTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const loadTasks = useCallback((reqId: string) => {
@@ -504,25 +605,6 @@ export function Board({ employees, onChange, goMarket, goWorkbench }: { employee
     finally { setDeleting(null) }
   }
 
-  if (loading) return <div className="text-center text-muted-foreground text-sm py-10"><Loader2 size={16} className="animate-spin inline" /> 加载需求…</div>
-
-  if (!requests.length) {
-    return (
-      <div className="grid place-items-center text-center text-muted-foreground" style={{ height: '56vh' }}>
-        <div>
-          <div className="text-5xl mb-3 opacity-80">🗂</div>
-          <h2 className="text-foreground font-semibold mb-1.5">还没有需求可派活</h2>
-          <p className="text-[12.5px] mb-1">需求来自「公司」页：打开一个项目 → 用「新需求」描述任务，PM 会拆解成可执行任务。</p>
-          <p className="text-[12.5px] mb-4">需求出现在这里后，给它<strong>指派一位员工</strong>并点<strong>开工</strong>，员工就会用自己的模型与岗位人格去执行。</p>
-          <div className="flex gap-2 justify-center">
-            <button onClick={goMarket} className="px-4 py-2 rounded-lg border border-border text-sm">先去招募员工</button>
-            <button onClick={() => goWorkbench ? goWorkbench() : useUIStore.getState().setPage('vibe')} className="px-4 py-2 rounded-lg bg-primary text-primary-foreground font-medium text-sm">去工作台提需求 →</button>
-          </div>
-        </div>
-      </div>
-    )
-  }
-
   const empById = (id?: string | null) => employees.find(e => e.id === id)
   const subsOf = (id: string) => tasksByReq[id]
   const rollOf = (r: VibeRequestInfo) => { const s = tasksByReq[r.id]; return s ? rollupFromTasks(s) : r.taskRollup }
@@ -531,6 +613,24 @@ export function Board({ employees, onChange, goMarket, goWorkbench }: { employee
   const running = requests.filter(isRunning)
   const proposed = requests.filter(r => r.status === 'proposed' && !isRunning(r))
   const doneList = requests.filter(r => r.status === 'done' && !isRunning(r))
+
+  // 反推「员工此刻在跑哪个子任务」：遍历所有 running 子任务，按子任务承接人
+  // （无则其需求的默认承接人）归属。一员工多任务并行时取首个 + 计数。给办公室视图用。
+  const currentTaskByEmp = new Map<string, { taskTitle: string; reqTitle: string; pct: number; count: number }>()
+  for (const r of requests) {
+    const subs = tasksByReq[r.id]
+    if (!subs) continue
+    const roll = rollupFromTasks(subs)
+    const pct = roll.total ? Math.round(roll.done / roll.total * 100) : 0
+    for (const t of subs) {
+      if (t.status !== 'running') continue
+      const eid = t.assigneeEmployeeId || r.assigneeEmployeeId
+      if (!eid) continue
+      const ex = currentTaskByEmp.get(eid)
+      if (ex) ex.count++
+      else currentTaskByEmp.set(eid, { taskTitle: t.title, reqTitle: r.title, pct, count: 1 })
+    }
+  }
 
   // 承接人下拉（顶/底通用）
   const assigneeSelect = (r: VibeRequestInfo) => (
@@ -560,15 +660,56 @@ export function Board({ employees, onChange, goMarket, goWorkbench }: { employee
     { key: 'done', items: doneList }
   ]
 
+  const VIEWS: { key: 'office' | 'flow'; label: string }[] = [
+    { key: 'office', label: '🏢 办公室' },
+    { key: 'flow', label: '🗂 流程图' }
+  ]
+
   return (
     <div>
       {dlg.element}
-      <div className="flex items-center mb-3">
-        <div className="text-xs text-muted-foreground">指派员工 →「开工」，员工以其底层模型 + 岗位人格执行；下方流程图实时体现各子任务进度。</div>
+      {/* 视图切换：办公室（工位）/ 流程图（需求进度），共用同一份数据与实时刷新 */}
+      <div className="flex items-center gap-2 mb-3">
+        <div className="flex gap-0.5 rounded-lg bg-muted/40 border border-border p-0.5">
+          {VIEWS.map(v => (
+            <button key={v.key} onClick={() => setView(v.key)}
+              className={cn('px-2.5 py-1 rounded-md text-[11px] transition-colors', view === v.key ? 'bg-background text-foreground font-semibold shadow-sm' : 'text-muted-foreground hover:text-foreground')}>
+              {v.label}
+            </button>
+          ))}
+        </div>
+        <div className="text-[11px] text-muted-foreground truncate hidden sm:block">
+          {view === 'office' ? '团队工位实时状态：忙碌的员工亮屏、头顶显示当前子任务' : '指派员工 →「开工」，下方流程图实时体现各子任务进度'}
+        </div>
         <div className="flex-1" />
         <button onClick={refresh} className="text-[11px] px-2.5 py-1 rounded-lg border border-border text-muted-foreground hover:text-foreground">刷新</button>
       </div>
 
+      {view === 'office' && (
+        <OfficeFloor employees={employees} currentTaskByEmp={currentTaskByEmp} onGoMarket={goMarket} />
+      )}
+
+      {view === 'flow' && loading && (
+        <div className="text-center text-muted-foreground text-sm py-10"><Loader2 size={16} className="animate-spin inline" /> 加载需求…</div>
+      )}
+
+      {view === 'flow' && !loading && !requests.length && (
+        <div className="grid place-items-center text-center text-muted-foreground" style={{ height: '48vh' }}>
+          <div>
+            <div className="text-5xl mb-3 opacity-80">🗂</div>
+            <h2 className="text-foreground font-semibold mb-1.5">还没有需求可派活</h2>
+            <p className="text-[12.5px] mb-1">需求来自「公司」页：打开一个项目 → 用「新需求」描述任务，PM 会拆解成可执行任务。</p>
+            <p className="text-[12.5px] mb-4">需求出现在这里后，给它<strong>指派一位员工</strong>并点<strong>开工</strong>，员工就会用自己的模型与岗位人格去执行。</p>
+            <div className="flex gap-2 justify-center">
+              <button onClick={goMarket} className="px-4 py-2 rounded-lg border border-border text-sm">先去招募员工</button>
+              <button onClick={() => goWorkbench ? goWorkbench() : useUIStore.getState().setPage('vibe')} className="px-4 py-2 rounded-lg bg-primary text-primary-foreground font-medium text-sm">去工作台提需求 →</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {view === 'flow' && !loading && requests.length > 0 && (
+      <>
       {/* ── 顶部：正在运行（大图 + 横向流程图）────────────────────────────── */}
       <div className="mb-4">
         <div className="flex items-center gap-2 mb-2">
@@ -668,6 +809,8 @@ export function Board({ employees, onChange, goMarket, goWorkbench }: { employee
           )
         })}
       </div>
+      </>
+      )}
     </div>
   )
 }

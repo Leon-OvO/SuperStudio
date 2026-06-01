@@ -232,4 +232,29 @@
   .btn-secondary {
     @apply inline-flex items-center justify-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-card border border-border text-sm text-foreground hover:bg-accent transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-sm;
   }
+
+  /* ── 像素办公室工位（看板「办公室」视图）的微动画 ──────────────────────
+   * 仿 scrollbar-prominent 的先例：纯 class，无图片资源。
+   *  office-bob  —— 头像/座位轻微上下浮动（在岗的人有“活着”的呼吸感）
+   *  office-glow —— 忙碌员工的显示器辉光呼吸（用 --glow 注入部门色）
+   *  office-type —— 任务气泡里的打字光标闪烁 */
+  .office-bob  { animation: office-bob 2.4s ease-in-out infinite; }
+  .office-glow { animation: office-glow 1.8s ease-in-out infinite; }
+  .office-type { animation: office-type 1s steps(1) infinite; }
+  @media (prefers-reduced-motion: reduce) {
+    .office-bob, .office-glow, .office-type { animation: none; }
+  }
+}
+
+@keyframes office-bob {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-2px); }
+}
+@keyframes office-glow {
+  0%, 100% { box-shadow: 0 0 0 1px var(--glow, hsl(var(--primary))), 0 0 6px 0 var(--glow, hsl(var(--primary))); }
+  50%      { box-shadow: 0 0 0 1px var(--glow, hsl(var(--primary))), 0 0 14px 2px var(--glow, hsl(var(--primary))); }
+}
+@keyframes office-type {
+  0%, 49%   { opacity: 1; }
+  50%, 100% { opacity: 0; }
 }
