@@ -1259,24 +1259,9 @@ function buildActJs(action: PageAction): string {
     const want = norm(action.text)
     const styleOf = (e) => { try { return (e.ownerDocument.defaultView || window).getComputedStyle(e) } catch (x) { return null } }
     const sel = 'button,a[href],[role="button"],[role="menuitem"],[role="tab"],input[type="button"],input[type="submit"],div,span,li'
-    const exact = []
-    const partial = []
-    for (const r of roots) {
-      let cands
-      try { cands = r.querySelectorAll(sel) } catch (e) { continue }
-      for (const c of cands) {
-        if (c.childElementCount > 8) continue  // skip big containers; we want the leaf control
-        const t = norm(c.textContent || c.value || c.getAttribute('aria-label') || '')
-        if (!t || !want) continue
-        if (t === want) exact.push(c)
-        else if (t.indexOf(want) !== -1 && t.length <= want.length + 6) partial.push(c)
-      }
-    }
     // Navigation containers — when multiple candidates share the same text
     // (e.g. "发布笔记" appears on both the sidebar nav AND the in-page button),
-    // we want the in-form button to win. Walk up to ~8 ancestors looking for
-    // nav-shape signals. NAV_CLASS_RE is intentionally tight so we don't penalize
-    // genuine button wrappers that happen to contain "side" in their class.
+    // we want the in-form button to win. Walk up to ~8 ancestors for nav signals.
     const NAV_TAG_RE = /^(nav|aside|header)$/i
     const NAV_ROLE_RE = /^(navigation|menu|menubar|menuitem|tab|tablist)$/i
     const NAV_CLASS_RE = /(^|[ _-])(sidebar|side-bar|side[_-]?nav|side[_-]?menu|left[_-]?nav|left[_-]?menu|nav[_-]?bar|nav[_-]?menu|menu[_-]?bar|main[_-]?menu|app[_-]?menu)([ _-]|$)/i
@@ -1296,8 +1281,7 @@ function buildActJs(action: PageAction): string {
       return false
     }
     // A *real* control: a genuine <button>/submit-input/[role=button] that is
-    // visible (occupies layout). 小红书 的发布按钮就是 <button class="ce-btn
-    // bg-red">发布</button> —— 这种元素几乎一定是表单提交，不该被 nav 启发式误杀。
+    // visible. 小红书 发布按钮就是 <button class="ce-btn bg-red">发布</button>。
     const isRealButton = (e) => {
       try {
         const tag = (e.tagName || '').toLowerCase()
@@ -1320,26 +1304,55 @@ function buildActJs(action: PageAction): string {
       if (st && st.cursor === 'pointer') s += 1
       const cls = e.getAttribute('class') || ''
       if (/\\b(publish|submit|post|btn|button)\\b/i.test(cls)) s += 1
-      // 红色/主色 CTA 是「主提交」的强信号（小红书发布按钮 class 含 bg-red）。
       if (/\\b(bg-red|btn-danger|btn-primary|is-primary|primary|danger|cta)\\b/i.test(cls)) s += 2
-      // Sidebar/nav ancestor penalty. BUT a real visible <button>/submit with this
-      // text is the form submit even if some ancestor's class regex-matches "menu/
-      // side" — so penalize it only lightly; only kill non-button nav items hard.
       if (inNavLike(e)) s -= isRealButton(e) ? 2 : 6
       return s
     }
-    const pool = exact.length ? exact : partial
-    pool.sort((a, b) => scoreOf(b) - scoreOf(a))
+    // 收集并按分数排序当前 DOM 里文字匹配 want 的候选（exact 优先，否则 partial）。
+    const collect = () => {
+      const exact = [], partial = []
+      for (const r of roots) {
+        let cands
+        try { cands = r.querySelectorAll(sel) } catch (e) { continue }
+        for (const c of cands) {
+          if (c.childElementCount > 8) continue  // 跳过大容器，只要叶子控件
+          const t = norm(c.textContent || c.value || c.getAttribute('aria-label') || '')
+          if (!t || !want) continue
+          if (t === want) exact.push(c)
+          else if (t.indexOf(want) !== -1 && t.length <= want.length + 6) partial.push(c)
+        }
+      }
+      const pool = exact.length ? exact : partial
+      pool.sort((a, b) => scoreOf(b) - scoreOf(a))
+      return pool
+    }
+    const ACTION_WORDS_RE = /^(发布|立即发布|提交|确认|发送|确定|完成|保存|Submit|Send|Post|Publish|Save)$/i
+    let pool = collect()
+    // 真发布/提交按钮常在表单底部惰性挂载（IntersectionObserver）。编辑时页面没滚到底，
+    // 它还没渲染，text="发布" 只会匹配到侧栏「发布笔记」→ 误点进草稿箱（用户复现的根因）。
+    // 所以「按动作词找不到任何真按钮」时，先把页面 + 所有内部可滚动容器滚到底触发挂载、
+    // 等一下，再找一次——而不是误点侧栏或直接报错。
+    if (ACTION_WORDS_RE.test(want) && !pool.some(isRealButton)) {
+      try { window.scrollTo(0, document.body.scrollHeight) } catch (e) {}
+      try { const se = document.scrollingElement || document.documentElement; se.scrollTop = se.scrollHeight } catch (e) {}
+      // 创作类 SPA 常把表单放进内层 overflow 容器（外层 100vh overflow:hidden），
+      // 只滚 window 不够——把页面上可滚动的容器也滚到底（上限 60 个，避免开销）。
+      try {
+        let n = 0
+        for (const sc of document.querySelectorAll('*')) {
+          if (n > 60) break
+          try { if (sc.scrollHeight - sc.clientHeight > 120) { sc.scrollTop = sc.scrollHeight; n++ } } catch (e) {}
+        }
+      } catch (e) {}
+      await new Promise(r => setTimeout(r, 800))
+      const pool2 = collect()
+      if (pool2.some(isRealButton) || !pool.length) pool = pool2
+    }
     el = pool[0] || null
     if (!el) return { ok: false, finalUrl: location.href, error: '页面上找不到文字为「' + action.text + '」的可点击元素，请先 web_snapshot 看看现在有哪些元素' }
-    // 硬拒绝：若 pool 里所有候选都在 nav/sidebar 里，且用户找的是「发布/提交/确定/...」这类
-    // 表单动作关键词，几乎可以确定它们都不是真按钮（真按钮还没挂出来）。直接报错让 LLM 滚到底
-    // 部再 snapshot，而不是把侧栏 navItem 当成发布按钮误点（小红书草稿箱回流的根因）。
-    const ACTION_WORDS_RE = /^(发布|立即发布|提交|确认|发送|确定|完成|保存|Submit|Send|Post|Publish|Save)$/i
-    // 只有当所有候选「既像导航、又不是真按钮」时才硬拒绝——一个可见的真 <button>/submit
-    // 足以说明发布按钮已挂出（即便祖先 class 被 nav 正则误命中），不该再拦。
+    // 滚动重试后仍「所有候选都既像导航、又不是真按钮」才硬拒绝（真按钮确实没挂出）。
     if (ACTION_WORDS_RE.test(want) && pool.every(c => inNavLike(c) && !isRealButton(c))) {
-      return { ok: false, finalUrl: location.href, error: '找到的「' + action.text + '」候选全部位于侧栏/导航容器中，可能是「发布笔记」等导航入口而非表单提交按钮。请先把页面滚到底部（document.body.scrollHeight）再重新 web_snapshot；真发布按钮通常在表单底部，惰性挂载（IntersectionObserver）。' }
+      return { ok: false, finalUrl: location.href, error: '已滚动到底部仍找不到真正的发布按钮——找到的「' + action.text + '」候选都在侧栏/导航里。请重新 web_snapshot 确认，或确认是否已满足发布条件（标题/正文/图片齐全）。' }
     }
   }
   if (!el) return { ok: false, finalUrl: location.href, error: '元素已失效，请重新 web_snapshot' }
