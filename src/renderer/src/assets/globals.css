@@ -238,12 +238,24 @@
    *  office-bob  —— 头像/座位轻微上下浮动（在岗的人有“活着”的呼吸感）
    *  office-glow —— 忙碌员工的显示器辉光呼吸（用 --glow 注入部门色）
    *  office-type —— 任务气泡里的打字光标闪烁 */
-  .office-bob  { animation: office-bob 2.4s ease-in-out infinite; }
-  .office-glow { animation: office-glow 1.8s ease-in-out infinite; }
-  .office-type { animation: office-type 1s steps(1) infinite; }
+  .office-bob   { animation: office-bob 2.4s ease-in-out infinite; }
+  .office-glow  { animation: office-glow 1.8s ease-in-out infinite; }
+  .office-type  { animation: office-type 1s steps(1) infinite; }
+  /* 摸鱼：空闲员工屏幕上的小活动（打游戏/刷手机…）左右晃；脑袋慵懒地轻摇 */
+  .office-wiggle { animation: office-wiggle 1.5s ease-in-out infinite; }
+  .office-sway   { animation: office-sway 3.2s ease-in-out infinite; }
   @media (prefers-reduced-motion: reduce) {
-    .office-bob, .office-glow, .office-type { animation: none; }
+    .office-bob, .office-glow, .office-type, .office-wiggle, .office-sway { animation: none; }
   }
+}
+
+@keyframes office-wiggle {
+  0%, 100% { transform: rotate(-8deg); }
+  50%      { transform: rotate(8deg); }
+}
+@keyframes office-sway {
+  0%, 100% { transform: translateX(-1px) rotate(-2.5deg); }
+  50%      { transform: translateX(1px) rotate(2.5deg); }
 }
 
 @keyframes office-bob {

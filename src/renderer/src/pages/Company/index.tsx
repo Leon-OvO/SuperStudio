@@ -1,7 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Search, X, UserPlus, Trash2, Cpu, Loader2, BadgeCheck, Sparkles,
-  Users, UserCheck, CheckCircle2, Coins, Wallet, Gauge, Flame, type LucideIcon
+  Users, UserCheck, CheckCircle2, Coins, Wallet, Gauge, Flame,
+  Building2, Workflow, Armchair, Store,
+  Code2, Palette, ClipboardList, Megaphone, ShieldCheck, Brain, Gamepad2, Puzzle,
+  type LucideIcon
 } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { Select } from '../../components/ui/Select'
@@ -23,6 +26,13 @@ const DEPT: Record<string, { label: string; color: string; emoji: string }> = {
   game:        { label: '游戏',     color: '#ff8a5b', emoji: '🎮' }
 }
 const dept = (k: string) => DEPT[k] || { label: k, color: '#8b91a0', emoji: '🧩' }
+
+// 部门 → lucide 线性图标（办公室工位头像用，风格与全局统一，替代 emoji）
+const DEPT_ICON: Record<string, LucideIcon> = {
+  engineering: Code2, design: Palette, product: ClipboardList,
+  marketing: Megaphone, qa: ShieldCheck, data: Brain, game: Gamepad2
+}
+const deptIcon = (k: string): LucideIcon => DEPT_ICON[k] || Puzzle
 
 const PAGE_SIZE = 24
 
@@ -450,12 +460,31 @@ function RequestFlow({ tasks, employees }: { tasks?: VibeTaskInfo[]; employees: 
   )
 }
 
-// 单个像素工位：显示器 + 头像 + 桌面 + 铭牌；忙碌时亮屏辉光 + 头顶任务气泡 + 头像浮动。
+// 摸鱼活动池：空闲员工不上班，按 id 稳定地随机做点不务正业的小动作，增加趣味。
+const SLACK = [
+  { emoji: '🎮', label: '打游戏' },
+  { emoji: '☕', label: '喝咖啡' },
+  { emoji: '📱', label: '刷手机' },
+  { emoji: '😴', label: '打盹' },
+  { emoji: '🐟', label: '摸鱼' },
+  { emoji: '🍜', label: '干饭' },
+  { emoji: '🎧', label: '听歌' }
+] as const
+function slackOf(id: string): { emoji: string; label: string } {
+  let h = 0
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0
+  return SLACK[h % SLACK.length]
+}
+
+// 单个像素工位：显示器 + 坐着的小人（头+肩）+ 桌面 + 铭牌。忙碌时亮屏辉光 + 头顶任务
+// 气泡 + 脑袋专注地上下点动；空闲时屏幕变成在打游戏/刷手机，脑袋慵懒地左右晃（摸鱼）。
 type DeskTask = { taskTitle: string; reqTitle: string; pct: number; count: number }
 function Desk({ employee: e, task }: { employee: EmployeeInfo; task?: DeskTask }) {
   const d = dept(e.dept)
+  const DeptIcon = deptIcon(e.dept)
   const lv = levelOf(e.stats.done)
   const busy = e.status === 'busy' || !!task
+  const slack = slackOf(e.id)
   const tok = (e.stats.tokensIn ?? 0) + (e.stats.tokensOut ?? 0)
   const screenStyle = (busy
     ? { borderColor: d.color, background: d.color + '22', '--glow': d.color }
@@ -478,21 +507,21 @@ function Desk({ employee: e, task }: { employee: EmployeeInfo; task?: DeskTask }
           <div className="mx-auto w-0 h-0 border-l-4 border-r-4 border-t-4 border-l-transparent border-r-transparent" style={{ borderTopColor: d.color }} />
         </div>
       )}
-      {/* 显示器 */}
+      {/* 显示器：忙碌显示进度%，空闲变成在打游戏/刷手机（摸鱼）的小活动 */}
       <div className={cn('w-[58px] h-[40px] rounded-[4px] border-2 grid place-items-center', busy && 'office-glow')} style={screenStyle}>
         {busy
           ? <span className="text-[11px] font-bold tabular-nums" style={{ color: d.color }}>{task ? task.pct + '%' : '···'}</span>
-          : <span className="text-[12px] opacity-40">💤</span>}
+          : <span className="text-[16px] office-wiggle leading-none">{slack.emoji}</span>}
       </div>
       {/* 支架 */}
       <div className="w-2 h-1.5 bg-muted-foreground/30" />
       <div className="w-7 h-1 bg-muted-foreground/30 rounded-sm" />
-      {/* 头像（坐在桌前），桌面略微盖住下缘营造“坐着”的层次 */}
-      <div
-        className={cn('w-9 h-9 rounded-full grid place-items-center text-lg border-2 z-[1] -mb-2.5', busy && 'office-bob')}
-        style={{ borderColor: d.color, background: d.color + '1f' }}
-      >
-        {d.emoji}
+      {/* 小人：头 + 肩，坐在桌后（桌面盖住肩部下缘）。忙碌点头、空闲慵懒摇头 */}
+      <div className={cn('relative z-[1] -mb-3 flex flex-col items-center', busy ? 'office-bob' : 'office-sway')}>
+        <div className="w-9 h-9 rounded-full grid place-items-center border-2" style={{ borderColor: d.color, background: d.color + '1f' }}>
+          <DeptIcon size={16} style={{ color: d.color }} />
+        </div>
+        <div className="w-8 h-3.5 -mt-1 rounded-t-[12px] border-2 border-b-0" style={{ background: d.color + '2a', borderColor: d.color + '66' }} />
       </div>
       {/* 桌面 */}
       <div className="w-full h-[16px] rounded-[3px] border shadow-[2px_2px_0_rgba(0,0,0,0.1)]" style={{ background: d.color + '14', borderColor: d.color + '55' }} />
@@ -503,7 +532,7 @@ function Desk({ employee: e, task }: { employee: EmployeeInfo; task?: DeskTask }
           <span title={lv.name}>{lv.icon}</span>
           {busy
             ? <span style={{ color: d.color }}>● 忙碌</span>
-            : <span className="text-muted-foreground/55">空闲</span>}
+            : <span className="text-muted-foreground/60">{slack.emoji} {slack.label}</span>}
         </div>
       </div>
     </div>
@@ -520,10 +549,10 @@ function OfficeFloor({ employees, currentTaskByEmp, onGoMarket }: {
     return (
       <div className="grid place-items-center text-center text-muted-foreground rounded-xl border-2 border-dashed border-border" style={{ height: '46vh' }}>
         <div>
-          <div className="text-5xl mb-3 opacity-80">🪑</div>
+          <Armchair size={44} className="mx-auto mb-3 opacity-50" />
           <h2 className="text-foreground font-semibold mb-1.5">办公室空空如也</h2>
           <p className="text-[12.5px] mb-4 max-w-sm">还没有员工入职 —— 去人才市场招募你的第一位 AI 员工，TA 就会出现在这里的工位上。</p>
-          <button onClick={onGoMarket} className="px-4 py-2 rounded-lg bg-primary text-primary-foreground font-medium text-sm">🛒 去人才市场招募</button>
+          <button onClick={onGoMarket} className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-primary text-primary-foreground font-medium text-sm"><Store size={14} /> 去人才市场招募</button>
         </div>
       </div>
     )
@@ -533,7 +562,7 @@ function OfficeFloor({ employees, currentTaskByEmp, onGoMarket }: {
     <div className="rounded-xl border-2 border-border overflow-hidden">
       {/* 门牌 */}
       <div className="flex items-center gap-2 px-3 py-2 border-b-2 border-border bg-card/60">
-        <span className="text-sm">🏢</span>
+        <Building2 size={14} className="text-primary" />
         <span className="font-semibold text-[12.5px]">办公室</span>
         <span className="text-[10.5px] text-muted-foreground">· 忙碌 <b className="text-foreground">{busy}</b> / 共 {employees.length} 人</span>
         {busy === 0 && <span className="text-[10.5px] text-muted-foreground/60">· 全员空闲，去看板派活让大家动起来</span>}
@@ -678,9 +707,9 @@ export function Board({ employees, onChange, goMarket, goWorkbench }: { employee
     { key: 'done', items: doneList }
   ]
 
-  const VIEWS: { key: 'office' | 'flow'; label: string }[] = [
-    { key: 'office', label: '🏢 办公室' },
-    { key: 'flow', label: '🗂 流程图' }
+  const VIEWS: { key: 'office' | 'flow'; label: string; Icon: LucideIcon }[] = [
+    { key: 'office', label: '办公室', Icon: Building2 },
+    { key: 'flow', label: '流程图', Icon: Workflow }
   ]
 
   return (
@@ -691,8 +720,8 @@ export function Board({ employees, onChange, goMarket, goWorkbench }: { employee
         <div className="flex gap-0.5 rounded-lg bg-muted/40 border border-border p-0.5">
           {VIEWS.map(v => (
             <button key={v.key} onClick={() => setView(v.key)}
-              className={cn('px-2.5 py-1 rounded-md text-[11px] transition-colors', view === v.key ? 'bg-background text-foreground font-semibold shadow-sm' : 'text-muted-foreground hover:text-foreground')}>
-              {v.label}
+              className={cn('flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] transition-colors', view === v.key ? 'bg-background text-foreground font-semibold shadow-sm' : 'text-muted-foreground hover:text-foreground')}>
+              <v.Icon size={12} /> {v.label}
             </button>
           ))}
         </div>
