@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Building2, X, ArrowRight } from 'lucide-react'
+import { Building2, X, ArrowRight, Store, Users, Hammer, LayoutGrid, BarChart3, type LucideIcon } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { VibeWorkbench } from './index'
 import { Board, Market, Roster, Dashboard } from '../Company'
@@ -59,12 +59,12 @@ export function WorkbenchPage() {
   const hiredSoulIds = new Set(employees.map(e => e.soulId))
   const busy = employees.filter(e => e.status === 'busy').length
 
-  const TABS: [Tab, string][] = [
-    ['market', '🛒 人才市场'],
-    ['team', `👥 团队 ${employees.length}`],
-    ['ide', '🛠 工作台'],
-    ['board', '🏢 看板'],
-    ['dash', '📊 经营台']
+  const TABS: { key: Tab; label: string; Icon: LucideIcon; badge?: string }[] = [
+    { key: 'market', label: '人才市场', Icon: Store },
+    { key: 'team', label: '团队', Icon: Users, badge: employees.length ? String(employees.length) : undefined },
+    { key: 'ide', label: '工作台', Icon: Hammer },
+    { key: 'board', label: '看板', Icon: LayoutGrid },
+    { key: 'dash', label: '经营台', Icon: BarChart3 }
   ]
 
   // ── 步骤引导：根据流程进度算出「下一步」──────────────────────────────────
@@ -91,10 +91,12 @@ export function WorkbenchPage() {
       <div className="flex items-center gap-2 px-3 h-9 border-b border-border bg-card/60 shrink-0">
         <Building2 size={14} className="text-primary shrink-0" />
         <div className="flex gap-0.5">
-          {TABS.map(([k, label]) => (
-            <button key={k} onClick={() => setTab(k)}
-              className={cn('px-3 py-1 rounded-md text-xs', tab === k ? 'bg-primary/15 text-primary font-semibold' : 'text-muted-foreground hover:text-foreground')}>
+          {TABS.map(({ key, label, Icon, badge }) => (
+            <button key={key} onClick={() => setTab(key)}
+              className={cn('flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs', tab === key ? 'bg-primary/15 text-primary font-semibold' : 'text-muted-foreground hover:text-foreground')}>
+              <Icon size={13} className="shrink-0" />
               {label}
+              {badge && <span className="text-[10px] px-1 rounded bg-muted-foreground/15 tabular-nums">{badge}</span>}
             </button>
           ))}
         </div>

@@ -1,5 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Search, X, UserPlus, Trash2, Cpu, Loader2, BadgeCheck, Sparkles } from 'lucide-react'
+import {
+  Search, X, UserPlus, Trash2, Cpu, Loader2, BadgeCheck, Sparkles,
+  Users, UserCheck, CheckCircle2, Coins, Wallet, Gauge, Flame, type LucideIcon
+} from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { Select } from '../../components/ui/Select'
 import { toast } from '../../components/ui/Toast'
@@ -290,12 +293,12 @@ export function Dashboard({ employees }: { employees: EmployeeInfo[] }) {
   const done = employees.reduce((s, e) => s + e.stats.done, 0)
   const cost = employees.reduce((s, e) => s + (e.stats.cost ?? 0), 0)
   const tokens = employees.reduce((s, e) => s + (e.stats.tokensIn ?? 0) + (e.stats.tokensOut ?? 0), 0)
-  const kpis: [string, string, string][] = [
-    ['👥', String(employees.length), '员工'],
-    ['🟢', String(employees.length - busy), '在岗空闲'],
-    ['✅', String(done), '完成需求'],
-    ['🪙', formatTokens(tokens), '累计 token'],
-    ['💰', formatCostUsd(cost), '累计成本']
+  const kpis: { Icon: LucideIcon; value: string; label: string; color: string; bg: string }[] = [
+    { Icon: Users,        value: String(employees.length),        label: '员工',      color: 'text-indigo-500',  bg: 'bg-indigo-500/12' },
+    { Icon: UserCheck,    value: String(employees.length - busy), label: '在岗空闲',  color: 'text-emerald-500', bg: 'bg-emerald-500/12' },
+    { Icon: CheckCircle2, value: String(done),                    label: '完成需求',  color: 'text-sky-500',     bg: 'bg-sky-500/12' },
+    { Icon: Coins,        value: formatTokens(tokens),            label: '累计 token', color: 'text-amber-500',   bg: 'bg-amber-500/12' },
+    { Icon: Wallet,       value: formatCostUsd(cost),             label: '累计成本',  color: 'text-rose-500',    bg: 'bg-rose-500/12' }
   ]
   const byDept: Record<string, EmployeeInfo[]> = {}
   for (const e of employees) (byDept[e.dept] = byDept[e.dept] || []).push(e)
@@ -304,35 +307,50 @@ export function Dashboard({ employees }: { employees: EmployeeInfo[] }) {
   const spenders = [...employees]
     .sort((a, b) => (b.stats.cost ?? 0) - (a.stats.cost ?? 0) || b.stats.out - a.stats.out)
     .slice(0, 6)
-  const medals = ['🥇', '🥈', '🥉', '4', '5', '6']
+  // 名次徽章配色：前三金/银/铜，其余中性。
+  const rankTint = ['bg-amber-400/20 text-amber-600 dark:text-amber-400', 'bg-slate-300/30 text-slate-500 dark:text-slate-300', 'bg-orange-500/15 text-orange-600 dark:text-orange-400']
 
   if (!employees.length) return <div className="grid place-items-center text-muted-foreground text-sm" style={{ height: '50vh' }}><div className="text-center"><Sparkles className="mx-auto mb-2 opacity-60" /> 招募员工并完成需求后，这里会显示团队经营数据</div></div>
 
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-5 gap-3">
-        {kpis.map(k => <div key={k[2]} className="rounded-xl border border-border bg-card p-3.5"><div className="text-2xl font-bold">{k[0]} {k[1]}</div><div className="text-[11px] text-muted-foreground mt-0.5">{k[2]}</div></div>)}
+        {kpis.map(k => (
+          <div key={k.label} className="rounded-xl border border-border bg-card p-3.5">
+            <div className="flex items-center gap-2.5">
+              <span className={cn('w-9 h-9 rounded-lg grid place-items-center shrink-0', k.bg)}><k.Icon size={17} className={k.color} /></span>
+              <div className="min-w-0">
+                <div className="text-xl font-bold leading-none tabular-nums truncate">{k.value}</div>
+                <div className="text-[11px] text-muted-foreground mt-1">{k.label}</div>
+              </div>
+            </div>
+          </div>
+        ))}
       </div>
       <div className="grid grid-cols-2 gap-3.5">
         <div className="rounded-xl border border-border bg-card p-3.5">
-          <h4 className="text-[12.5px] font-semibold mb-3">各部门负载</h4>
+          <h4 className="flex items-center gap-1.5 text-[12.5px] font-semibold mb-3"><Gauge size={14} className="text-muted-foreground" /> 各部门负载</h4>
           {Object.keys(DEPT).filter(d => byDept[d]).map(d => {
             const a = byDept[d], b = a.filter(e => e.status === 'busy').length
-            return <div key={d} className="flex items-center gap-2.5 mb-2 text-xs"><span className="w-20 text-muted-foreground">{dept(d).label}</span>
+            return <div key={d} className="flex items-center gap-2.5 mb-2 text-xs">
+              <span className="w-20 flex items-center gap-1.5 text-muted-foreground"><span className="w-2 h-2 rounded-sm shrink-0" style={{ background: dept(d).color }} />{dept(d).label}</span>
               <span className="flex-1 h-2 bg-muted rounded overflow-hidden"><span className="block h-full" style={{ width: a.length / maxN * 100 + '%', background: dept(d).color }} /></span>
               <span className="w-16 text-right text-muted-foreground text-[11px]">{a.length}人·忙{b}</span></div>
           })}
         </div>
         <div className="rounded-xl border border-border bg-card p-3.5">
-          <h4 className="text-[12.5px] font-semibold mb-3">💸 成本 / 消耗榜</h4>
+          <h4 className="flex items-center gap-1.5 text-[12.5px] font-semibold mb-3"><Flame size={14} className="text-rose-500" /> 成本 / 消耗榜</h4>
           {spenders.map((e, i) => {
             const tok = (e.stats.tokensIn ?? 0) + (e.stats.tokensOut ?? 0)
             return (
               <div key={e.id} className="flex items-center gap-2.5 py-2 border-b border-border last:border-0">
-                <span className="w-6 text-center">{medals[i]}</span>
-                <span className="flex-1 text-[12.5px] font-medium truncate">{dept(e.dept).emoji} {e.name}</span>
-                <span className="text-[11px] text-muted-foreground tabular-nums" title={`输入 ${(e.stats.tokensIn ?? 0).toLocaleString()} · 输出 ${(e.stats.tokensOut ?? 0).toLocaleString()} tokens · ${e.stats.done} 完成`}>
-                  🪙 {formatTokens(tok)} · <span className="text-amber-600 dark:text-amber-400 font-medium">{formatCostUsd(e.stats.cost ?? 0)}</span>
+                <span className={cn('w-5 h-5 shrink-0 rounded-full grid place-items-center text-[10px] font-bold tabular-nums', rankTint[i] ?? 'bg-muted text-muted-foreground')}>{i + 1}</span>
+                <span className="flex items-center gap-1.5 flex-1 min-w-0 text-[12.5px] font-medium">
+                  <span className="w-2 h-2 rounded-sm shrink-0" style={{ background: dept(e.dept).color }} title={dept(e.dept).label} />
+                  <span className="truncate">{e.name}</span>
+                </span>
+                <span className="text-[11px] text-muted-foreground tabular-nums shrink-0" title={`输入 ${(e.stats.tokensIn ?? 0).toLocaleString()} · 输出 ${(e.stats.tokensOut ?? 0).toLocaleString()} tokens · ${e.stats.done} 完成`}>
+                  {formatTokens(tok)} tok · <span className="text-amber-600 dark:text-amber-400 font-medium">{formatCostUsd(e.stats.cost ?? 0)}</span>
                 </span>
               </div>
             )
