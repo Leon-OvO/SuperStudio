@@ -1305,10 +1305,15 @@ function buildActJs(action: PageAction): string {
       const cls = e.getAttribute('class') || ''
       if (/\\b(publish|submit|post|btn|button)\\b/i.test(cls)) s += 1
       if (/\\b(bg-red|btn-danger|btn-primary|is-primary|primary|danger|cta)\\b/i.test(cls)) s += 2
-      if (inNavLike(e)) s -= isRealButton(e) ? 2 : 6
+      if (inNavLike(e)) s -= 6
       return s
     }
-    // 收集并按分数排序当前 DOM 里文字匹配 want 的候选（exact 优先，否则 partial）。
+    // “发布/提交类真按钮”：真 <button>/submit + 红色/主色/publish 类名。小红书真发布按钮是
+    // <button class="ce-btn bg-red">发布</button>；侧栏「发布笔记」既非精确文本也无此类名。
+    const isPublishStyled = (e) => {
+      try { return isRealButton(e) && /\\b(bg-red|btn-danger|btn-primary|is-primary|primary|danger|publish|submit|ce-btn)\\b/i.test(e.getAttribute('class') || '') } catch (x) { return false }
+    }
+    // 收集文字匹配 want 的候选：精确(exact)与包含(partial)分开返回，各自按分排序。
     const collect = () => {
       const exact = [], partial = []
       for (const r of roots) {
@@ -1322,22 +1327,28 @@ function buildActJs(action: PageAction): string {
           else if (t.indexOf(want) !== -1 && t.length <= want.length + 6) partial.push(c)
         }
       }
-      const pool = exact.length ? exact : partial
-      pool.sort((a, b) => scoreOf(b) - scoreOf(a))
-      return pool
+      exact.sort((a, b) => scoreOf(b) - scoreOf(a))
+      partial.sort((a, b) => scoreOf(b) - scoreOf(a))
+      return { exact, partial }
     }
     const ACTION_WORDS_RE = /^(发布|立即发布|提交|确认|发送|确定|完成|保存|Submit|Send|Post|Publish|Save)$/i
-    let pool = collect()
-    // 真发布/提交按钮常在表单底部惰性挂载（IntersectionObserver），且要等图片上传完才启用。
-    // 编辑时页面没滚到底它还没渲染，text="发布" 只会匹配到侧栏「发布笔记」(partial 含「发布」)
-    // → 误点进草稿箱（用户复现的根因）。所以「按动作词找不到任何真 <button>」时，把页面 +
-    // 所有内部可滚动容器滚到底触发挂载，等一下再找一次，最多重试 2 轮（约 1.5s）。
-    if (ACTION_WORDS_RE.test(want)) {
-      for (let attempt = 0; attempt < 2 && !pool.some(isRealButton); attempt++) {
+    const isActionWord = ACTION_WORDS_RE.test(want)
+    // 在一组候选里挑「最像表单提交按钮」的：① 表单内(非导航)真按钮 → ② 红/主色 CTA 按钮(即便
+    // 祖先 class 被 nav 正则误命中) → ③ 表单内任意元素。永远【不返回】导航/侧栏里的元素。
+    const pickAction = (cands) =>
+      cands.find(c => isRealButton(c) && !inNavLike(c))
+      || cands.find(c => isPublishStyled(c))
+      || cands.find(c => !inNavLike(c))
+      || null
+    let { exact, partial } = collect()
+    if (isActionWord) {
+      // 动作词只认【精确文本】的表单按钮，彻底丢弃 partial：侧栏「发布笔记」含「发布」二字会被
+      // partial 命中 → 误点进草稿箱（用户复现的根因）。真发布按钮常在表单底部惰性挂载、且要等
+      // 图片处理完才启用，挑不到时把页面+所有内部可滚动容器滚到底、等一下再找，最多 2 轮(~1.5s)。
+      let best = pickAction(exact)
+      for (let attempt = 0; attempt < 2 && !best; attempt++) {
         try { window.scrollTo(0, document.body.scrollHeight) } catch (e) {}
         try { const se = document.scrollingElement || document.documentElement; se.scrollTop = se.scrollHeight } catch (e) {}
-        // 创作类 SPA 常把表单放进内层 overflow 容器（外层 100vh overflow:hidden），
-        // 只滚 window 不够——把页面上可滚动的容器也滚到底（上限 60 个，避免开销）。
         try {
           let n = 0
           for (const sc of document.querySelectorAll('*')) {
@@ -1346,14 +1357,15 @@ function buildActJs(action: PageAction): string {
           }
         } catch (e) {}
         await new Promise(r => setTimeout(r, 750))
-        pool = collect()
+        ;({ exact } = collect())
+        best = pickAction(exact)
       }
-    }
-    el = pool[0] || null
-    if (!el) return { ok: false, finalUrl: location.href, error: '页面上找不到文字为「' + action.text + '」的可点击元素，请先 web_snapshot 看看现在有哪些元素' }
-    // 滚动重试后仍「所有候选都既像导航、又不是真按钮」才硬拒绝（真按钮确实没挂出）。
-    if (ACTION_WORDS_RE.test(want) && pool.every(c => inNavLike(c) && !isRealButton(c))) {
-      return { ok: false, finalUrl: location.href, error: '已滚动到底部仍找不到真正的发布按钮——找到的「' + action.text + '」候选都在侧栏/导航里。请重新 web_snapshot 确认，或确认是否已满足发布条件（标题/正文/图片齐全）。' }
+      el = best
+      if (!el) return { ok: false, finalUrl: location.href, error: '已滚动到底部仍找不到表单内文字为「' + action.text + '」的提交按钮（侧栏「发布笔记」等导航入口已被排除）。请确认是否已满足发布条件（标题/正文/图片都就绪），或 web_snapshot 看看当前元素。' }
+    } else {
+      const pool = exact.length ? exact : partial
+      el = pool[0] || null
+      if (!el) return { ok: false, finalUrl: location.href, error: '页面上找不到文字为「' + action.text + '」的可点击元素，请先 web_snapshot 看看现在有哪些元素' }
     }
   }
   if (!el) return { ok: false, finalUrl: location.href, error: '元素已失效，请重新 web_snapshot' }
