@@ -1578,8 +1578,11 @@ export async function actOnPage(action: PageAction): Promise<ActResult> {
             }
           }
         } catch { /* framesInSubtree unavailable — keep main-frame result */ }
-        if (!result.ok && frameDiag.length) {
-          result = { ...result, error: (result.error || '') + ' || 子框架(' + frameDiag.length + ')：' + frameDiag.join(' ;; ') }
+        if (!result.ok) {
+          // [cf:N] 是构建标记——只要报错里看到它，就证明跑的是含跨框架兜底的最新代码。
+          let nFrames = 0
+          try { nFrames = wc.mainFrame.framesInSubtree.length - 1 } catch { /* ignore */ }
+          result = { ...result, error: (result.error || '') + ' || [cf:' + nFrames + ']' + (frameDiag.length ? ' 子框架：' + frameDiag.join(' ;; ') : '（无可探测子框架）') }
         }
       }
       const targetLabel = action.type === 'click' ? (action.ref || `text:${action.text ?? ''}`) : action.ref
