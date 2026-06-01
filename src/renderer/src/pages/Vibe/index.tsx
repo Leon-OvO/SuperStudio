@@ -359,6 +359,10 @@ export function VibeWorkbench() {
   }
 
   function handleStop() {
+    // 乐观地立即清运行态，按钮即时响应——即便后端要等卡住的流醒来才真正 abort，
+    // UI 也不会显得「点了没反应」。随后到达的 VIBE_DONE/ERROR 是幂等的。
+    s.setRunning(null)
+    s.setStreamingTask(null)
     if (!s.projectPath) return
     window.api.vibeStop?.({ projectPath: s.projectPath }).catch(() => {/* ignore */})
   }

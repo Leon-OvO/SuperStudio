@@ -1006,6 +1006,16 @@ export function vibeHandlers(): void {
         let accumulated = ''
         let runError: Error | null = null
         let usage: { promptTokens?: number; completionTokens?: number } | null = null
+        // 看门狗：若 STALL_MS 内没有任何新输出（典型「一直加载、不吐字、也不报错」），
+        // 主动中断并报错——否则前端会无限期干等，既无内容也无任何错误体现。每来一段
+        // 输出就续期；用户主动停止与“卡死”用 stalled 区分。
+        let stalled = false
+        let stallTimer: ReturnType<typeof setTimeout> | null = null
+        const STALL_MS = 75000
+        const armStall = () => {
+          if (stallTimer) clearTimeout(stallTimer)
+          stallTimer = setTimeout(() => { if (!ctl.signal.aborted) { stalled = true; ctl.abort() } }, STALL_MS)
+        }
         try {
           const result = streamText({
             model,
@@ -1020,19 +1030,27 @@ export function vibeHandlers(): void {
               runError = error as Error
             }
           })
+          armStall()
           for await (const chunk of result.textStream) {
             if (ctl.signal.aborted) break
             if (chunk) {
               accumulated += chunk
               emit({ type: 'text', text: chunk })
+              armStall()
             }
           }
           await result.finishReason.catch(() => null)
           usage = await result.usage.catch(() => null)
         } catch (err) {
           runError = err as Error
+        } finally {
+          if (stallTimer) clearTimeout(stallTimer)
         }
 
+        if (stalled) {
+          win.webContents.send(IPC.VIBE_ERROR, { projectPath, requestId, error: 'AI 长时间无响应（可能是模型、网络或代理异常）。已自动停止，请重试，或到「设置 → 模型 / 网络代理」检查配置。' })
+          return
+        }
         if (ctl.signal.aborted) {
           win.webContents.send(IPC.VIBE_DONE, { projectPath, requestId, cancelled: true })
           return
