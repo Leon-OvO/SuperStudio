@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Code2, ChevronDown, FolderOpen, FolderInput, Plus, Trash2, Monitor, MonitorOff, TerminalSquare } from 'lucide-react'
+import { Building2, ChevronDown, FolderOpen, FolderInput, Plus, Trash2, Monitor, MonitorOff, TerminalSquare } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { ModelPicker } from './ModelPicker'
 import type { RecentProject } from '../../../../shared/ipc-types'
@@ -46,8 +46,8 @@ export function TopBar({
 
   return (
     <div className="flex items-center gap-2 px-4 py-2 border-b border-border shrink-0 bg-card">
-      <Code2 size={14} className="text-primary shrink-0" />
-      <span className="text-xs font-semibold mr-1">构建</span>
+      <Building2 size={14} className="text-primary shrink-0" />
+      <span className="text-xs font-semibold mr-1">公司</span>
 
       {/* Project picker */}
       <div className="relative" ref={menuRef}>

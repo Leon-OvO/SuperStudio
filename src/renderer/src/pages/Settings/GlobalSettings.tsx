@@ -262,7 +262,7 @@ export function GlobalSettings({ tab, settings, providers, onSave, onProvidersRe
   // build tab
   return (
     <div className="space-y-4 max-w-2xl">
-      <h2 className="text-lg font-semibold">构建</h2>
+      <h2 className="text-lg font-semibold">公司</h2>
       <label className="flex items-center gap-2 text-sm">
         <input
           type="checkbox"
@@ -272,7 +272,7 @@ export function GlobalSettings({ tab, settings, providers, onSave, onProvidersRe
         新需求拆解完毕后自动开始执行
       </label>
       <p className="text-xs text-muted-foreground">
-        开启后，在「构建」页里用「新需求」模式提交后，AI 把需求拆解成任务列表的同时会立刻开始逐个实施，不用再手动点「执行剩余任务」。适合相信 AI 拆解结果、希望一键到位的场景；如果想先 review 任务列表再决定，请关闭。
+        开启后，在「公司」页里用「新需求」模式提交后，AI 把需求拆解成任务列表的同时会立刻开始逐个实施，不用再手动点「执行剩余任务」。适合相信 AI 拆解结果、希望一键到位的场景；如果想先 review 任务列表再决定，请关闭。
       </p>
       <button onClick={save} className="btn-primary">保存</button>
     </div>

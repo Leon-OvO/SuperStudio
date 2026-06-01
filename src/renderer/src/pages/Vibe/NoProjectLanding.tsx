@@ -35,9 +35,9 @@ export function NoProjectLanding({ onSwitchProject, onOpenExisting, onNewProject
           <div className="w-16 h-16 mx-auto rounded-2xl bg-primary/10 flex items-center justify-center ring-1 ring-primary/20">
             <Sparkles size={28} className="text-primary" />
           </div>
-          <h1 className="text-2xl font-semibold tracking-tight">开始一个构建项目</h1>
+          <h1 className="text-2xl font-semibold tracking-tight">开张：选择一个项目</h1>
           <p className="text-sm text-muted-foreground max-w-md mx-auto leading-relaxed">
-            选择一个本地文件夹打开，或者从零开始新建一个项目。AI 会读懂代码，与你协作完成需求。
+            选择一个本地文件夹打开，或者从零开始新建一个项目。提需求 → AI 员工拆解、派活、协作完成。
           </p>
         </div>
 

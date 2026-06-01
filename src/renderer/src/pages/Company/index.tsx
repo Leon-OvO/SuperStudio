@@ -512,7 +512,7 @@ export function Board({ employees, onChange, goMarket, goWorkbench }: { employee
         <div>
           <div className="text-5xl mb-3 opacity-80">🗂</div>
           <h2 className="text-foreground font-semibold mb-1.5">还没有需求可派活</h2>
-          <p className="text-[12.5px] mb-1">需求来自 Vibe「构建」页：打开一个项目 → 用「新需求」描述任务，PM 会拆解成可执行任务。</p>
+          <p className="text-[12.5px] mb-1">需求来自「公司」页：打开一个项目 → 用「新需求」描述任务，PM 会拆解成可执行任务。</p>
           <p className="text-[12.5px] mb-4">需求出现在这里后，给它<strong>指派一位员工</strong>并点<strong>开工</strong>，员工就会用自己的模型与岗位人格去执行。</p>
           <div className="flex gap-2 justify-center">
             <button onClick={goMarket} className="px-4 py-2 rounded-lg border border-border text-sm">先去招募员工</button>

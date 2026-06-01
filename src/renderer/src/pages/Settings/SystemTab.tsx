@@ -47,7 +47,7 @@ export function SystemTab({ settings, providers, onSave, onProvidersRefresh }: P
         <SubTabPill active={subTab === 'system'} onClick={() => setSubTab('system')}>系统</SubTabPill>
         <SubTabPill active={subTab === 'defaults'} onClick={() => setSubTab('defaults')}>模型</SubTabPill>
         <SubTabPill active={subTab === 'auto-model'} onClick={() => setSubTab('auto-model')}>自动切换模型</SubTabPill>
-        <SubTabPill active={subTab === 'build'} onClick={() => setSubTab('build')}>构建</SubTabPill>
+        <SubTabPill active={subTab === 'build'} onClick={() => setSubTab('build')}>公司</SubTabPill>
         <SubTabPill active={subTab === 'browser'} onClick={() => setSubTab('browser')}>浏览器</SubTabPill>
         <SubTabPill active={subTab === 'skin'} onClick={() => setSubTab('skin')}>皮肤</SubTabPill>
       </div>
@@ -111,7 +111,7 @@ function SystemSection({
     if (!settings) return
     try {
       await onSave({ ...settings, startupPage: next })
-      toast.success(next === 'chat' ? '下次启动将进入对话页' : '下次启动将进入构建页')
+      toast.success(next === 'chat' ? '下次启动将进入对话页' : '下次启动将进入公司页')
     } catch (e) {
       toast.error('保存失败：' + ((e as Error)?.message ?? '未知错误'))
     }
@@ -192,7 +192,7 @@ function SystemSection({
             onChange={updateStartupPage}
             options={[
               { value: 'chat', label: '对话' },
-              { value: 'vibe', label: '构建' }
+              { value: 'vibe', label: '公司' }
             ]}
             size="md"
             disabled={!settings}
@@ -227,7 +227,7 @@ function SystemSection({
         title="菜单右键打开文件、文件夹"
         description={
           state.shellIntegrationSupported
-            ? '在 Windows 资源管理器中右键点击文件或文件夹时显示「用 SuperStudio 打开」。文件会作为编辑器标签页打开；文件夹会作为构建项目打开。'
+            ? '在 Windows 资源管理器中右键点击文件或文件夹时显示「用 SuperStudio 打开」。文件会作为编辑器标签页打开；文件夹会作为「公司」项目打开。'
             : '当前操作系统暂不支持此功能（仅 Windows 可用）。'
         }
         checked={state.storedShellIntegration}

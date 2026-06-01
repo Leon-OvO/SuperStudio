@@ -7,7 +7,7 @@ type Dict = Record<string, string>
 const ZH: Dict = {
   // Sidebar
   'nav.chat': '对话',
-  'nav.vibe': '构建',
+  'nav.vibe': '公司',
   'nav.workflow': '工作流',
   'nav.gallery': '素材库',
   'nav.video': '视频',
@@ -185,7 +185,7 @@ const ZH: Dict = {
 
 const EN: Dict = {
   'nav.chat': 'Chat',
-  'nav.vibe': 'Build',
+  'nav.vibe': 'Company',
   'nav.workflow': 'Workflow',
   'nav.gallery': 'Asset Library',
   'nav.video': 'Video',

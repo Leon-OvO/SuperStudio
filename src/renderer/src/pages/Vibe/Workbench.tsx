@@ -7,8 +7,8 @@ import { useEmployeesStore } from '../../stores/employees'
 import type { ProviderConfig } from '../../../../shared/ipc-types'
 
 /**
- * 统一工作台：把原「构建(Vibe IDE)」与「公司(人才/看板/经营)」合并到一个页面，
- * 顶部一行 tab 切换。消除两者割裂，也让侧边栏少一个顶级入口。
+ * 「公司」页（侧边栏入口，原名「构建」）：把 Vibe IDE 与公司经营（人才/看板/团队/
+ * 经营台）合并到一个页面，顶部一行 tab 切换。消除两者割裂，也让侧边栏少一个顶级入口。
  *   🛠 工作台 = 原 Vibe IDE（默认）
  *   🗂 看板 / 🛒 人才市场 / 👥 团队 / 📊 经营台 = 复用 Company 子视图
  */

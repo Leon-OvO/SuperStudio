@@ -99,7 +99,7 @@ export function ChatModelSetup({ onDone }: Props): JSX.Element {
           </div>
           <h1 className="text-xl font-semibold">选择默认对话模型</h1>
           <p className="text-sm text-muted-foreground">
-            指定一个用于「对话」和「构建」页面的默认模型。图片、视频、向量等其它任务的模型可以稍后在设置中按需配置。
+            指定一个用于「对话」和「公司」页面的默认模型。图片、视频、向量等其它任务的模型可以稍后在设置中按需配置。
           </p>
         </div>
 

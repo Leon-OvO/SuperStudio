@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 import {
-  MessageSquare, Zap, Image, Film, BookOpen, Code2, Sparkles, CalendarClock, Settings,
+  MessageSquare, Zap, Image, Film, BookOpen, Building2, Sparkles, CalendarClock, Settings,
   Sun, Moon, Languages, PanelLeftClose, PanelLeftOpen, type LucideIcon
 } from 'lucide-react'
 import { useUIStore } from '../../stores/ui'
@@ -17,10 +17,10 @@ export function Sidebar() {
 
   // Dashboard is intentionally not in the side nav — accessible from the top-right
   // user menu (TopBarUser) so the left nav stays focused on workspace pages.
-  // Flat, lean list (company is now merged into the 构建/Workbench page's tabs).
+  // Flat, lean list (the AI-company workspace lives under the 公司/Workbench page's tabs).
   const navItems = [
     { id: 'chat' as const, icon: MessageSquare, label: t('nav.chat') },
-    { id: 'vibe' as const, icon: Code2, label: t('nav.vibe') },
+    { id: 'vibe' as const, icon: Building2, label: t('nav.vibe') },
     { id: 'video' as const, icon: Film, label: t('nav.video') },
     { id: 'gallery' as const, icon: Image, label: t('nav.gallery') },
     { id: 'workflow' as const, icon: Zap, label: t('nav.workflow') },

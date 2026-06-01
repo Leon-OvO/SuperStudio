@@ -18,7 +18,7 @@ type Tab = 'installed' | 'browse' | 'sources'
 
 const SCENARIO_META: Record<SkillScenario, { label: string; Icon: typeof MessageSquare; color: string }> = {
   chat:  { label: '对话', Icon: MessageSquare, color: 'text-slate-600 dark:text-slate-300' },
-  vibe:  { label: '构建', Icon: Code2,         color: 'text-primary' },
+  vibe:  { label: '公司', Icon: Code2,         color: 'text-primary' },
   video: { label: '视频', Icon: Video,         color: 'text-purple-500' }
 }
 
