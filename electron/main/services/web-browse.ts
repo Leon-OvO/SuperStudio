@@ -1333,20 +1333,22 @@ function buildActJs(action: PageAction): string {
     }
     const ACTION_WORDS_RE = /^(发布|立即发布|提交|确认|发送|确定|完成|保存|Submit|Send|Post|Publish|Save)$/i
     const isActionWord = ACTION_WORDS_RE.test(want)
-    // 在一组候选里挑「最像表单提交按钮」的：① 表单内(非导航)真按钮 → ② 红/主色 CTA 按钮(即便
-    // 祖先 class 被 nav 正则误命中) → ③ 表单内任意元素。永远【不返回】导航/侧栏里的元素。
-    const pickAction = (cands) =>
-      cands.find(c => isRealButton(c) && !inNavLike(c))
-      || cands.find(c => isPublishStyled(c))
-      || cands.find(c => !inNavLike(c))
+    // 在精确(exact)+包含(partial)两组候选里挑「最像表单提交按钮」的：① 表单内(非导航)精确真按钮
+    // → ② 精确的红/主色 CTA 按钮(即便祖先 class 被 nav 误命中) → ③ partial 里的红/主色非导航真按钮
+    // (覆盖「发布(1/9)」这类带计数/图标、文本非纯「发布」的真按钮) → ④ 表单内任意精确元素。
+    // 永远【不返回】导航/侧栏里的元素——侧栏「发布笔记」既无 CTA 类名又在 nav，必被排除。
+    const pickAction = (exact, partial) =>
+      exact.find(c => isRealButton(c) && !inNavLike(c))
+      || exact.find(c => isPublishStyled(c))
+      || partial.find(c => isPublishStyled(c) && !inNavLike(c))
+      || exact.find(c => !inNavLike(c))
       || null
     let { exact, partial } = collect()
     if (isActionWord) {
-      // 动作词只认【精确文本】的表单按钮，彻底丢弃 partial：侧栏「发布笔记」含「发布」二字会被
-      // partial 命中 → 误点进草稿箱（用户复现的根因）。真发布按钮常在表单底部惰性挂载、且要等
-      // 图片处理完才启用，挑不到时把页面+所有内部可滚动容器滚到底、等一下再找，最多 2 轮(~1.5s)。
-      let best = pickAction(exact)
-      for (let attempt = 0; attempt < 2 && !best; attempt++) {
+      // 真发布按钮常在表单底部惰性挂载、且要等图片处理完才挂载/启用。挑不到时把页面+所有内部
+      // 可滚动容器滚到底、等一下再找，最多 4 轮(~3.2s) 覆盖图片处理延迟；仍无则带诊断报错，绝不误点侧栏。
+      let best = pickAction(exact, partial)
+      for (let attempt = 0; attempt < 4 && !best; attempt++) {
         try { window.scrollTo(0, document.body.scrollHeight) } catch (e) {}
         try { const se = document.scrollingElement || document.documentElement; se.scrollTop = se.scrollHeight } catch (e) {}
         try {
@@ -1356,12 +1358,32 @@ function buildActJs(action: PageAction): string {
             try { if (sc.scrollHeight - sc.clientHeight > 120) { sc.scrollTop = sc.scrollHeight; n++ } } catch (e) {}
           }
         } catch (e) {}
-        await new Promise(r => setTimeout(r, 750))
-        ;({ exact } = collect())
-        best = pickAction(exact)
+        await new Promise(r => setTimeout(r, 800))
+        ;({ exact, partial } = collect())
+        best = pickAction(exact, partial)
       }
       el = best
-      if (!el) return { ok: false, finalUrl: location.href, error: '已滚动到底部仍找不到表单内文字为「' + action.text + '」的提交按钮（侧栏「发布笔记」等导航入口已被排除）。请确认是否已满足发布条件（标题/正文/图片都就绪），或 web_snapshot 看看当前元素。' }
+      if (!el) {
+        // 诊断：dump 页面上所有按钮(文本|类名|尺寸|是否 nav)，定位「发布」到底在不在可达 DOM、
+        // 文本是否有隐藏字符、是否被 nav 误判。iframes 数 > 可达 roots 暗示按钮在跨域 iframe。
+        let diag = ''
+        try {
+          const seen = []
+          for (const r of roots) {
+            let bs; try { bs = r.querySelectorAll('button,[role="button"],input[type="submit"],input[type="button"]') } catch (e) { continue }
+            for (const b of bs) {
+              if (seen.length >= 30) break
+              const t = norm(b.textContent || b.value || b.getAttribute('aria-label') || '')
+              const cls = (b.getAttribute('class') || '').slice(0, 22)
+              let rc = '?'; try { const r2 = b.getBoundingClientRect(); rc = Math.round(r2.width) + 'x' + Math.round(r2.height) } catch (e) {}
+              seen.push((t || '∅').slice(0, 12) + '[' + cls + '|' + rc + (inNavLike(b) ? '|nav' : '') + ']')
+            }
+          }
+          const ifr = document.querySelectorAll('iframe,frame').length
+          diag = ' || 诊断 按钮' + seen.length + '个 roots=' + roots.length + ' iframes=' + ifr + '：' + seen.join(' ; ')
+        } catch (e) {}
+        return { ok: false, finalUrl: location.href, error: '已滚动到底部仍找不到表单内文字为「' + action.text + '」的提交按钮（侧栏已排除）。' + diag }
+      }
     } else {
       const pool = exact.length ? exact : partial
       el = pool[0] || null
