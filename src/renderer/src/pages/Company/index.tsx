@@ -356,49 +356,64 @@ function TaskProgressBar({ roll }: { roll?: { total: number; done: number; runni
 const TASK_ICON: Record<string, string> = { done: '✓', running: '◌', error: '✕', skipped: '⊘', pending: '○' }
 const TASK_COLOR: Record<string, string> = { done: 'text-emerald-500', running: 'text-blue-400', error: 'text-rose-400', skipped: 'text-muted-foreground/50', pending: 'text-muted-foreground/60' }
 
+/** Derive a rollup from the live sub-task list (preferred over the backend
+ *  snapshot since it updates the instant tasksByReq is re-fetched). */
+function rollupFromTasks(tasks: VibeTaskInfo[]): { total: number; done: number; running: number; error: number } {
+  const r = { total: tasks.length, done: 0, running: 0, error: 0 }
+  for (const t of tasks) {
+    if (t.status === 'done' || t.status === 'skipped') r.done++
+    else if (t.status === 'running') r.running++
+    else if (t.status === 'error') r.error++
+  }
+  return r
+}
+
 export function Board({ employees, onChange, goMarket, goWorkbench }: { employees: EmployeeInfo[]; onChange: () => void; goMarket: () => void; goWorkbench?: () => void }) {
+  const dlg = useConfirmDialog()
   const [requests, setRequests] = useState<VibeRequestInfo[]>([])
   const [loading, setLoading] = useState(true)
   const [applying, setApplying] = useState<string | null>(null)
-  // 展开看子任务：requestId → 子任务列表
-  const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const [deleting, setDeleting] = useState<string | null>(null)
+  // 折叠看子任务：requestId → 子任务列表。默认展开（看板就是要看子需求进度）。
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   const [tasksByReq, setTasksByReq] = useState<Record<string, VibeTaskInfo[]>>({})
   const debTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-
-  const refresh = useCallback(() => {
-    window.api.vibeRequestListAll()
-      .then((r: VibeRequestInfo[]) => setRequests(r.filter(x => x.kind === 'change' || x.kind === 'bugfix')))
-      .catch(() => {}).finally(() => setLoading(false))
-  }, [])
 
   const loadTasks = useCallback((reqId: string) => {
     window.api.vibeTaskList(reqId).then((t: VibeTaskInfo[]) => setTasksByReq(prev => ({ ...prev, [reqId]: t }))).catch(() => {})
   }, [])
 
-  function toggleExpand(reqId: string) {
-    setExpanded(prev => {
+  const refresh = useCallback(() => {
+    window.api.vibeRequestListAll()
+      .then((r: VibeRequestInfo[]) => {
+        const list = r.filter(x => x.kind === 'change' || x.kind === 'bugfix')
+        setRequests(list)
+        // 默认加载每个需求的子任务，进度条从子任务实时派生（不只依赖后端 rollup 快照）。
+        for (const req of list) loadTasks(req.id)
+      })
+      .catch(() => {}).finally(() => setLoading(false))
+  }, [loadTasks])
+
+  function toggleCollapse(reqId: string) {
+    setCollapsed(prev => {
       const next = new Set(prev)
       if (next.has(reqId)) next.delete(reqId)
-      else { next.add(reqId); loadTasks(reqId) }
+      else next.add(reqId)
       return next
     })
   }
 
   useEffect(() => {
     refresh()
-    // 实时：执行进度/完成时刷新看板与员工统计（progress 高频，防抖 400ms）
+    // 实时：执行进度/完成时刷新看板与子任务（progress 高频，防抖 250ms）
     const debounced = () => {
       if (debTimer.current) clearTimeout(debTimer.current)
-      debTimer.current = setTimeout(() => {
-        refresh()
-        // 展开中的卡片同步重拉子任务，进度条/子任务状态实时推进
-        setExpanded(cur => { cur.forEach(id => loadTasks(id)); return cur })
-      }, 400)
+      debTimer.current = setTimeout(() => { refresh(); onChange() }, 250)
     }
-    const u1 = window.api.onVibeDone(() => { debounced(); onChange() })
+    const u1 = window.api.onVibeDone(() => { debounced() })
     const u2 = window.api.onVibeProgress(() => { debounced() })
     return () => { u1?.(); u2?.(); if (debTimer.current) clearTimeout(debTimer.current) }
-  }, [refresh, onChange, loadTasks])
+  }, [refresh, onChange])
 
   async function assign(req: VibeRequestInfo, employeeId: string | null) {
     await window.api.vibeRequestSetAssignee(req.id, employeeId)
@@ -414,6 +429,13 @@ export function Board({ employees, onChange, goMarket, goWorkbench }: { employee
       refresh()
     } catch (e) { toast.error('开工失败：' + (e as Error).message) }
     finally { setApplying(null) }
+  }
+  async function remove(req: VibeRequestInfo) {
+    if (!(await dlg.confirm({ message: `确定删除需求「${req.title}」？子任务与执行记录一并删除，不可恢复。`, tone: 'danger', confirmLabel: '删除' }))) return
+    setDeleting(req.id)
+    try { await window.api.vibeRequestDelete(req.id); toast.success('已删除'); refresh() }
+    catch (e) { toast.error('删除失败：' + (e as Error).message) }
+    finally { setDeleting(null) }
   }
 
   if (loading) return <div className="text-center text-muted-foreground text-sm py-10"><Loader2 size={16} className="animate-spin inline" /> 加载需求…</div>
@@ -438,6 +460,7 @@ export function Board({ employees, onChange, goMarket, goWorkbench }: { employee
   const empById = (id?: string | null) => employees.find(e => e.id === id)
   return (
     <div>
+      {dlg.element}
       <div className="flex items-center mb-3">
         <div className="text-xs text-muted-foreground">把需求指派给员工并「开工」，员工以其底层模型 + 岗位人格执行。</div>
         <div className="flex-1" />
@@ -457,19 +480,26 @@ export function Board({ employees, onChange, goMarket, goWorkbench }: { employee
                 {items.length === 0 && <div className="text-[11px] text-muted-foreground/50 text-center py-4 border border-dashed border-border rounded-lg">空</div>}
                 {items.map(r => {
                   const emp = empById(r.assigneeEmployeeId)
-                  const isOpen = expanded.has(r.id)
+                  const isOpen = !collapsed.has(r.id)   // 默认展开
                   const subs = tasksByReq[r.id]
+                  // 进度优先用实时子任务派生，回退后端 rollup 快照。
+                  const roll = subs ? rollupFromTasks(subs) : r.taskRollup
                   return (
                     <div key={r.id} className="rounded-lg border border-border bg-card p-2.5">
                       <div className="flex items-start gap-1.5">
-                        <button onClick={() => toggleExpand(r.id)} className="text-muted-foreground/60 hover:text-foreground mt-0.5 text-[11px] w-3 shrink-0" title="展开子任务">{isOpen ? '▾' : '▸'}</button>
+                        <button onClick={() => toggleCollapse(r.id)} className="text-muted-foreground/60 hover:text-foreground mt-0.5 text-[11px] w-3 shrink-0" title={isOpen ? '收起子任务' : '展开子任务'}>{isOpen ? '▾' : '▸'}</button>
                         <div className="min-w-0 flex-1">
                           <div className="text-[13px] font-medium leading-snug">{r.title}</div>
                           <div className="text-[10px] text-muted-foreground mt-0.5">📁 {projName(r.projectPath)} · {r.kind === 'bugfix' ? '缺陷' : '需求'}</div>
                         </div>
+                        {/* 删除：任何状态都可删（已完成/失败/待应用），二次确认 */}
+                        <button onClick={() => remove(r)} disabled={deleting === r.id}
+                          className="shrink-0 text-muted-foreground/40 hover:text-rose-400 mt-0.5 disabled:opacity-40" title="删除该需求">
+                          {deleting === r.id ? <Loader2 size={11} className="animate-spin" /> : <Trash2 size={11} />}
+                        </button>
                       </div>
 
-                      <TaskProgressBar roll={r.taskRollup} />
+                      <TaskProgressBar roll={roll} />
 
                       {isOpen && (
                         <div className="mt-2 pl-3 border-l border-border space-y-1">
@@ -479,7 +509,7 @@ export function Board({ employees, onChange, goMarket, goWorkbench }: { employee
                               const te = employees.find(e => e.id === t.assigneeEmployeeId)
                               return (
                               <div key={t.id} className="flex items-start gap-1.5 text-[11px]">
-                                <span className={cn('shrink-0 w-3 text-center', TASK_COLOR[t.status] || '')}>{TASK_ICON[t.status] || '○'}</span>
+                                <span className={cn('shrink-0 w-3 text-center', t.status === 'running' && 'animate-pulse', TASK_COLOR[t.status] || '')}>{TASK_ICON[t.status] || '○'}</span>
                                 <span className={cn('leading-snug flex-1 min-w-0', t.status === 'done' || t.status === 'skipped' ? 'text-muted-foreground/60 line-through' : 'text-foreground/90')}>{t.title}</span>
                                 {te && <span className="shrink-0 text-[9.5px]" style={{ color: dept(te.dept).color }} title={`${te.name} · ${dept(te.dept).label}`}>{dept(te.dept).emoji} {te.name}</span>}
                               </div>
