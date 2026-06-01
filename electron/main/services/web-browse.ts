@@ -1295,6 +1295,20 @@ function buildActJs(action: PageAction): string {
       } catch (x) { /* hostile ancestor — treat as not-nav */ }
       return false
     }
+    // A *real* control: a genuine <button>/submit-input/[role=button] that is
+    // visible (occupies layout). 小红书 的发布按钮就是 <button class="ce-btn
+    // bg-red">发布</button> —— 这种元素几乎一定是表单提交，不该被 nav 启发式误杀。
+    const isRealButton = (e) => {
+      try {
+        const tag = (e.tagName || '').toLowerCase()
+        const role = (e.getAttribute('role') || '').toLowerCase()
+        const type = (e.getAttribute('type') || '').toLowerCase()
+        const isBtn = tag === 'button' || role === 'button' || (tag === 'input' && (type === 'submit' || type === 'button'))
+        if (!isBtn) return false
+        const rect = e.getBoundingClientRect()
+        return rect.width > 0 && rect.height > 0
+      } catch (x) { return false }
+    }
     const scoreOf = (e) => {
       let s = 0
       const tag = (e.tagName || '').toLowerCase()
@@ -1304,11 +1318,14 @@ function buildActJs(action: PageAction): string {
       if (rect.width > 0 && rect.height > 0) s += 3
       const st = styleOf(e)
       if (st && st.cursor === 'pointer') s += 1
-      if (/\\b(publish|submit|post|btn|button)\\b/i.test(e.getAttribute('class') || '')) s += 1
-      // Strong negative: sidebar/nav ancestor. Outweighs every positive signal
-      // except the button-tag bonus — even a <button> inside a sidebar nav is
-      // a nav button (logout/settings/draft list etc.), not the form submit.
-      if (inNavLike(e)) s -= 6
+      const cls = e.getAttribute('class') || ''
+      if (/\\b(publish|submit|post|btn|button)\\b/i.test(cls)) s += 1
+      // 红色/主色 CTA 是「主提交」的强信号（小红书发布按钮 class 含 bg-red）。
+      if (/\\b(bg-red|btn-danger|btn-primary|is-primary|primary|danger|cta)\\b/i.test(cls)) s += 2
+      // Sidebar/nav ancestor penalty. BUT a real visible <button>/submit with this
+      // text is the form submit even if some ancestor's class regex-matches "menu/
+      // side" — so penalize it only lightly; only kill non-button nav items hard.
+      if (inNavLike(e)) s -= isRealButton(e) ? 2 : 6
       return s
     }
     const pool = exact.length ? exact : partial
@@ -1319,7 +1336,9 @@ function buildActJs(action: PageAction): string {
     // 表单动作关键词，几乎可以确定它们都不是真按钮（真按钮还没挂出来）。直接报错让 LLM 滚到底
     // 部再 snapshot，而不是把侧栏 navItem 当成发布按钮误点（小红书草稿箱回流的根因）。
     const ACTION_WORDS_RE = /^(发布|立即发布|提交|确认|发送|确定|完成|保存|Submit|Send|Post|Publish|Save)$/i
-    if (ACTION_WORDS_RE.test(want) && pool.every(c => inNavLike(c))) {
+    // 只有当所有候选「既像导航、又不是真按钮」时才硬拒绝——一个可见的真 <button>/submit
+    // 足以说明发布按钮已挂出（即便祖先 class 被 nav 正则误命中），不该再拦。
+    if (ACTION_WORDS_RE.test(want) && pool.every(c => inNavLike(c) && !isRealButton(c))) {
       return { ok: false, finalUrl: location.href, error: '找到的「' + action.text + '」候选全部位于侧栏/导航容器中，可能是「发布笔记」等导航入口而非表单提交按钮。请先把页面滚到底部（document.body.scrollHeight）再重新 web_snapshot；真发布按钮通常在表单底部，惰性挂载（IntersectionObserver）。' }
     }
   }
