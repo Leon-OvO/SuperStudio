@@ -632,8 +632,9 @@ Your job: produce a JSON object matching the schema you are asked for. The schem
 Guidelines:
 - Tasks should be small and verifiable (one tool-able outcome each)
 - Order tasks by execution: dependencies first
-- Don't include "测试" or "文档" tasks unless explicitly asked
-- Keep the scope minimal — do exactly what was asked, nothing more
+- 贴近真实研发流程：拆解 → 实现 → 自测/验收。除非是纯咨询/不涉及代码改动的请求，**最后一步必须是一个自测/验收任务**（dept: qa）——运行或检查本次改动是否符合预期、是否破坏现有功能，description 写清具体怎么验证（跑哪个命令 / 手测哪条路径）。
+- 不要额外加「文档」任务，除非用户明确要求
+- Keep the scope minimal — do exactly what was asked (实现层面不膨胀)，但保留上面要求的自测/验收收尾步骤
 
 JSON format rules — VERY IMPORTANT:
 - "tasks" MUST be a JSON ARRAY of objects: [{"title": "...", "description": "..."}, ...]

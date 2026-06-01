@@ -172,6 +172,12 @@ export const useVibeStore = create<VibeState>((set, get) => ({
     ) {
       set({ previewToken: s.previewToken + 1 })
     }
+    // 跨需求护栏：某需求的流可能还在发，但用户已切到别的需求标签。task_status
+    // 按 taskId 匹配（外来的不会命中，无害）、preview 是项目级——都已在上面处理；
+    // 但 append 流式文本/工具气泡必须只进当前屏幕上的需求，否则需求 A 的输出会
+    // 漏进需求 B 的对话。事件后端统一盖了 requestId；仅当已知且与当前 active
+    // 不同才丢弃（propose 期间 requestId 未定、或 request_ready 已先切 tab 都不受影响）。
+    if (e.requestId && e.requestId !== s.activeRequestId) return
     const synthetic: VibeMessageInfo = {
       id: `live-${Date.now()}-${Math.random()}`,
       requestId: s.activeRequestId ?? '',

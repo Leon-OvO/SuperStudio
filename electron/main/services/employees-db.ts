@@ -4,7 +4,7 @@ import { getProviders, getSettings } from './store'
 import { getSoul } from './talent-pool'
 import type { EmployeeInfo, EmployeeStats } from '../../../src/shared/ipc-types'
 
-const DEFAULT_STATS: EmployeeStats = { assigned: 0, done: 0, out: 0, rate: 100, cost: 0 }
+const DEFAULT_STATS: EmployeeStats = { assigned: 0, done: 0, out: 0, rate: 100, cost: 0, tokensIn: 0, tokensOut: 0 }
 
 interface EmployeeRow {
   id: string; company_id: string; soul_id: string; name: string; dept: string
@@ -62,18 +62,30 @@ export function resolveEmployeeModel(recModel: string): { providerId: string; mo
 
 export function listEmployees(): EmployeeInfo[] {
   const employees = dbAll<EmployeeRow>(`SELECT * FROM employees ORDER BY hired_at ASC`).map(rowToInfo)
-  // Live-aggregate spend per employee from the vibe message cost log (their
-  // assigned requests). Cheap GROUP BY; not stored in the stats JSON.
+  // Live-aggregate spend + token usage per employee from the vibe message log.
+  // Attribution is sub-task-level when known (a message's task has its own
+  // assignee), else falls back to the request's default assignee — matching how
+  // the apply loop actually dispatches work. Cheap GROUP BY; not persisted.
   try {
-    const costRows = dbAll<{ eid: string; cost: number }>(
-      `SELECT r.assignee_employee_id AS eid, COALESCE(SUM(m.cost_usd), 0) AS cost
-         FROM vibe_messages m JOIN vibe_requests r ON m.request_id = r.id
-        WHERE r.assignee_employee_id IS NOT NULL
-        GROUP BY r.assignee_employee_id`
+    const rows = dbAll<{ eid: string; cost: number; tin: number; tout: number }>(
+      `SELECT COALESCE(t.assignee_employee_id, r.assignee_employee_id) AS eid,
+              COALESCE(SUM(m.cost_usd), 0)       AS cost,
+              COALESCE(SUM(m.input_tokens), 0)   AS tin,
+              COALESCE(SUM(m.output_tokens), 0)  AS tout
+         FROM vibe_messages m
+         JOIN vibe_requests r ON m.request_id = r.id
+         LEFT JOIN vibe_tasks t ON m.task_id = t.id
+        WHERE COALESCE(t.assignee_employee_id, r.assignee_employee_id) IS NOT NULL
+        GROUP BY eid`
     )
-    const costMap = new Map(costRows.map(c => [c.eid, c.cost]))
-    for (const e of employees) e.stats.cost = costMap.get(e.id) ?? 0
-  } catch { /* cost is best-effort */ }
+    const byId = new Map(rows.map(c => [c.eid, c]))
+    for (const e of employees) {
+      const agg = byId.get(e.id)
+      e.stats.cost = agg?.cost ?? 0
+      e.stats.tokensIn = agg?.tin ?? 0
+      e.stats.tokensOut = agg?.tout ?? 0
+    }
+  } catch { /* spend/token aggregation is best-effort */ }
   return employees
 }
 

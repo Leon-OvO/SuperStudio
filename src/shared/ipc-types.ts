@@ -898,9 +898,13 @@ export interface EmployeeStats {
   done: number
   out: number
   rate: number
-  /** Computed live (sum of vibe_messages.cost_usd over this employee's assigned
-   *  requests); not persisted in the stats JSON. */
+  /** Computed live (sum of vibe_messages.cost_usd attributed to this employee —
+   *  by sub-task assignee when known, else request assignee); not persisted. */
   cost?: number
+  /** Computed live alongside `cost`: total input/output tokens attributed to
+   *  this employee. Not persisted in the stats JSON. */
+  tokensIn?: number
+  tokensOut?: number
 }
 
 /** A hired soul = employee in the user's AI company. */

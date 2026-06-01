@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Search, X, UserPlus, Trash2, Cpu, Loader2, BadgeCheck, Sparkles } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { Select } from '../../components/ui/Select'
 import { toast } from '../../components/ui/Toast'
 import { useConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { useUIStore } from '../../stores/ui'
+import { formatTokens, formatCostUsd } from '../../lib/format-cost'
 import type { TalentEntry, TalentBrowseResult, EmployeeInfo, ProviderConfig, VibeRequestInfo, VibeTaskInfo } from '../../../../shared/ipc-types'
 import { levelOf, nextLevel } from '../../../../shared/company-levels'
 
@@ -257,11 +258,18 @@ export function Roster({ employees, providers, onChange, goMarket }: { employees
                       ]}
                     />
                   </div>
-                  <div className="flex gap-3.5 text-[11px] text-muted-foreground mb-2.5">
+                  <div className="flex gap-3.5 text-[11px] text-muted-foreground mb-2">
                     <div><b className="text-foreground text-[13px] block">{e.stats.assigned}</b>承接</div>
                     <div><b className="text-foreground text-[13px] block">{e.stats.done}</b>完成</div>
                     <div><b className="text-foreground text-[13px] block">{e.stats.out}</b>产出</div>
                     <div><b className="text-foreground text-[13px] block">{e.stats.rate}%</b>成功率</div>
+                  </div>
+                  <div
+                    className="flex items-center gap-3 text-[11px] text-muted-foreground mb-2.5 tabular-nums"
+                    title={`输入 ${(e.stats.tokensIn ?? 0).toLocaleString()} · 输出 ${(e.stats.tokensOut ?? 0).toLocaleString()} tokens`}
+                  >
+                    <span>🪙 {formatTokens((e.stats.tokensIn ?? 0) + (e.stats.tokensOut ?? 0))} tok</span>
+                    <span className="text-amber-600 dark:text-amber-400 font-medium">💰 {formatCostUsd(e.stats.cost ?? 0)}</span>
                   </div>
                   <div className="flex justify-end">
                     <button onClick={() => fire(e)} className="text-[11px] px-2.5 py-1 rounded-lg border border-border text-rose-400 hover:bg-rose-500/10"><Trash2 size={11} className="inline -mt-0.5" /> 解雇</button>
@@ -279,21 +287,24 @@ export function Roster({ employees, providers, onChange, goMarket }: { employees
 // ── 经营台 ───────────────────────────────────────────────────────────────────
 export function Dashboard({ employees }: { employees: EmployeeInfo[] }) {
   const busy = employees.filter(e => e.status === 'busy').length
-  const out = employees.reduce((s, e) => s + e.stats.out, 0)
   const done = employees.reduce((s, e) => s + e.stats.done, 0)
   const cost = employees.reduce((s, e) => s + (e.stats.cost ?? 0), 0)
+  const tokens = employees.reduce((s, e) => s + (e.stats.tokensIn ?? 0) + (e.stats.tokensOut ?? 0), 0)
   const kpis: [string, string, string][] = [
     ['👥', String(employees.length), '员工'],
     ['🟢', String(employees.length - busy), '在岗空闲'],
     ['✅', String(done), '完成需求'],
-    ['📦', String(out), '累计产出'],
-    ['💰', '$' + cost.toFixed(2), '累计成本']
+    ['🪙', formatTokens(tokens), '累计 token'],
+    ['💰', formatCostUsd(cost), '累计成本']
   ]
   const byDept: Record<string, EmployeeInfo[]> = {}
   for (const e of employees) (byDept[e.dept] = byDept[e.dept] || []).push(e)
   const maxN = Math.max(1, ...Object.values(byDept).map(a => a.length))
-  const stars = [...employees].sort((a, b) => b.stats.out - a.stats.out).slice(0, 5)
-  const medals = ['🥇', '🥈', '🥉', '4', '5']
+  // 成本榜：按累计花费降序（其次产出），让用户一眼看清「谁烧钱最多」。
+  const spenders = [...employees]
+    .sort((a, b) => (b.stats.cost ?? 0) - (a.stats.cost ?? 0) || b.stats.out - a.stats.out)
+    .slice(0, 6)
+  const medals = ['🥇', '🥈', '🥉', '4', '5', '6']
 
   if (!employees.length) return <div className="grid place-items-center text-muted-foreground text-sm" style={{ height: '50vh' }}><div className="text-center"><Sparkles className="mx-auto mb-2 opacity-60" /> 招募员工并完成需求后，这里会显示团队经营数据</div></div>
 
@@ -313,10 +324,19 @@ export function Dashboard({ employees }: { employees: EmployeeInfo[] }) {
           })}
         </div>
         <div className="rounded-xl border border-border bg-card p-3.5">
-          <h4 className="text-[12.5px] font-semibold mb-3">⭐ 明星员工榜</h4>
-          {stars.map((e, i) => <div key={e.id} className="flex items-center gap-2.5 py-2 border-b border-border last:border-0">
-            <span className="w-6 text-center">{medals[i]}</span><span className="flex-1 text-[12.5px] font-medium">{dept(e.dept).emoji} {e.name}</span>
-            <span className="text-[11px] text-muted-foreground">{levelOf(e.stats.done).icon} {e.stats.out} 产出 · {e.stats.done} 完成</span></div>)}
+          <h4 className="text-[12.5px] font-semibold mb-3">💸 成本 / 消耗榜</h4>
+          {spenders.map((e, i) => {
+            const tok = (e.stats.tokensIn ?? 0) + (e.stats.tokensOut ?? 0)
+            return (
+              <div key={e.id} className="flex items-center gap-2.5 py-2 border-b border-border last:border-0">
+                <span className="w-6 text-center">{medals[i]}</span>
+                <span className="flex-1 text-[12.5px] font-medium truncate">{dept(e.dept).emoji} {e.name}</span>
+                <span className="text-[11px] text-muted-foreground tabular-nums" title={`输入 ${(e.stats.tokensIn ?? 0).toLocaleString()} · 输出 ${(e.stats.tokensOut ?? 0).toLocaleString()} tokens · ${e.stats.done} 完成`}>
+                  🪙 {formatTokens(tok)} · <span className="text-amber-600 dark:text-amber-400 font-medium">{formatCostUsd(e.stats.cost ?? 0)}</span>
+                </span>
+              </div>
+            )
+          })}
         </div>
       </div>
     </div>
@@ -324,11 +344,13 @@ export function Dashboard({ employees }: { employees: EmployeeInfo[] }) {
 }
 
 // ── 需求看板（派活 / 开工 的可见入口）──────────────────────────────────────────
-const BOARD_COLS: { key: string; name: string; color: string }[] = [
-  { key: 'proposed', name: '待应用', color: '#f0b429' },
-  { key: 'applying', name: '实现中', color: '#5b9bff' },
-  { key: 'done', name: '已完成', color: '#3ecf8e' }
-]
+// 上下分栏：顶部聚焦「正在运行」的需求（子任务横向流程图体现进度），
+// 下方折叠区放「待应用 / 已完成」，点开任一也用同样的流程图看迭代。
+const STATUS_META: Record<string, { name: string; color: string }> = {
+  proposed: { name: '待应用', color: '#f0b429' },
+  applying: { name: '实现中', color: '#5b9bff' },
+  done:     { name: '已完成', color: '#3ecf8e' }
+}
 function projName(p: string): string { return (p || '').split(/[\/]/).filter(Boolean).pop() || p }
 
 // 子任务进度条（分段：done 绿 / running 蓝 / error 红 / pending 灰）
@@ -368,14 +390,58 @@ function rollupFromTasks(tasks: VibeTaskInfo[]): { total: number; done: number; 
   return r
 }
 
+// 流程图单节点：一个子任务 = 一个节点（状态色 + 序号 + 标题 + 承接员工）
+function FlowNode({ task, emp }: { task: VibeTaskInfo; emp?: EmployeeInfo }) {
+  const st = task.status
+  const done = st === 'done' || st === 'skipped'
+  return (
+    <div className="flex flex-col items-center gap-1 w-[92px] shrink-0">
+      <div className={cn(
+        'w-full px-2 py-1.5 rounded-lg border text-center',
+        done ? 'bg-emerald-500/10 border-emerald-500/40' :
+        st === 'running' ? 'bg-blue-500/10 border-blue-500/50 animate-pulse' :
+        st === 'error' ? 'bg-rose-500/10 border-rose-500/50' :
+        'bg-muted/40 border-border'
+      )}>
+        <div className="flex items-center justify-center gap-1">
+          <span className={cn('text-[11px]', TASK_COLOR[st] || '')}>{TASK_ICON[st] || '○'}</span>
+          <span className="text-[9.5px] text-muted-foreground/70">#{task.ord}</span>
+        </div>
+        <div className={cn('text-[10.5px] leading-tight mt-0.5 line-clamp-2', done ? 'text-muted-foreground/70' : 'text-foreground/90')} title={task.title}>{task.title}</div>
+      </div>
+      {emp
+        ? <span className="text-[9.5px] truncate max-w-[92px]" style={{ color: dept(emp.dept).color }} title={`${emp.name} · ${dept(emp.dept).label}`}>{dept(emp.dept).emoji} {emp.name}</span>
+        : <span className="text-[9.5px] text-muted-foreground/50">待指派</span>}
+    </div>
+  )
+}
+
+// 横向流程图：子任务按 ord 顺序用 → 连接，溢出自动换行
+function RequestFlow({ tasks, employees }: { tasks?: VibeTaskInfo[]; employees: EmployeeInfo[] }) {
+  if (!tasks) return <div className="text-[11px] text-muted-foreground/50 py-2">加载子任务…</div>
+  if (!tasks.length) return <div className="text-[11px] text-muted-foreground/50 py-2">尚未拆解子任务</div>
+  return (
+    <div className="flex flex-wrap items-start gap-y-3">
+      {tasks.map((t, i) => (
+        <div key={t.id} className="flex items-start">
+          <FlowNode task={t} emp={employees.find(e => e.id === t.assigneeEmployeeId)} />
+          {i < tasks.length - 1 && <span className="mx-1 text-muted-foreground/40 text-sm mt-2.5">→</span>}
+        </div>
+      ))}
+    </div>
+  )
+}
+
 export function Board({ employees, onChange, goMarket, goWorkbench }: { employees: EmployeeInfo[]; onChange: () => void; goMarket: () => void; goWorkbench?: () => void }) {
   const dlg = useConfirmDialog()
   const [requests, setRequests] = useState<VibeRequestInfo[]>([])
   const [loading, setLoading] = useState(true)
   const [applying, setApplying] = useState<string | null>(null)
   const [deleting, setDeleting] = useState<string | null>(null)
-  // 折叠看子任务：requestId → 子任务列表。默认展开（看板就是要看子需求进度）。
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
+  // 底部「待应用 / 已完成」分组里，哪些需求行展开了流程图（默认收起，列表才不冗长）。
+  const [expandedReqs, setExpandedReqs] = useState<Set<string>>(new Set())
+  // 折叠的分组（默认两组都展开）。
+  const [closedGroups, setClosedGroups] = useState<Set<string>>(new Set())
   const [tasksByReq, setTasksByReq] = useState<Record<string, VibeTaskInfo[]>>({})
   const debTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -394,14 +460,14 @@ export function Board({ employees, onChange, goMarket, goWorkbench }: { employee
       .catch(() => {}).finally(() => setLoading(false))
   }, [loadTasks])
 
-  function toggleCollapse(reqId: string) {
-    setCollapsed(prev => {
+  const toggleIn = (setter: React.Dispatch<React.SetStateAction<Set<string>>>) => (key: string) =>
+    setter(prev => {
       const next = new Set(prev)
-      if (next.has(reqId)) next.delete(reqId)
-      else next.add(reqId)
+      if (next.has(key)) next.delete(key); else next.add(key)
       return next
     })
-  }
+  const toggleReq = toggleIn(setExpandedReqs)
+  const toggleGroup = toggleIn(setClosedGroups)
 
   useEffect(() => {
     refresh()
@@ -458,90 +524,146 @@ export function Board({ employees, onChange, goMarket, goWorkbench }: { employee
   }
 
   const empById = (id?: string | null) => employees.find(e => e.id === id)
+  const subsOf = (id: string) => tasksByReq[id]
+  const rollOf = (r: VibeRequestInfo) => { const s = tasksByReq[r.id]; return s ? rollupFromTasks(s) : r.taskRollup }
+  // 「运行中」= 状态为 applying，或任一子任务正在跑（更实时）。
+  const isRunning = (r: VibeRequestInfo) => r.status === 'applying' || (subsOf(r.id)?.some(t => t.status === 'running') ?? false)
+  const running = requests.filter(isRunning)
+  const proposed = requests.filter(r => r.status === 'proposed' && !isRunning(r))
+  const doneList = requests.filter(r => r.status === 'done' && !isRunning(r))
+
+  // 承接人下拉（顶/底通用）
+  const assigneeSelect = (r: VibeRequestInfo) => (
+    <div className="flex items-center gap-1.5" title="默认承接人：未单独指派的子任务用 TA">
+      <span className="text-[11px]">👤</span>
+      <Select
+        value={r.assigneeEmployeeId ?? ''}
+        onChange={v => assign(r, v || null)}
+        className="flex-1"
+        options={[
+          { value: '', label: '默认承接人（未指派）' },
+          ...employees.map(emp2 => ({ value: emp2.id, label: emp2.name })),
+          ...(r.assigneeEmployeeId && !employees.some(e => e.id === r.assigneeEmployeeId) ? [{ value: r.assigneeEmployeeId, label: '（已离职）' }] : [])
+        ]}
+      />
+    </div>
+  )
+  const delBtn = (r: VibeRequestInfo) => (
+    <button onClick={() => remove(r)} disabled={deleting === r.id}
+      className="shrink-0 text-muted-foreground/40 hover:text-rose-400 disabled:opacity-40" title="删除该需求">
+      {deleting === r.id ? <Loader2 size={11} className="animate-spin" /> : <Trash2 size={11} />}
+    </button>
+  )
+
+  const BOTTOM: { key: string; items: VibeRequestInfo[] }[] = [
+    { key: 'proposed', items: proposed },
+    { key: 'done', items: doneList }
+  ]
+
   return (
     <div>
       {dlg.element}
       <div className="flex items-center mb-3">
-        <div className="text-xs text-muted-foreground">把需求指派给员工并「开工」，员工以其底层模型 + 岗位人格执行。</div>
+        <div className="text-xs text-muted-foreground">指派员工 →「开工」，员工以其底层模型 + 岗位人格执行；下方流程图实时体现各子任务进度。</div>
         <div className="flex-1" />
         <button onClick={refresh} className="text-[11px] px-2.5 py-1 rounded-lg border border-border text-muted-foreground hover:text-foreground">刷新</button>
       </div>
-      <div className="flex gap-3 items-start overflow-x-auto">
-        {BOARD_COLS.map(col => {
-          const items = requests.filter(r => r.status === col.key)
-          return (
-            <div key={col.key} className="flex-shrink-0 w-[300px] rounded-xl border border-border bg-card/40">
-              <div className="flex items-center gap-2 px-3 py-2.5">
-                <span className="w-2 h-2 rounded-sm" style={{ background: col.color }} />
-                <span className="font-semibold text-[12.5px]">{col.name}</span>
-                <span className="ml-auto text-[11px] text-muted-foreground bg-muted/60 border border-border rounded-full px-2">{items.length}</span>
-              </div>
-              <div className="px-2.5 pb-3 space-y-2.5">
-                {items.length === 0 && <div className="text-[11px] text-muted-foreground/50 text-center py-4 border border-dashed border-border rounded-lg">空</div>}
-                {items.map(r => {
-                  const emp = empById(r.assigneeEmployeeId)
-                  const isOpen = !collapsed.has(r.id)   // 默认展开
-                  const subs = tasksByReq[r.id]
-                  // 进度优先用实时子任务派生，回退后端 rollup 快照。
-                  const roll = subs ? rollupFromTasks(subs) : r.taskRollup
-                  return (
-                    <div key={r.id} className="rounded-lg border border-border bg-card p-2.5">
-                      <div className="flex items-start gap-1.5">
-                        <button onClick={() => toggleCollapse(r.id)} className="text-muted-foreground/60 hover:text-foreground mt-0.5 text-[11px] w-3 shrink-0" title={isOpen ? '收起子任务' : '展开子任务'}>{isOpen ? '▾' : '▸'}</button>
-                        <div className="min-w-0 flex-1">
-                          <div className="text-[13px] font-medium leading-snug">{r.title}</div>
-                          <div className="text-[10px] text-muted-foreground mt-0.5">📁 {projName(r.projectPath)} · {r.kind === 'bugfix' ? '缺陷' : '需求'}</div>
-                        </div>
-                        {/* 删除：任何状态都可删（已完成/失败/待应用），二次确认 */}
-                        <button onClick={() => remove(r)} disabled={deleting === r.id}
-                          className="shrink-0 text-muted-foreground/40 hover:text-rose-400 mt-0.5 disabled:opacity-40" title="删除该需求">
-                          {deleting === r.id ? <Loader2 size={11} className="animate-spin" /> : <Trash2 size={11} />}
-                        </button>
+
+      {/* ── 顶部：正在运行（大图 + 横向流程图）────────────────────────────── */}
+      <div className="mb-4">
+        <div className="flex items-center gap-2 mb-2">
+          <span className="relative flex h-2.5 w-2.5">
+            {running.length > 0 && <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-60" />}
+            <span className={cn('relative inline-flex rounded-full h-2.5 w-2.5', running.length ? 'bg-blue-500' : 'bg-muted-foreground/30')} />
+          </span>
+          <span className="font-semibold text-[13px]">正在运行</span>
+          <span className="text-[11px] text-muted-foreground bg-muted/60 border border-border rounded-full px-2">{running.length}</span>
+        </div>
+        {running.length === 0 ? (
+          <div className="text-[12px] text-muted-foreground/60 text-center py-6 border border-dashed border-border rounded-xl">
+            当前没有正在执行的需求 —— 在下方「待应用」里给需求指派员工并点「开工」。
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {running.map(r => {
+              const emp = empById(r.assigneeEmployeeId)
+              const roll = rollOf(r)
+              const pct = roll && roll.total ? Math.round(roll.done / roll.total * 100) : 0
+              return (
+                <div key={r.id} className="rounded-xl border border-blue-500/40 bg-blue-500/[0.04] p-4">
+                  <div className="flex items-start gap-2 mb-2.5">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="text-[14px] font-semibold leading-snug truncate">{r.title}</span>
+                        <span className="shrink-0 text-[10px] px-1.5 py-px rounded bg-blue-500/15 text-blue-500 font-medium">执行中</span>
                       </div>
-
-                      <TaskProgressBar roll={roll} />
-
-                      {isOpen && (
-                        <div className="mt-2 pl-3 border-l border-border space-y-1">
-                          {!subs ? <div className="text-[10px] text-muted-foreground/50">加载子任务…</div>
-                            : subs.length === 0 ? <div className="text-[10px] text-muted-foreground/50">无子任务</div>
-                            : subs.map(t => {
-                              const te = employees.find(e => e.id === t.assigneeEmployeeId)
-                              return (
-                              <div key={t.id} className="flex items-start gap-1.5 text-[11px]">
-                                <span className={cn('shrink-0 w-3 text-center', t.status === 'running' && 'animate-pulse', TASK_COLOR[t.status] || '')}>{TASK_ICON[t.status] || '○'}</span>
-                                <span className={cn('leading-snug flex-1 min-w-0', t.status === 'done' || t.status === 'skipped' ? 'text-muted-foreground/60 line-through' : 'text-foreground/90')}>{t.title}</span>
-                                {te && <span className="shrink-0 text-[9.5px]" style={{ color: dept(te.dept).color }} title={`${te.name} · ${dept(te.dept).label}`}>{dept(te.dept).emoji} {te.name}</span>}
-                              </div>
-                              )
-                            })}
-                        </div>
-                      )}
-
-                      <div className="flex items-center gap-1.5 mt-2" title="默认承接人：未单独指派的子任务用 TA">
-                        <span className="text-[11px]">👤</span>
-                        <Select
-                          value={r.assigneeEmployeeId ?? ''}
-                          onChange={v => assign(r, v || null)}
-                          className="flex-1"
-                          options={[
-                            { value: '', label: '默认承接人（未指派）' },
-                            ...employees.map(emp2 => ({ value: emp2.id, label: emp2.name })),
-                            ...(r.assigneeEmployeeId && !employees.some(e => e.id === r.assigneeEmployeeId) ? [{ value: r.assigneeEmployeeId, label: '（已离职）' }] : [])
-                          ]}
-                        />
-                      </div>
-                      {emp && <div className="text-[10px] text-muted-foreground mt-1">🧠 {emp.modelId || '默认模型'}{r.status === 'applying' ? ' · 执行中…' : ''}</div>}
-                      {col.key === 'proposed' && (
-                        <button onClick={() => apply(r)} disabled={applying === r.id}
-                          className="w-full mt-2 text-[11px] py-1.5 rounded-lg bg-primary text-primary-foreground font-medium disabled:opacity-50">
-                          {applying === r.id ? <Loader2 size={11} className="animate-spin inline" /> : '▶'} 开工
-                        </button>
-                      )}
+                      <div className="text-[10.5px] text-muted-foreground mt-0.5">📁 {projName(r.projectPath)} · {r.kind === 'bugfix' ? '缺陷' : '需求'}{emp ? ` · 🧠 ${emp.modelId || '默认模型'}` : ''}</div>
                     </div>
-                  )
-                })}
-              </div>
+                    <span className="shrink-0 text-[13px] font-semibold tabular-nums text-blue-500">{pct}%</span>
+                    {delBtn(r)}
+                  </div>
+                  <div className="overflow-x-auto pb-1">
+                    <RequestFlow tasks={subsOf(r.id)} employees={employees} />
+                  </div>
+                  {roll && roll.error > 0 && <div className="text-[10.5px] text-rose-400 mt-2">⚠ {roll.error} 个子任务失败 —— 可在「待应用」重派后重跑</div>}
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* ── 底部：待应用 / 已完成（折叠分组，点开看流程图迭代）──────────────── */}
+      <div className="space-y-3">
+        {BOTTOM.map(g => {
+          const meta = STATUS_META[g.key]
+          const open = !closedGroups.has(g.key)
+          return (
+            <div key={g.key} className="rounded-xl border border-border bg-card/40">
+              <button onClick={() => toggleGroup(g.key)} className="w-full flex items-center gap-2 px-3 py-2.5 text-left">
+                <span className="text-muted-foreground/60 text-[11px] w-3">{open ? '▾' : '▸'}</span>
+                <span className="w-2 h-2 rounded-sm" style={{ background: meta.color }} />
+                <span className="font-semibold text-[12.5px]">{meta.name}</span>
+                <span className="ml-auto text-[11px] text-muted-foreground bg-muted/60 border border-border rounded-full px-2">{g.items.length}</span>
+              </button>
+              {open && (
+                <div className="px-2.5 pb-3 space-y-2">
+                  {g.items.length === 0 && <div className="text-[11px] text-muted-foreground/50 text-center py-3 border border-dashed border-border rounded-lg">空</div>}
+                  {g.items.map(r => {
+                    const emp = empById(r.assigneeEmployeeId)
+                    const flowOpen = expandedReqs.has(r.id)
+                    return (
+                      <div key={r.id} className="rounded-lg border border-border bg-card p-2.5">
+                        <div className="flex items-start gap-1.5">
+                          <button onClick={() => toggleReq(r.id)} className="text-muted-foreground/60 hover:text-foreground mt-0.5 text-[11px] w-3 shrink-0" title={flowOpen ? '收起流程图' : '展开流程图'}>{flowOpen ? '▾' : '▸'}</button>
+                          <div className="min-w-0 flex-1">
+                            <div className="text-[13px] font-medium leading-snug">{r.title}</div>
+                            <div className="text-[10px] text-muted-foreground mt-0.5">📁 {projName(r.projectPath)} · {r.kind === 'bugfix' ? '缺陷' : '需求'}</div>
+                          </div>
+                          {delBtn(r)}
+                        </div>
+
+                        <TaskProgressBar roll={rollOf(r)} />
+
+                        {flowOpen && (
+                          <div className="mt-2.5 overflow-x-auto pb-1">
+                            <RequestFlow tasks={subsOf(r.id)} employees={employees} />
+                          </div>
+                        )}
+
+                        <div className="mt-2">{assigneeSelect(r)}</div>
+                        {emp && <div className="text-[10px] text-muted-foreground mt-1">🧠 {emp.modelId || '默认模型'}</div>}
+                        {g.key === 'proposed' && (
+                          <button onClick={() => apply(r)} disabled={applying === r.id}
+                            className="w-full mt-2 text-[11px] py-1.5 rounded-lg bg-primary text-primary-foreground font-medium disabled:opacity-50">
+                            {applying === r.id ? <Loader2 size={11} className="animate-spin inline" /> : '▶'} 开工
+                          </button>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
             </div>
           )
         })}
