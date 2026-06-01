@@ -1,14 +1,20 @@
 import { CircleCheck, Circle, Loader2, AlertCircle, MinusCircle } from 'lucide-react'
 import { cn } from '../../../lib/utils'
-import type { VibeTaskInfo } from '../../../../../shared/ipc-types'
+import type { VibeTaskInfo, EmployeeInfo } from '../../../../../shared/ipc-types'
 
 interface Props {
   task: VibeTaskInfo
   isStreaming: boolean
   onToggleStatus?: (newStatus: 'pending' | 'done' | 'skipped') => void
+  /** Hired employees, for the per-task assignee dropdown. */
+  employees?: EmployeeInfo[]
+  /** Reassign this task to an employee (null = unassign → falls back to request/default). */
+  onReassign?: (employeeId: string | null) => void
+  /** Disable reassign while a run is in flight. */
+  disabled?: boolean
 }
 
-export function TaskRow({ task, isStreaming, onToggleStatus }: Props) {
+export function TaskRow({ task, isStreaming, onToggleStatus, employees, onReassign, disabled }: Props) {
   function icon() {
     if (isStreaming || task.status === 'running') return <Loader2 size={12} className="text-blue-500 animate-spin shrink-0" />
     if (task.status === 'done') return <CircleCheck size={12} className="text-emerald-500 shrink-0" />
@@ -49,6 +55,19 @@ export function TaskRow({ task, isStreaming, onToggleStatus }: Props) {
           <div className="text-[11px] text-destructive mt-0.5">⚠️ {task.errorText}</div>
         )}
       </div>
+      {onReassign && employees && (
+        <select
+          value={task.assigneeEmployeeId ?? ''}
+          onChange={e => onReassign(e.target.value || null)}
+          disabled={disabled}
+          title="承接此子任务的员工（用其模型+人格执行）"
+          className="shrink-0 mt-0.5 max-w-[96px] bg-transparent border border-border rounded px-1 py-px text-[10px] text-muted-foreground focus:outline-none disabled:opacity-40"
+        >
+          <option value="">默认</option>
+          {employees.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
+          {task.assigneeEmployeeId && !employees.some(e => e.id === task.assigneeEmployeeId) && <option value={task.assigneeEmployeeId}>（已离职）</option>}
+        </select>
+      )}
       {!isDone && !isSkipped && onToggleStatus && (
         <button
           onClick={() => onToggleStatus('skipped')}

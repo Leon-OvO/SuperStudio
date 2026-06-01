@@ -183,6 +183,7 @@ export const IPC = {
   VIBE_REQUEST_LIST_ALL: 'vibe:request-list-all',          // 跨项目所有需求（公司看板）
   VIBE_REQUEST_DELETE: 'vibe:request-delete',
   VIBE_REQUEST_SET_ASSIGNEE: 'vibe:request-set-assignee',  // 指派 AI 员工承接
+  VIBE_TASK_SET_ASSIGNEE: 'vibe:task-set-assignee',        // 子任务级手动重派
   VIBE_TASK_LIST: 'vibe:task-list',
   VIBE_TASK_TOGGLE: 'vibe:task-toggle',
   VIBE_MESSAGE_LIST: 'vibe:message-list',
@@ -539,6 +540,8 @@ export interface VibeTaskInfo {
   errorText: string | null
   startedAt: number | null
   finishedAt: number | null
+  /** 子任务级承接员工；null = 用 request 级默认承接人或默认模型。 */
+  assigneeEmployeeId: string | null
 }
 
 export interface VibeMessageInfo {

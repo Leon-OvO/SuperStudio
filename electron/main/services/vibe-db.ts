@@ -53,6 +53,8 @@ export interface VibeTaskRow {
   error_text: string | null
   started_at: number | null
   finished_at: number | null
+  /** 子任务级承接员工；null = 回退 request.assignee 或默认模型。 */
+  assignee_employee_id?: string | null
 }
 
 export type MessageRole = 'user' | 'assistant' | 'tool' | 'system'
@@ -203,18 +205,28 @@ export function createTask(args: {
   ord: number
   title: string
   description: string
+  assigneeEmployeeId?: string | null
 }): VibeTaskRow {
   const id = randomUUID()
   dbRun(
-    `INSERT INTO vibe_tasks (id, request_id, ord, title, description, status)
-     VALUES (?, ?, ?, ?, ?, 'pending')`,
-    [id, args.requestId, args.ord, args.title, args.description]
+    `INSERT INTO vibe_tasks (id, request_id, ord, title, description, status, assignee_employee_id)
+     VALUES (?, ?, ?, ?, ?, 'pending', ?)`,
+    [id, args.requestId, args.ord, args.title, args.description, args.assigneeEmployeeId ?? null]
   )
   return {
     id, request_id: args.requestId, ord: args.ord, title: args.title,
     description: args.description, status: 'pending',
+    assignee_employee_id: args.assigneeEmployeeId ?? null,
     error_text: null, started_at: null, finished_at: null
   }
+}
+
+export function getTask(taskId: string): VibeTaskRow | null {
+  return dbGet<VibeTaskRow>(`SELECT * FROM vibe_tasks WHERE id = ?`, [taskId])
+}
+
+export function setTaskAssignee(taskId: string, employeeId: string | null): void {
+  dbRun(`UPDATE vibe_tasks SET assignee_employee_id = ? WHERE id = ?`, [employeeId, taskId])
 }
 
 export function listTasks(requestId: string): VibeTaskRow[] {

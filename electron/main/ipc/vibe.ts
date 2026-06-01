@@ -41,17 +41,19 @@ import {
   upsertProject, setProjectModel,
   createRequest, listRequests, listAllRequests, taskRollupByRequest, getRequest, updateRequestStatus, updateRequestSummary,
   deleteRequest, deleteTasksForRequest, slugify, setRequestAssignee,
-  createTask, listTasks, updateTaskStatus,
+  createTask, listTasks, updateTaskStatus, setTaskAssignee, getTask,
   appendMessage, listMessages,
   type VibeRequestRow, type VibeTaskRow, type VibeMessageRow, type VibeProjectRow
 } from '../services/vibe-db'
-import { getEmployee, setEmployeeStatus, bumpEmployeeStats } from '../services/employees-db'
+import { getEmployee, listEmployees, setEmployeeStatus, bumpEmployeeStats } from '../services/employees-db'
+import type { EmployeeInfo } from '../../../src/shared/ipc-types'
 import { getSoul } from '../services/talent-pool'
 import { dbRun } from '../db/sqlite'
 import { writeProposalMd, writeTasksMd } from '../services/vibe-spec'
 import { getActiveSkillsForScenario, type InstalledSkill } from '../services/skills-db'
 import { buildSkillTools } from '../agent/skill-tools'
 import { classifyVibeIntent } from '../agent/classify'
+import { agentRunSemaphore } from '../agent/semaphore'
 import { runShell } from '../services/shell'
 import { computeCost } from '../services/model-pricing'
 
@@ -215,6 +217,21 @@ function resolveInRoot(projectRoot: string, relOrAbs: string): string {
 // ---------------------------------------------------------------------------
 
 const activeRuns = new Map<string, AbortController>()
+// Apply runs are tracked per-REQUEST (not per-project) so multiple sub-tasks of
+// one requirement can run in parallel under a single AbortController.
+const activeApplyRuns = new Map<string, AbortController>()
+
+// Per-absolute-path async mutex — different files run in parallel, the same file
+// serializes. Makes parallel code_write/code_edit safe (writeFileSync + the
+// read→replace→write of code_edit are not atomic across concurrent tasks).
+const fileLocks = new Map<string, Promise<unknown>>()
+function withFileLock<T>(abs: string, fn: () => Promise<T> | T): Promise<T> {
+  const prev = fileLocks.get(abs) ?? Promise.resolve()
+  const run = prev.then(() => fn())
+  // Keep the chain alive even if fn throws, so the next waiter still proceeds.
+  fileLocks.set(abs, run.then(() => undefined, () => undefined))
+  return run
+}
 
 /**
  * Coerce a possibly-NaN-or-undefined usage value to a finite number or null.
@@ -271,8 +288,10 @@ function buildVibeTools(
         emit({ type: 'tool_use', toolName: 'code_write', toolArgsPreview: `${rel} (${content.length}B)` })
         try {
           if (content.length > MAX_WRITE_SIZE) throw new Error('内容过大')
-          fs.mkdirSync(path.dirname(abs), { recursive: true })
-          fs.writeFileSync(abs, content, 'utf8')
+          await withFileLock(abs, () => {
+            fs.mkdirSync(path.dirname(abs), { recursive: true })
+            fs.writeFileSync(abs, content, 'utf8')
+          })
           emit({ type: 'tool_result', toolName: 'code_write', toolResultPreview: `已写入 ${rel}` })
           return { ok: true, bytes: content.length }
         } catch (e) {
@@ -294,11 +313,15 @@ function buildVibeTools(
         const rel = path.relative(projectRoot, abs) || path.basename(abs)
         emit({ type: 'tool_use', toolName: 'code_edit', toolArgsPreview: rel })
         try {
-          const original = fs.readFileSync(abs, 'utf8')
-          const occ = original.split(oldString).length - 1
-          if (occ === 0) throw new Error('oldString 未在文件中找到')
-          if (occ > 1) throw new Error(`oldString 在文件中匹配了 ${occ} 次，需要更精确的上下文`)
-          fs.writeFileSync(abs, original.replace(oldString, newString), 'utf8')
+          // read→replace→write inside the per-file lock so it's atomic vs other
+          // concurrent tasks editing the same file.
+          await withFileLock(abs, () => {
+            const original = fs.readFileSync(abs, 'utf8')
+            const occ = original.split(oldString).length - 1
+            if (occ === 0) throw new Error('oldString 未在文件中找到')
+            if (occ > 1) throw new Error(`oldString 在文件中匹配了 ${occ} 次，需要更精确的上下文`)
+            fs.writeFileSync(abs, original.replace(oldString, newString), 'utf8')
+          })
           emit({ type: 'tool_result', toolName: 'code_edit', toolResultPreview: `已修改 ${rel}` })
           return { ok: true }
         } catch (e) {
@@ -477,9 +500,33 @@ function toTaskInfo(t: VibeTaskRow): VibeTaskInfo {
   return {
     id: t.id, requestId: t.request_id, ord: t.ord, title: t.title,
     description: t.description, status: t.status, errorText: t.error_text,
-    startedAt: t.started_at, finishedAt: t.finished_at
+    startedAt: t.started_at, finishedAt: t.finished_at,
+    assigneeEmployeeId: t.assignee_employee_id ?? null
   }
 }
+
+/** Pick an employee for a task by its PM-tagged dept. Same-dept idle first, then
+ *  round-robin within dept; no dept match → request fallback → all-employee
+ *  round-robin; zero employees → null (apply falls back to default model). */
+function pickEmployeeForDept(
+  employees: EmployeeInfo[],
+  dept: string | null | undefined,
+  rr: { i: number },
+  fallbackId: string | null
+): string | null {
+  if (!employees.length) return fallbackId
+  if (dept) {
+    const inDept = employees.filter(e => e.dept === dept)
+    if (inDept.length) {
+      const idle = inDept.filter(e => e.status === 'idle')
+      const pool = idle.length ? idle : inDept
+      return pool[rr.i++ % pool.length].id
+    }
+  }
+  if (fallbackId) return fallbackId
+  return employees[rr.i++ % employees.length].id
+}
+
 function toMessageInfo(m: VibeMessageRow): VibeMessageInfo {
   return {
     id: m.id, requestId: m.request_id, role: m.role, content: m.content,
@@ -575,6 +622,7 @@ Your job: produce a JSON object matching the schema you are asked for. The schem
 - tasks: an ordered array of 1–10 actionable implementation tasks. Each task must have:
    - title: imperative phrase in Chinese, like "添加登录表单组件" (NOT abstract/vague)
    - description: 1–3 sentences in Chinese on what specifically to do
+   - dept: 该任务最合适的部门，从 engineering/design/product/marketing/qa/data/game 中选一个（写代码=engineering，UI/视觉=design，需求规划=product，文案营销=marketing，测试=qa，数据/AI=data，游戏=game）
 
 Guidelines:
 - Tasks should be small and verifiable (one tool-able outcome each)
@@ -650,7 +698,9 @@ const ProposalSchema = z.object({
     decodeIfStringArray,
     z.array(z.object({
       title: z.string().min(2).max(100).describe('Imperative title like "添加登录表单组件"'),
-      description: z.string().min(2).max(500).describe('Specific implementation guidance in 1-3 sentences')
+      description: z.string().min(2).max(500).describe('Specific implementation guidance in 1-3 sentences'),
+      dept: z.enum(['engineering', 'design', 'product', 'marketing', 'qa', 'data', 'game']).nullable().optional()
+        .describe('该任务最合适的部门：写代码/接口/架构=engineering，UI/视觉/品牌=design，需求/规划=product，文案/营销/增长=marketing，测试/质量=qa，数据/AI/算法=data，游戏逻辑/数值=game')
     })).min(1).max(10)
   )
 })
@@ -796,6 +846,15 @@ export function vibeHandlers(): void {
     setRequestAssignee(args.requestId, args.employeeId)
     // Count the承接 on the employee's tally when newly assigned.
     if (args.employeeId) bumpEmployeeStats(args.employeeId, { assigned: 1 })
+    return { ok: true }
+  })
+
+  // 子任务级手动重派：把单个子任务指给某员工（其模型+人格在 apply 时驱动该任务）。
+  ipcMain.handle(IPC.VIBE_TASK_SET_ASSIGNEE, async (_e, args: { taskId: string; employeeId: string | null }) => {
+    const before = getTask(args.taskId)
+    setTaskAssignee(args.taskId, args.employeeId)
+    // Only +1 when it's a NEW assignment (not re-confirming the same employee).
+    if (args.employeeId && before?.assignee_employee_id !== args.employeeId) bumpEmployeeStats(args.employeeId, { assigned: 1 })
     return { ok: true }
   })
 
@@ -1153,12 +1212,20 @@ export function vibeHandlers(): void {
           })
         }
 
+        // PM 自动派活：按 PM 标注的 dept，把每个子任务分给对口在职员工。
+        // 零员工 → empId=null（apply 阶段回退 request.assignee / 默认模型，行为不变）。
+        const employees = listEmployees()
+        const rr = { i: 0 }
+        const fallbackEmp = targetRequest.assignee_employee_id ?? null
         const taskRows: VibeTaskRow[] = []
         object.tasks.forEach((t, i) => {
+          const empId = pickEmployeeForDept(employees, t.dept ?? null, rr, fallbackEmp)
           taskRows.push(createTask({
             requestId: targetRequest.id, ord: i + 1,
-            title: t.title, description: t.description
+            title: t.title, description: t.description,
+            assigneeEmployeeId: empId
           }))
+          if (empId) bumpEmployeeStats(empId, { assigned: 1 })
         })
 
         writeProposalMd({ projectPath, slug: targetRequest.slug, title: object.title, summary: object.summary })
@@ -1260,6 +1327,116 @@ export function vibeHandlers(): void {
   // ----- APPLY ------------------------------------------------------------
   // Extracted into a reusable function so VIBE_PROPOSE can auto-trigger it
   // when settings.vibeAutoApply is true.
+  /** True if the employee has another running/pending task in this request
+   *  (excluding `exceptTaskId`) — so we don't flip them to idle prematurely. */
+  function hasOtherActiveTask(requestId: string, employeeId: string, exceptTaskId: string): boolean {
+    return listTasks(requestId).some(t =>
+      t.id !== exceptTaskId &&
+      t.assignee_employee_id === employeeId &&
+      (t.status === 'running' || t.status === 'pending'))
+  }
+
+  /** Execute ONE sub-task with ITS OWN assignee's model + soul persona.
+   *  Returns the terminal status. Never throws (errors are recorded on the task). */
+  async function runOneTask(
+    request: VibeRequestRow,
+    task: VibeTaskRow,
+    projectPath: string,
+    snapshot: VibeTaskRow[],
+    signal: AbortSignal,
+    emit: (e: Omit<VibeProgressEvent, 'projectPath'>) => void
+  ): Promise<'done' | 'error' | 'cancelled'> {
+    if (signal.aborted) return 'cancelled'
+
+    // Resolve this task's employee → model + soul (fallback chain:
+    // task.assignee → request.assignee → project default).
+    const taskEmp = task.assignee_employee_id ? getEmployee(task.assignee_employee_id)
+                  : request.assignee_employee_id ? getEmployee(request.assignee_employee_id)
+                  : null
+    let modelInfo = resolveProjectModel(upsertProject(projectPath))
+    if (taskEmp?.providerId && taskEmp?.modelId) modelInfo = { providerId: taskEmp.providerId, modelId: taskEmp.modelId }
+    const soulPrompt = taskEmp ? (getSoul(taskEmp.soulId)?.systemPrompt ?? '') : ''
+
+    updateTaskStatus(task.id, 'running')
+    await withFileLock('tasksmd:' + request.id, () => writeTasksMd({ projectPath, slug: request.slug, tasks: listTasks(request.id) }))
+    emit({ type: 'task_status', taskId: task.id, taskStatus: 'running' })
+    appendMessage({ requestId: request.id, role: 'system', taskId: task.id, content: `${taskEmp ? taskEmp.name + ' ' : ''}开始任务：${task.title}` })
+    if (taskEmp) setEmployeeStatus(taskEmp.id, 'busy')
+
+    const taskToolEmit = (e: Omit<VibeProgressEvent, 'projectPath'>) => {
+      emit({ ...e, taskId: task.id })
+      if (e.type === 'tool_use') {
+        appendMessage({ requestId: request.id, role: 'tool', taskId: task.id, content: e.toolArgsPreview ?? '', toolName: e.toolName, isError: false })
+      } else if (e.type === 'tool_result') {
+        appendMessage({ requestId: request.id, role: 'tool', taskId: task.id, content: e.toolResultPreview ?? '', toolName: e.toolName, isError: !!e.isError })
+      }
+    }
+    const rawTools = buildVibeTools(projectPath, taskToolEmit, signal)
+    const { section: applySkillsSection, skills: applySkills } = buildVibeSkillsSection()
+    let tools: Record<string, Tool> = applyVibeSkillsFilter(rawTools, applySkills)
+    const applyRuntimeSkills = applySkills.filter(s => s.runtime)
+    if (applyRuntimeSkills.length) {
+      tools = { ...tools, ...buildVibeSkillTools(projectPath, applyRuntimeSkills, taskToolEmit, signal) }
+    }
+    const otherTasks = snapshot.filter(t => t.id !== task.id)
+
+    let accumulated = ''
+    let runError: Error | null = null
+    let usage: { promptTokens?: number; completionTokens?: number } | null = null
+    try {
+      const model = createLLMClient(modelInfo.providerId, modelInfo.modelId)
+      const result = streamText({
+        model,
+        system: (soulPrompt ? soulPrompt + '\n\n---\n\n' : '') + buildApplySystem(request, task, otherTasks) + applySkillsSection,
+        messages: [{ role: 'user', content: task.description || task.title }],
+        tools,
+        maxSteps: 25,
+        maxRetries: 2,
+        abortSignal: signal,
+        onError: ({ error }) => { console.error('[vibe] task streamText error:', error); runError = error as Error }
+      })
+      for await (const chunk of result.textStream) {
+        if (signal.aborted) break
+        if (chunk) { accumulated += chunk; emit({ type: 'text', text: chunk, taskId: task.id }) }
+      }
+      await result.finishReason.catch(() => null)
+      usage = await result.usage.catch(() => null)
+    } catch (err) {
+      runError = err as Error
+    }
+
+    // Release busy state only if this employee has no other active task here.
+    const releaseEmp = () => { if (taskEmp && !hasOtherActiveTask(request.id, taskEmp.id, task.id)) setEmployeeStatus(taskEmp.id, 'idle') }
+
+    if (signal.aborted) {
+      updateTaskStatus(task.id, 'pending')
+      await withFileLock('tasksmd:' + request.id, () => writeTasksMd({ projectPath, slug: request.slug, tasks: listTasks(request.id) }))
+      releaseEmp()
+      return 'cancelled'
+    }
+    if (runError) {
+      updateTaskStatus(task.id, 'error', (runError as Error).message)
+      await withFileLock('tasksmd:' + request.id, () => writeTasksMd({ projectPath, slug: request.slug, tasks: listTasks(request.id) }))
+      emit({ type: 'task_status', taskId: task.id, taskStatus: 'error', text: (runError as Error).message })
+      appendMessage({ requestId: request.id, role: 'system', taskId: task.id, content: `任务失败：${(runError as Error).message}`, isError: true })
+      releaseEmp()
+      return 'error'  // 不牵连其他任务 —— 其余照跑
+    }
+
+    updateTaskStatus(task.id, 'done')
+    await withFileLock('tasksmd:' + request.id, () => writeTasksMd({ projectPath, slug: request.slug, tasks: listTasks(request.id) }))
+    emit({ type: 'task_status', taskId: task.id, taskStatus: 'done' })
+    if (taskEmp) bumpEmployeeStats(taskEmp.id, { out: 1 })
+    if (accumulated.trim()) {
+      const inTok = finiteUsage(usage?.promptTokens)
+      const outTok = finiteUsage(usage?.completionTokens)
+      const cost = inTok != null && outTok != null && (inTok > 0 || outTok > 0) ? computeCost(modelInfo.modelId, inTok, outTok) : null
+      appendMessage({ requestId: request.id, role: 'assistant', taskId: task.id, content: accumulated.trim(), inputTokens: inTok, outputTokens: outTok, costUsd: cost, model: modelInfo.modelId })
+    }
+    releaseEmp()
+    return 'done'
+  }
+
   function runApplyLoop(request: VibeRequestRow): { started: boolean } {
     const win = getMainWindow()
     if (!win) return { started: false }
@@ -1269,26 +1446,17 @@ export function vibeHandlers(): void {
       win.webContents.send(IPC.VIBE_ERROR, { projectPath, requestId: request.id, error: 'Project path not allowed' })
       return { started: false }
     }
-
-    const project = upsertProject(projectPath)
-    let modelInfo
-    try { modelInfo = resolveProjectModel(project) }
+    try { resolveProjectModel(upsertProject(projectPath)) }
     catch (e) {
       win.webContents.send(IPC.VIBE_ERROR, { projectPath, requestId: request.id, error: (e as Error).message })
       return { started: false }
     }
 
-    // AI-company: if a request is assigned to an employee, that employee's
-    // chosen model + soul persona drive this run.
-    const employee = request.assignee_employee_id ? getEmployee(request.assignee_employee_id) : null
-    if (employee?.providerId && employee?.modelId) {
-      modelInfo = { providerId: employee.providerId, modelId: employee.modelId }
-    }
-    const soulPrompt = employee ? (getSoul(employee.soulId)?.systemPrompt ?? '') : ''
-
-    activeRuns.get(projectPath)?.abort()
+    // Per-REQUEST controller so parallel sub-tasks share one signal (and so two
+    // requests in the same project don't abort each other).
+    activeApplyRuns.get(request.id)?.abort()
     const ctl = new AbortController()
-    activeRuns.set(projectPath, ctl)
+    activeApplyRuns.set(request.id, ctl)
 
     const emit = (e: Omit<VibeProgressEvent, 'projectPath'>) => {
       win.webContents.send(IPC.VIBE_PROGRESS, { ...e, projectPath, requestId: request.id })
@@ -1297,143 +1465,36 @@ export function vibeHandlers(): void {
     ;(async () => {
       try {
         updateRequestStatus(request.id, 'applying')
-        if (employee) setEmployeeStatus(employee.id, 'busy')
-        const model = createLLMClient(modelInfo.providerId, modelInfo.modelId)
-        emit({ type: 'system', text: employee ? `${employee.name} 开始执行（${modelInfo.modelId}）` : `开始执行（${modelInfo.modelId}）` })
+        emit({ type: 'system', text: '开始执行（多员工并行）' })
 
-        // Loop tasks in order; refresh from DB each iter to support cancel/manual edits
-        let safety = 0
-        while (safety++ < 100) {
-          if (ctl.signal.aborted) break
-          const allTasks = listTasks(request.id)
-          const nextTask = allTasks.find(t => t.status === 'pending')
-          if (!nextTask) break
+        // Fan out all pending tasks; agentRunSemaphore (max 3) bounds total LLM
+        // load, withFileLock keeps same-file writes serial. No false ord deps.
+        const snapshot = listTasks(request.id)
+        const pending = snapshot.filter(t => t.status === 'pending')
+        await Promise.allSettled(
+          pending.map(task => agentRunSemaphore.run(() => runOneTask(request, task, projectPath, snapshot, ctl.signal, emit)))
+        )
 
-          // Mark running
-          updateTaskStatus(nextTask.id, 'running')
-          writeTasksMd({ projectPath, slug: request.slug, tasks: listTasks(request.id) })
-          emit({ type: 'task_status', taskId: nextTask.id, taskStatus: 'running' })
-          appendMessage({
-            requestId: request.id, role: 'system', taskId: nextTask.id,
-            content: `开始任务：${nextTask.title}`
-          })
-
-          const taskToolEmit = (e: Omit<VibeProgressEvent, 'projectPath'>) => {
-            emit({ ...e, taskId: nextTask.id })
-            // Persist tool events to message log (skip the raw text streams — those go to vibe_messages assistant role below)
-            if (e.type === 'tool_use') {
-              appendMessage({
-                requestId: request.id, role: 'tool', taskId: nextTask.id,
-                content: e.toolArgsPreview ?? '',
-                toolName: e.toolName, isError: false
-              })
-            } else if (e.type === 'tool_result') {
-              appendMessage({
-                requestId: request.id, role: 'tool', taskId: nextTask.id,
-                content: e.toolResultPreview ?? '',
-                toolName: e.toolName, isError: !!e.isError
-              })
-            }
-          }
-          const rawTools = buildVibeTools(projectPath, taskToolEmit, ctl.signal)
-
-          const { section: applySkillsSection, skills: applySkills } = buildVibeSkillsSection()
-          let tools: Record<string, Tool> = applyVibeSkillsFilter(rawTools, applySkills)
-          const applyRuntimeSkills = applySkills.filter(s => s.runtime)
-          if (applyRuntimeSkills.length) {
-            tools = { ...tools, ...buildVibeSkillTools(projectPath, applyRuntimeSkills, taskToolEmit, ctl.signal) }
-          }
-
-          const otherTasks = allTasks.filter(t => t.id !== nextTask.id)
-          let accumulated = ''
-          let runError: Error | null = null
-          let usage: { promptTokens?: number; completionTokens?: number } | null = null
-          try {
-            const result = streamText({
-              model,
-              system: (soulPrompt ? soulPrompt + '\n\n---\n\n' : '') + buildApplySystem(request, nextTask, otherTasks) + applySkillsSection,
-              messages: [{ role: 'user', content: nextTask.description || nextTask.title }],
-              tools,
-              maxSteps: 25,
-              maxRetries: 2,
-              abortSignal: ctl.signal,
-              onError: ({ error }) => {
-                console.error('[vibe] streamText error:', error)
-                runError = error as Error
-              }
-            })
-            for await (const chunk of result.textStream) {
-              if (ctl.signal.aborted) break
-              if (chunk) {
-                accumulated += chunk
-                emit({ type: 'text', text: chunk, taskId: nextTask.id })
-              }
-            }
-            await result.finishReason.catch(() => null)
-            usage = await result.usage.catch(() => null)
-          } catch (err) {
-            runError = err as Error
-          }
-
-          if (ctl.signal.aborted) {
-            // leave the task as pending so user can resume later by re-applying
-            updateTaskStatus(nextTask.id, 'pending')
-            writeTasksMd({ projectPath, slug: request.slug, tasks: listTasks(request.id) })
-            break
-          }
-
-          if (runError) {
-            updateTaskStatus(nextTask.id, 'error', runError.message)
-            writeTasksMd({ projectPath, slug: request.slug, tasks: listTasks(request.id) })
-            emit({ type: 'task_status', taskId: nextTask.id, taskStatus: 'error', text: runError.message })
-            appendMessage({
-              requestId: request.id, role: 'system', taskId: nextTask.id,
-              content: `任务失败：${runError.message}`, isError: true
-            })
-            // Stop the apply loop on first error so user can review
-            break
-          }
-
-          updateTaskStatus(nextTask.id, 'done')
-          writeTasksMd({ projectPath, slug: request.slug, tasks: listTasks(request.id) })
-          emit({ type: 'task_status', taskId: nextTask.id, taskStatus: 'done' })
-          if (employee) bumpEmployeeStats(employee.id, { out: 1 }) // 每完成一个任务 +1 产出
-          if (accumulated.trim()) {
-            const inTok = finiteUsage(usage?.promptTokens)
-            const outTok = finiteUsage(usage?.completionTokens)
-            const cost = inTok != null && outTok != null && (inTok > 0 || outTok > 0)
-              ? computeCost(modelInfo.modelId, inTok, outTok)
-              : null
-            appendMessage({
-              requestId: request.id, role: 'assistant', taskId: nextTask.id,
-              content: accumulated.trim(),
-              inputTokens: inTok, outputTokens: outTok, costUsd: cost, model: modelInfo.modelId
-            })
-          }
-        }
-
-        // Update request-level status
         const finalTasks = listTasks(request.id)
         const stillPending = finalTasks.some(t => t.status === 'pending' || t.status === 'error')
         updateRequestStatus(request.id, stillPending ? 'proposed' : 'done')
-        if (employee) {
-          setEmployeeStatus(employee.id, 'idle')
-          if (!stillPending) bumpEmployeeStats(employee.id, { done: 1 }) // 整个需求交付 → 完成 +1
+        // 整需求交付 → 参与的每个员工各 done +1
+        if (!stillPending) {
+          const empIds = new Set(finalTasks.map(t => t.assignee_employee_id).filter(Boolean) as string[])
+          for (const id of empIds) bumpEmployeeStats(id, { done: 1 })
         }
 
-        if (ctl.signal.aborted) {
-          win.webContents.send(IPC.VIBE_DONE, { projectPath, requestId: request.id, cancelled: true })
-        } else {
-          win.webContents.send(IPC.VIBE_DONE, { projectPath, requestId: request.id })
-        }
+        win.webContents.send(IPC.VIBE_DONE, { projectPath, requestId: request.id, cancelled: ctl.signal.aborted })
       } catch (err) {
         const msg = (err as Error)?.message || String(err)
         console.error('[vibe] apply failed:', err)
         updateRequestStatus(request.id, 'proposed')
         win.webContents.send(IPC.VIBE_ERROR, { projectPath, requestId: request.id, error: msg })
       } finally {
-        if (activeRuns.get(projectPath) === ctl) activeRuns.delete(projectPath)
-        if (employee) setEmployeeStatus(employee.id, 'idle') // 确保任何退出路径都释放忙碌态
+        if (activeApplyRuns.get(request.id) === ctl) activeApplyRuns.delete(request.id)
+        // 兜底：把本需求涉及的所有员工置 idle（防遗漏）
+        const ids = new Set(listTasks(request.id).map(t => t.assignee_employee_id).filter(Boolean) as string[])
+        for (const id of ids) setEmployeeStatus(id, 'idle')
       }
     })()
 
@@ -1449,12 +1510,18 @@ export function vibeHandlers(): void {
   // ----- STOP -------------------------------------------------------------
   ipcMain.handle(IPC.VIBE_STOP, async (_e, args: { projectPath: string }) => {
     const abs = path.resolve(args.projectPath)
+    let stopped = false
+    // Stop the stream-mode run (chat/explore/bugfix/propose) for this project.
     const ctl = activeRuns.get(abs)
-    if (ctl) {
-      ctl.abort()
-      activeRuns.delete(abs)
-      return { ok: true }
+    if (ctl) { ctl.abort(); activeRuns.delete(abs); stopped = true }
+    // Stop every apply run whose request belongs to this project (parallel
+    // sub-tasks share one per-request controller).
+    for (const [reqId, applyCtl] of activeApplyRuns) {
+      const r = getRequest(reqId)
+      if (r && path.resolve(r.project_path) === abs) {
+        applyCtl.abort(); activeApplyRuns.delete(reqId); stopped = true
+      }
     }
-    return { ok: false, reason: 'No active run' }
+    return stopped ? { ok: true } : { ok: false, reason: 'No active run' }
   })
 }

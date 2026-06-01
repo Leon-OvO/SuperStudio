@@ -151,7 +151,8 @@ function createTables(): void {
       status      TEXT NOT NULL DEFAULT 'pending',
       error_text  TEXT,
       started_at  INTEGER,
-      finished_at INTEGER
+      finished_at INTEGER,
+      assignee_employee_id TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_vibe_tasks_request ON vibe_tasks(request_id, ord);
 
@@ -311,6 +312,9 @@ function applyMigrations(): void {
   // v9: AI Company — a requirement can be assigned to an employee, whose soul
   // persona + chosen model drives that request's task execution.
   try { db.run(`ALTER TABLE vibe_requests ADD COLUMN assignee_employee_id TEXT`) } catch { /* already exists */ }
+  // v10: 子任务级派活 —— 每个 vibe_task 可由不同员工承接（一需求多员工并行）。
+  // null = 回退到 request.assignee_employee_id 或默认模型。
+  try { db.run(`ALTER TABLE vibe_tasks ADD COLUMN assignee_employee_id TEXT`) } catch { /* already exists */ }
 }
 
 // Helper: run a query and save

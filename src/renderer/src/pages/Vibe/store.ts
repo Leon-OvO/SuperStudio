@@ -153,7 +153,13 @@ export const useVibeStore = create<VibeState>((set, get) => ({
       )
       set({
         tasks: next,
-        streamingTaskId: e.taskStatus === 'running' ? e.taskId! : (e.taskStatus === 'done' ? null : s.streamingTaskId)
+        // Parallel apply: only clear the streamed-text highlight when the task
+        // that finished IS the one we were highlighting; a running event always
+        // takes the highlight. Per-task spinners are driven by task.status, so
+        // multiple concurrent running tasks render correctly regardless.
+        streamingTaskId: e.taskStatus === 'running'
+          ? e.taskId!
+          : ((e.taskStatus === 'done' || e.taskStatus === 'error') && s.streamingTaskId === e.taskId ? null : s.streamingTaskId)
       })
       return
     }

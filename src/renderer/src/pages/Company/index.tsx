@@ -469,20 +469,24 @@ export function Board({ employees, onChange, goMarket, goWorkbench }: { employee
                         <div className="mt-2 pl-3 border-l border-border space-y-1">
                           {!subs ? <div className="text-[10px] text-muted-foreground/50">加载子任务…</div>
                             : subs.length === 0 ? <div className="text-[10px] text-muted-foreground/50">无子任务</div>
-                            : subs.map(t => (
+                            : subs.map(t => {
+                              const te = employees.find(e => e.id === t.assigneeEmployeeId)
+                              return (
                               <div key={t.id} className="flex items-start gap-1.5 text-[11px]">
                                 <span className={cn('shrink-0 w-3 text-center', TASK_COLOR[t.status] || '')}>{TASK_ICON[t.status] || '○'}</span>
-                                <span className={cn('leading-snug', t.status === 'done' || t.status === 'skipped' ? 'text-muted-foreground/60 line-through' : 'text-foreground/90')}>{t.title}</span>
+                                <span className={cn('leading-snug flex-1 min-w-0', t.status === 'done' || t.status === 'skipped' ? 'text-muted-foreground/60 line-through' : 'text-foreground/90')}>{t.title}</span>
+                                {te && <span className="shrink-0 text-[9.5px]" style={{ color: dept(te.dept).color }} title={`${te.name} · ${dept(te.dept).label}`}>{dept(te.dept).emoji} {te.name}</span>}
                               </div>
-                            ))}
+                              )
+                            })}
                         </div>
                       )}
 
-                      <div className="flex items-center gap-1.5 mt-2">
+                      <div className="flex items-center gap-1.5 mt-2" title="默认承接人：未单独指派的子任务用 TA">
                         <span className="text-[11px]">👤</span>
                         <select value={r.assigneeEmployeeId ?? ''} onChange={e => assign(r, e.target.value || null)}
                           className="flex-1 bg-muted/40 border border-border rounded-md px-1.5 py-1 text-[11px] text-foreground focus:outline-none">
-                          <option value="">未指派</option>
+                          <option value="">默认承接人（未指派）</option>
                           {employees.map(emp2 => <option key={emp2.id} value={emp2.id}>{emp2.name}</option>)}
                           {r.assigneeEmployeeId && !employees.some(e => e.id === r.assigneeEmployeeId) && <option value={r.assigneeEmployeeId}>（已离职）</option>}
                         </select>

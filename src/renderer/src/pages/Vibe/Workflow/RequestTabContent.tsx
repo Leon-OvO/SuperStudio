@@ -110,7 +110,8 @@ export function RequestTabContent({
   const stage: 'explore' | 'planned' | 'done' =
     !hasTasks ? 'explore' :
     pendingCount === 0 ? 'done' : 'planned'
-  const currentRunningTask = tasks.find(t => t.id === streamingTaskId)
+  // Parallel apply may have several running tasks at once — banner summarizes them.
+  const runningTasks = tasks.filter(t => t.status === 'running')
 
   function submit() {
     const t = input.trim()
@@ -253,9 +254,11 @@ export function RequestTabContent({
               <Zap size={14} className="text-amber-500 animate-pulse shrink-0" />
               <div className="flex-1 min-w-0">
                 <div className="text-xs font-medium">
-                  {currentRunningTask
-                    ? <>执行中: <span className="text-amber-600">任务 {currentRunningTask.ord} · {currentRunningTask.title}</span></>
-                    : '准备执行任务…'
+                  {runningTasks.length > 1
+                    ? <>执行中: <span className="text-amber-600">{runningTasks.length} 个任务并行</span></>
+                    : runningTasks.length === 1
+                      ? <>执行中: <span className="text-amber-600">任务 {runningTasks[0].ord} · {runningTasks[0].title}</span></>
+                      : '准备执行任务…'
                   }
                 </div>
                 <div className="text-[11px] text-muted-foreground mt-0.5">
@@ -284,6 +287,9 @@ export function RequestTabContent({
                   task={t}
                   isStreaming={streamingTaskId === t.id}
                   onToggleStatus={running === 'apply' ? undefined : (st) => onToggleTaskStatus(t.id, st)}
+                  employees={employees}
+                  onReassign={(empId) => window.api.vibeTaskSetAssignee(t.id, empId).then(() => refreshEmployees())}
+                  disabled={running === 'apply'}
                 />
               ))}
             </div>
