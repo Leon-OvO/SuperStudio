@@ -14,7 +14,7 @@
 import { ipcMain } from 'electron'
 import fs from 'fs'
 import path from 'path'
-import { streamText, tool, type Tool } from 'ai'
+import { streamText, generateText, tool, type Tool } from 'ai'
 import { z } from 'zod'
 import { IPC } from '../../../src/shared/ipc-types'
 import type {
@@ -640,6 +640,7 @@ JSON format rules — VERY IMPORTANT:
 - "tasks" MUST be a JSON ARRAY of objects: [{"title": "...", "description": "..."}, ...]
 - DO NOT wrap "tasks" as a JSON-encoded string — it must be a real array literal in your tool call arguments
 - Each task object's "title" and "description" are plain strings, not stringified JSON
+- 若 title/description 文本里出现双引号（如中文引号场景用了 ASCII "），必须转义为 \\"，否则 JSON 非法
 
 If the user's request is too vague to plan (e.g., just "开始" or "帮我做点东西"), produce a single clarifying task asking for more detail — don't fabricate work.`
 
@@ -1178,6 +1179,31 @@ export function vibeHandlers(): void {
           maxSteps: 2,
           maxRetries: 3,
           abortSignal: ctl.signal,
+          // 自我修复：模型常把 tasks 误转成 JSON 字符串（甚至内层引号没转义，
+          // 导致连 preprocess 的 JSON.parse 都失败）。参数校验失败时，带着错误把
+          // 上一轮工具调用回灌给模型，让它按 schema 重新调用一次。覆盖各种畸形输出。
+          experimental_repairToolCall: async ({ toolCall, tools: t, error, messages: m, system: sys }) => {
+            if (toolCall.toolName !== 'submit_proposal') return null
+            try {
+              const { toolCalls } = await generateText({
+                model,
+                system: sys,
+                messages: [
+                  ...m,
+                  { role: 'assistant', content: [{ type: 'tool-call', toolCallId: toolCall.toolCallId, toolName: toolCall.toolName, args: toolCall.args }] },
+                  { role: 'tool', content: [{ type: 'tool-result', toolCallId: toolCall.toolCallId, toolName: toolCall.toolName, result: `工具参数校验失败：${error.message}\n请重新调用 submit_proposal 修正：tasks 必须是 JSON 数组本身（不要再转成字符串），每个字符串值内部的双引号要用 \\" 正确转义。` }] }
+                ],
+                tools: t,
+                toolChoice: { type: 'tool', toolName: 'submit_proposal' },
+                maxRetries: 1,
+                abortSignal: ctl.signal
+              })
+              const fixed = toolCalls.find(c => c.toolName === 'submit_proposal')
+              return fixed ? { toolCallType: 'function', toolCallId: toolCall.toolCallId, toolName: toolCall.toolName, args: JSON.stringify(fixed.args) } : null
+            } catch {
+              return null
+            }
+          },
           onError: ({ error }) => {
             console.error('[vibe] propose streamText error:', error)
           }
