@@ -5,7 +5,8 @@ import { TaskRow } from './TaskRow'
 import { MessageBubble } from './MessageBubble'
 import { MessagesMinimap } from './MessagesMinimap'
 import { formatCostUsd, formatTokens } from '../../../lib/format-cost'
-import type { VibeRequestInfo, VibeTaskInfo, VibeMessageInfo, VibeIntent, EmployeeInfo } from '../../../../../shared/ipc-types'
+import type { VibeRequestInfo, VibeTaskInfo, VibeMessageInfo, VibeIntent } from '../../../../../shared/ipc-types'
+import { useEmployeesStore } from '../../../stores/employees'
 
 interface Props {
   request: VibeRequestInfo | null
@@ -43,11 +44,13 @@ export function RequestTabContent({
   const messagesContentRef = useRef<HTMLDivElement>(null)
   const taRef = useRef<HTMLTextAreaElement>(null)
 
-  // AI-company: which hired employee承接 this request. The employee's soul
-  // persona + chosen model drive the apply run (handled in main).
-  const [employees, setEmployees] = useState<EmployeeInfo[]>([])
+  // AI-company: which hired employee承接 this request. Reads the SHARED employee
+  // store so a hire/fire in the 人才市场 tab is reflected here immediately (the
+  // IDE stays mounted across tab switches, so a once-on-mount fetch went stale).
+  const employees = useEmployeesStore(s => s.employees)
+  const refreshEmployees = useEmployeesStore(s => s.refresh)
   const [assignee, setAssignee] = useState<string | null>(request?.assigneeEmployeeId ?? null)
-  useEffect(() => { window.api.listEmployees().then((e: EmployeeInfo[]) => setEmployees(e)).catch(() => {}) }, [])
+  useEffect(() => { refreshEmployees() }, [refreshEmployees])
   useEffect(() => { setAssignee(request?.assigneeEmployeeId ?? null) }, [request?.id, request?.assigneeEmployeeId])
   async function changeAssignee(id: string | null) {
     if (!request) return
@@ -181,6 +184,7 @@ export function RequestTabContent({
                   >
                     <option value="">未指派</option>
                     {employees.map(emp => <option key={emp.id} value={emp.id}>{emp.name}</option>)}
+                    {assignee && !employees.some(e => e.id === assignee) && <option value={assignee}>（已离职）</option>}
                   </select>
                 </span>
               </>

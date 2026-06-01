@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Building2 } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { VibeWorkbench } from './index'
 import { Board, Market, Roster, Dashboard } from '../Company'
-import type { EmployeeInfo, ProviderConfig } from '../../../../shared/ipc-types'
+import { useEmployeesStore } from '../../stores/employees'
+import type { ProviderConfig } from '../../../../shared/ipc-types'
 
 /**
  * 统一工作台：把原「构建(Vibe IDE)」与「公司(人才/看板/经营)」合并到一个页面，
@@ -15,12 +16,10 @@ type Tab = 'ide' | 'board' | 'market' | 'team' | 'dash'
 
 export function WorkbenchPage() {
   const [tab, setTab] = useState<Tab>('ide')
-  const [employees, setEmployees] = useState<EmployeeInfo[]>([])
+  const employees = useEmployeesStore(s => s.employees)
+  const refreshEmployees = useEmployeesStore(s => s.refresh)
   const [providers, setProviders] = useState<ProviderConfig[]>([])
 
-  const refreshEmployees = useCallback(() => {
-    window.api.listEmployees().then((e: EmployeeInfo[]) => setEmployees(e)).catch(() => {})
-  }, [])
   useEffect(() => {
     refreshEmployees()
     window.api.listProviders().then((p: ProviderConfig[]) => setProviders(p)).catch(() => {})

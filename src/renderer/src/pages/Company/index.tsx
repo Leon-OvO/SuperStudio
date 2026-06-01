@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Building2, Search, X, UserPlus, Trash2, Cpu, Loader2, BadgeCheck, Sparkles } from 'lucide-react'
+import { Search, X, UserPlus, Trash2, Cpu, Loader2, BadgeCheck, Sparkles } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { toast } from '../../components/ui/Toast'
 import { useConfirmDialog } from '../../components/ui/ConfirmDialog'
@@ -21,54 +21,9 @@ const dept = (k: string) => DEPT[k] || { label: k, color: '#8b91a0', emoji: '�
 
 const PAGE_SIZE = 24
 
-type Tab = 'board' | 'market' | 'team' | 'dash'
-
-export function CompanyPage() {
-  const [tab, setTab] = useState<Tab>('board')
-  const [employees, setEmployees] = useState<EmployeeInfo[]>([])
-  const [providers, setProviders] = useState<ProviderConfig[]>([])
-
-  const refreshEmployees = useCallback(() => { window.api.listEmployees().then((e: EmployeeInfo[]) => setEmployees(e)).catch(() => {}) }, [])
-  useEffect(() => {
-    refreshEmployees()
-    window.api.listProviders().then((p: ProviderConfig[]) => setProviders(p)).catch(() => {})
-  }, [refreshEmployees])
-
-  const hiredSoulIds = useMemo(() => new Set(employees.map(e => e.soulId)), [employees])
-  const busy = employees.filter(e => e.status === 'busy').length
-
-  return (
-    <div className="flex flex-col h-full">
-      {/* company header */}
-      <div className="flex items-center gap-3 px-5 py-3 border-b border-border">
-        <div className="w-8 h-8 rounded-lg grid place-items-center text-white" style={{ background: 'linear-gradient(135deg,#7c6cff,#b06cff)' }}>
-          <Building2 size={16} />
-        </div>
-        <div className="leading-tight">
-          <div className="font-semibold text-sm">我的工作室</div>
-          <div className="text-[11px] text-muted-foreground">AI 公司 · 招募 AI 员工承接需求</div>
-        </div>
-        <div className="flex-1" />
-        <div className="flex bg-muted/40 rounded-lg p-0.5">
-          {([['board', '🗂 需求看板'], ['market', '🛒 人才市场'], ['team', `👥 员工 ${employees.length}`], ['dash', '📊 经营台']] as [Tab, string][]).map(([k, label]) => (
-            <button key={k} onClick={() => setTab(k)}
-              className={cn('px-3.5 py-1.5 rounded-md text-xs', tab === k ? 'bg-primary/15 text-primary font-semibold' : 'text-muted-foreground hover:text-foreground')}>
-              {label}
-            </button>
-          ))}
-        </div>
-        <div className="text-xs text-muted-foreground ml-2">在岗 <b className="text-foreground">{employees.length - busy}</b>/{employees.length}</div>
-      </div>
-
-      <div className="flex-1 overflow-auto p-4">
-        {tab === 'board' && <Board employees={employees} onChange={refreshEmployees} goMarket={() => setTab('market')} />}
-        {tab === 'market' && <Market hiredSoulIds={hiredSoulIds} onHire={refreshEmployees} />}
-        {tab === 'team' && <Roster employees={employees} providers={providers} onChange={refreshEmployees} goMarket={() => setTab('market')} />}
-        {tab === 'dash' && <Dashboard employees={employees} />}
-      </div>
-    </div>
-  )
-}
+// NOTE: The standalone CompanyPage was merged into the unified Workbench
+// (Vibe/Workbench.tsx). The sub-views below (Market / Roster / Board / Dashboard)
+// are exported and consumed there.
 
 // ── 人才市场 ─────────────────────────────────────────────────────────────────
 export function Market({ hiredSoulIds, onHire }: { hiredSoulIds: Set<string>; onHire: () => void }) {
