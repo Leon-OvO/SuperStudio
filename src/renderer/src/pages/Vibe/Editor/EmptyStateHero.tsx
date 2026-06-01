@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Send, Loader2, Sparkles, FolderOpen, MessageSquare, Search, Bug, Wrench } from 'lucide-react'
+import { Select } from '../../../components/ui/Select'
 import type { VibeIntent } from '../../../../../shared/ipc-types'
 
 interface Props {
@@ -97,18 +98,19 @@ export function EmptyStateHero({ hasProject, running, onRun }: Props) {
       <div className="space-y-2">
         <div className="flex items-center gap-1.5">
           <span className="text-[11px] text-muted-foreground">模式</span>
-          <select
+          <Select
             value={mode}
-            onChange={e => setMode(e.target.value as 'auto' | VibeIntent)}
+            onChange={v => setMode(v as 'auto' | VibeIntent)}
             disabled={isRunning}
-            className="bg-card border border-border rounded-md px-2 py-1 text-[11px] text-foreground focus:outline-none disabled:opacity-40"
-          >
-            <option value="auto">🪄 自动识别</option>
-            <option value="chat">{INTENT_META.chat.label}（不读项目）</option>
-            <option value="explore">{INTENT_META.explore.label}（只读代码）</option>
-            <option value="bugfix">{INTENT_META.bugfix.label}（自动定位修复）</option>
-            <option value="change">{INTENT_META.change.label}（拆成任务）</option>
-          </select>
+            popoverWidth={180}
+            options={[
+              { value: 'auto', label: '🪄 自动识别' },
+              { value: 'chat', label: `${INTENT_META.chat.label}（不读项目）` },
+              { value: 'explore', label: `${INTENT_META.explore.label}（只读代码）` },
+              { value: 'bugfix', label: `${INTENT_META.bugfix.label}（自动定位修复）` },
+              { value: 'change', label: `${INTENT_META.change.label}（拆成任务）` }
+            ]}
+          />
           <span className="text-[11px] text-muted-foreground ml-auto">{mode === 'auto' ? 'AI 自动判断' : `已锁定：${INTENT_META[mode].label}`}</span>
         </div>
 

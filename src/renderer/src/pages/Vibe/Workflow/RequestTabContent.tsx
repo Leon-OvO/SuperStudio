@@ -4,6 +4,7 @@ import { cn } from '../../../lib/utils'
 import { TaskRow } from './TaskRow'
 import { MessageBubble } from './MessageBubble'
 import { MessagesMinimap } from './MessagesMinimap'
+import { Select } from '../../../components/ui/Select'
 import { formatCostUsd, formatTokens } from '../../../lib/format-cost'
 import type { VibeRequestInfo, VibeTaskInfo, VibeMessageInfo, VibeIntent } from '../../../../../shared/ipc-types'
 import { useEmployeesStore } from '../../../stores/employees'
@@ -168,17 +169,18 @@ export function RequestTabContent({
             {isChange && (
               <>
                 <span className="text-muted-foreground/60">·</span>
-                <span className="inline-flex items-center gap-1" title="指派一位 AI 员工承接：用其底层模型与岗位人格执行">
+                <span className="inline-flex items-center gap-1" title="默认承接人：未单独指派的子任务用 TA（用其底层模型与岗位人格执行）">
                   👤
-                  <select
+                  <Select
                     value={assignee ?? ''}
-                    onChange={e => changeAssignee(e.target.value || null)}
-                    className="bg-transparent border border-border rounded px-1 py-px text-[10px] text-foreground focus:outline-none max-w-[120px]"
-                  >
-                    <option value="">未指派</option>
-                    {employees.map(emp => <option key={emp.id} value={emp.id}>{emp.name}</option>)}
-                    {assignee && !employees.some(e => e.id === assignee) && <option value={assignee}>（已离职）</option>}
-                  </select>
+                    onChange={v => changeAssignee(v || null)}
+                    className="max-w-[130px]"
+                    options={[
+                      { value: '', label: '默认承接人' },
+                      ...employees.map(emp => ({ value: emp.id, label: emp.name })),
+                      ...(assignee && !employees.some(e => e.id === assignee) ? [{ value: assignee, label: '（已离职）' }] : [])
+                    ]}
+                  />
                 </span>
               </>
             )}
@@ -335,19 +337,20 @@ export function RequestTabContent({
       <div className="border-t border-border p-3 shrink-0 bg-card/30 space-y-2">
         <div className="flex items-center gap-1.5">
           <span className="text-[11px] text-muted-foreground">模式</span>
-          <select
+          <Select
             value={mode}
-            onChange={e => setMode(e.target.value as 'auto' | VibeIntent)}
+            onChange={v => setMode(v as 'auto' | VibeIntent)}
             disabled={running !== null}
-            className="bg-card border border-border rounded-md px-2 py-1 text-[11px] text-foreground focus:outline-none disabled:opacity-40"
             title="🪄 自动让 AI 判断该聊天/探索/修复/拆需求；也可手动锁定某模式"
-          >
-            <option value="auto">🪄 自动识别</option>
-            <option value="chat">{INTENT_META.chat.label}（不读项目）</option>
-            <option value="explore">{INTENT_META.explore.label}（只读代码）</option>
-            <option value="bugfix">{INTENT_META.bugfix.label}（自动定位修复）</option>
-            <option value="change">{INTENT_META.change.label}（拆成任务）</option>
-          </select>
+            popoverWidth={180}
+            options={[
+              { value: 'auto', label: '🪄 自动识别' },
+              { value: 'chat', label: `${INTENT_META.chat.label}（不读项目）` },
+              { value: 'explore', label: `${INTENT_META.explore.label}（只读代码）` },
+              { value: 'bugfix', label: `${INTENT_META.bugfix.label}（自动定位修复）` },
+              { value: 'change', label: `${INTENT_META.change.label}（拆成任务）` }
+            ]}
+          />
           <span className="text-[11px] text-muted-foreground ml-auto">
             {mode === 'auto' ? 'AI 自动判断你的意图' : `已锁定：${INTENT_META[mode].label}`}
           </span>

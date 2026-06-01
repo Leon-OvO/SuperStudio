@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Search, X, UserPlus, Trash2, Cpu, Loader2, BadgeCheck, Sparkles } from 'lucide-react'
 import { cn } from '../../lib/utils'
+import { Select } from '../../components/ui/Select'
 import { toast } from '../../components/ui/Toast'
 import { useConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { useUIStore } from '../../stores/ui'
@@ -243,13 +244,18 @@ export function Roster({ employees, providers, onChange, goMarket }: { employees
                   <div className="h-1 bg-muted rounded mt-1.5 mb-2.5 overflow-hidden"><div className="h-full bg-amber-400" style={{ width: prog + '%' }} /></div>
                   <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground mb-2.5">
                     <Cpu size={12} /> 底层模型
-                    <select value={`${e.providerId}::${e.modelId}`} onChange={ev => changeModel(e, ev.target.value)}
-                      className="flex-1 bg-muted/40 border border-border rounded-md px-2 py-1 text-[11.5px] text-foreground focus:outline-none">
-                      {!allModels.some(m => m.providerId === e.providerId && m.modelId === e.modelId) && e.modelId &&
-                        <option value={`${e.providerId}::${e.modelId}`}>{e.modelId}（当前）</option>}
-                      {allModels.map(m => <option key={m.providerId + m.modelId} value={`${m.providerId}::${m.modelId}`}>{m.label}</option>)}
-                      {allModels.length === 0 && <option value="::">（未配置供应商）</option>}
-                    </select>
+                    <Select
+                      value={`${e.providerId}::${e.modelId}`}
+                      onChange={v => changeModel(e, v)}
+                      className="flex-1"
+                      popoverWidth={240}
+                      options={[
+                        ...(!allModels.some(m => m.providerId === e.providerId && m.modelId === e.modelId) && e.modelId
+                          ? [{ value: `${e.providerId}::${e.modelId}`, label: `${e.modelId}（当前）` }] : []),
+                        ...allModels.map(m => ({ value: `${m.providerId}::${m.modelId}`, label: m.label })),
+                        ...(allModels.length === 0 ? [{ value: '::', label: '（未配置供应商）', disabled: true }] : [])
+                      ]}
+                    />
                   </div>
                   <div className="flex gap-3.5 text-[11px] text-muted-foreground mb-2.5">
                     <div><b className="text-foreground text-[13px] block">{e.stats.assigned}</b>承接</div>
@@ -484,12 +490,16 @@ export function Board({ employees, onChange, goMarket, goWorkbench }: { employee
 
                       <div className="flex items-center gap-1.5 mt-2" title="默认承接人：未单独指派的子任务用 TA">
                         <span className="text-[11px]">👤</span>
-                        <select value={r.assigneeEmployeeId ?? ''} onChange={e => assign(r, e.target.value || null)}
-                          className="flex-1 bg-muted/40 border border-border rounded-md px-1.5 py-1 text-[11px] text-foreground focus:outline-none">
-                          <option value="">默认承接人（未指派）</option>
-                          {employees.map(emp2 => <option key={emp2.id} value={emp2.id}>{emp2.name}</option>)}
-                          {r.assigneeEmployeeId && !employees.some(e => e.id === r.assigneeEmployeeId) && <option value={r.assigneeEmployeeId}>（已离职）</option>}
-                        </select>
+                        <Select
+                          value={r.assigneeEmployeeId ?? ''}
+                          onChange={v => assign(r, v || null)}
+                          className="flex-1"
+                          options={[
+                            { value: '', label: '默认承接人（未指派）' },
+                            ...employees.map(emp2 => ({ value: emp2.id, label: emp2.name })),
+                            ...(r.assigneeEmployeeId && !employees.some(e => e.id === r.assigneeEmployeeId) ? [{ value: r.assigneeEmployeeId, label: '（已离职）' }] : [])
+                          ]}
+                        />
                       </div>
                       {emp && <div className="text-[10px] text-muted-foreground mt-1">🧠 {emp.modelId || '默认模型'}{r.status === 'applying' ? ' · 执行中…' : ''}</div>}
                       {col.key === 'proposed' && (

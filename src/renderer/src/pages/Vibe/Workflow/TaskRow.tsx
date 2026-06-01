@@ -1,5 +1,6 @@
 import { CircleCheck, Circle, Loader2, AlertCircle, MinusCircle } from 'lucide-react'
 import { cn } from '../../../lib/utils'
+import { Select } from '../../../components/ui/Select'
 import type { VibeTaskInfo, EmployeeInfo } from '../../../../../shared/ipc-types'
 
 interface Props {
@@ -56,17 +57,19 @@ export function TaskRow({ task, isStreaming, onToggleStatus, employees, onReassi
         )}
       </div>
       {onReassign && employees && (
-        <select
+        <Select
           value={task.assigneeEmployeeId ?? ''}
-          onChange={e => onReassign(e.target.value || null)}
+          onChange={v => onReassign(v || null)}
           disabled={disabled}
           title="承接此子任务的员工（用其模型+人格执行）"
-          className="shrink-0 mt-0.5 max-w-[96px] bg-transparent border border-border rounded px-1 py-px text-[10px] text-muted-foreground focus:outline-none disabled:opacity-40"
-        >
-          <option value="">默认</option>
-          {employees.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
-          {task.assigneeEmployeeId && !employees.some(e => e.id === task.assigneeEmployeeId) && <option value={task.assigneeEmployeeId}>（已离职）</option>}
-        </select>
+          className="shrink-0 mt-0.5 max-w-[110px]"
+          options={[
+            { value: '', label: '默认' },
+            ...employees.map(e => ({ value: e.id, label: e.name })),
+            ...(task.assigneeEmployeeId && !employees.some(e => e.id === task.assigneeEmployeeId)
+              ? [{ value: task.assigneeEmployeeId, label: '（已离职）' }] : [])
+          ]}
+        />
       )}
       {!isDone && !isSkipped && onToggleStatus && (
         <button
