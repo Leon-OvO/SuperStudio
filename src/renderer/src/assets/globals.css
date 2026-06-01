@@ -244,9 +244,38 @@
   /* 摸鱼：空闲员工屏幕上的小活动（打游戏/刷手机…）左右晃；脑袋慵懒地轻摇 */
   .office-wiggle { animation: office-wiggle 1.5s ease-in-out infinite; }
   .office-sway   { animation: office-sway 3.2s ease-in-out infinite; }
+
+  /* ── 办公室小人（全身像素人）的姿势动画 ───────────────────────────────
+   *  char-bob     —— 走路时身体上下颠
+   *  char-legA/B  —— 双腿交替前后摆（B 反相）
+   *  char-breathe —— 站立发呆时的呼吸微缩放
+   *  char-type    —— 坐着工作时手臂打字抖动 */
+  .char-bob     { animation: char-bob 0.4s ease-in-out infinite; }
+  .char-legA    { animation: char-leg 0.4s ease-in-out infinite; }
+  .char-legB    { animation: char-leg 0.4s ease-in-out infinite; animation-delay: -0.2s; }
+  .char-breathe { animation: char-breathe 2.6s ease-in-out infinite; }
+  .char-type    { animation: char-type 0.22s ease-in-out infinite; }
   @media (prefers-reduced-motion: reduce) {
-    .office-bob, .office-glow, .office-type, .office-wiggle, .office-sway { animation: none; }
+    .office-bob, .office-glow, .office-type, .office-wiggle, .office-sway,
+    .char-bob, .char-legA, .char-legB, .char-breathe, .char-type { animation: none; }
   }
+}
+
+@keyframes char-bob {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-1.5px); }
+}
+@keyframes char-leg {
+  0%, 100% { transform: rotate(20deg); }
+  50%      { transform: rotate(-20deg); }
+}
+@keyframes char-breathe {
+  0%, 100% { transform: scaleY(1); }
+  50%      { transform: scaleY(1.04); }
+}
+@keyframes char-type {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(1px); }
 }
 
 @keyframes office-wiggle {

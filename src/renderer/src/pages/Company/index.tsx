@@ -540,103 +540,217 @@ function slackOf(id: string): { emoji: string; label: string } {
   return SLACK[h % SLACK.length]
 }
 
-// 单个像素工位：显示器 + 坐着的小人（头+肩）+ 桌面 + 铭牌。忙碌时亮屏辉光 + 头顶任务
-// 气泡 + 脑袋专注地上下点动；空闲时屏幕变成在打游戏/刷手机，脑袋慵懒地左右晃（摸鱼）。
 type DeskTask = { taskTitle: string; reqTitle: string; pct: number; count: number }
-function Desk({ employee: e, task }: { employee: EmployeeInfo; task?: DeskTask }) {
-  const d = dept(e.dept)
-  const DeptIcon = deptIcon(e.dept)
-  const lv = levelOf(e.stats.done)
-  const busy = e.status === 'busy' || !!task
-  const slack = slackOf(e.id)
-  const tok = (e.stats.tokensIn ?? 0) + (e.stats.tokensOut ?? 0)
-  const screenStyle = (busy
-    ? { borderColor: d.color, background: d.color + '22', '--glow': d.color }
-    : { borderColor: 'hsl(var(--border))', background: 'hsl(var(--muted))' }) as React.CSSProperties
+
+// ── CSS 全身像素小人 ──────────────────────────────────────────────────────────
+// 头 + 躯干(部门色衣服，胸口部门图标) + 两条腿。pose 决定姿势：
+//   walk 双腿交替摆动 + 身体颠；idle 站立呼吸；sit/toilet 收腿（坐姿）。
+type Pose = 'sit' | 'walk' | 'idle' | 'toilet'
+function Character({ color, pose, busy, Icon }: { color: string; pose: Pose; busy: boolean; Icon: LucideIcon }) {
+  const walking = pose === 'walk'
+  const sitting = pose === 'sit' || pose === 'toilet'
   return (
-    <div
-      className="relative flex flex-col items-center w-[120px] pt-8"
-      title={`${e.name} · ${d.label}\n🧠 ${e.modelId || '默认模型'}\n完成 ${e.stats.done} · 产出 ${e.stats.out} · 🪙 ${formatTokens(tok)} · 💰 ${formatCostUsd(e.stats.cost ?? 0)}`}
-    >
-      {/* 头顶任务气泡（仅忙碌） */}
-      {busy && (
-        <div className="absolute top-0 left-1/2 -translate-x-1/2 z-10 w-[128px]">
-          <div className="rounded-md border bg-card px-1.5 py-1 shadow-[2px_2px_0_rgba(0,0,0,0.12)]" style={{ borderColor: d.color }}>
-            <div className="flex items-center gap-1 text-[9.5px] leading-tight">
-              <span className="office-type shrink-0" style={{ color: d.color }}>▍</span>
-              <span className="truncate text-foreground/90">{task ? task.taskTitle : '工作中…'}</span>
-            </div>
-            {task && task.count > 1 && <div className="text-[8.5px] text-muted-foreground mt-0.5">+{task.count - 1} 个任务并行</div>}
+    <div className={cn('relative flex flex-col items-center', walking && 'char-bob', pose === 'idle' && 'char-breathe')} style={{ width: 22 }}>
+      {/* 头 */}
+      <div className="w-3 h-3 rounded-full border-2 z-[2]" style={{ borderColor: color, background: '#f3cda6' }} />
+      {/* 躯干 + 手臂 */}
+      <div className="relative -mt-px">
+        <div className="w-[15px] h-4 rounded-md grid place-items-center shadow-[1px_1px_0_rgba(0,0,0,0.12)]" style={{ background: color }}>
+          <Icon size={9} className="text-white/90" />
+        </div>
+        <div className={cn('absolute top-1 -left-[3px] w-1 h-2.5 rounded-full', busy && sitting && 'char-type')} style={{ background: color }} />
+        <div className={cn('absolute top-1 -right-[3px] w-1 h-2.5 rounded-full', busy && sitting && 'char-type')} style={{ background: color }} />
+      </div>
+      {/* 腿 */}
+      {sitting
+        ? <div className="w-3.5 h-1.5 rounded-b-md -mt-px" style={{ background: '#475569' }} />
+        : (
+          <div className="flex gap-1 -mt-px">
+            <div className={cn('w-1 h-2.5 rounded-b origin-top', walking && 'char-legA')} style={{ background: '#475569' }} />
+            <div className={cn('w-1 h-2.5 rounded-b origin-top', walking && 'char-legB')} style={{ background: '#475569' }} />
           </div>
-          <div className="mx-auto w-0 h-0 border-l-4 border-r-4 border-t-4 border-l-transparent border-r-transparent" style={{ borderTopColor: d.color }} />
-        </div>
-      )}
-      {/* 显示器：忙碌显示进度%，空闲变成在打游戏/刷手机（摸鱼）的小活动 */}
-      <div className={cn('w-[58px] h-[40px] rounded-[4px] border-2 grid place-items-center', busy && 'office-glow')} style={screenStyle}>
-        {busy
-          ? <span className="text-[11px] font-bold tabular-nums" style={{ color: d.color }}>{task ? task.pct + '%' : '···'}</span>
-          : <span className="text-[16px] office-wiggle leading-none">{slack.emoji}</span>}
-      </div>
-      {/* 支架 */}
-      <div className="w-2 h-1.5 bg-muted-foreground/30" />
-      <div className="w-7 h-1 bg-muted-foreground/30 rounded-sm" />
-      {/* 小人：头 + 肩，坐在桌后（桌面盖住肩部下缘）。忙碌点头、空闲慵懒摇头 */}
-      <div className={cn('relative z-[1] -mb-3 flex flex-col items-center', busy ? 'office-bob' : 'office-sway')}>
-        <div className="w-9 h-9 rounded-full grid place-items-center border-2" style={{ borderColor: d.color, background: d.color + '1f' }}>
-          <DeptIcon size={16} style={{ color: d.color }} />
-        </div>
-        <div className="w-8 h-3.5 -mt-1 rounded-t-[12px] border-2 border-b-0" style={{ background: d.color + '2a', borderColor: d.color + '66' }} />
-      </div>
-      {/* 桌面 */}
-      <div className="w-full h-[16px] rounded-[3px] border shadow-[2px_2px_0_rgba(0,0,0,0.1)]" style={{ background: d.color + '14', borderColor: d.color + '55' }} />
-      {/* 铭牌 */}
-      <div className="mt-1.5 text-center leading-tight">
-        <div className="text-[11px] font-medium truncate max-w-[116px]">{e.name}</div>
-        <div className="flex items-center justify-center gap-1 text-[9.5px] mt-0.5">
-          <span title={lv.name}>{lv.icon}</span>
-          {busy
-            ? <span style={{ color: d.color }}>● 忙碌</span>
-            : <span className="text-muted-foreground/60">{slack.emoji} {slack.label}</span>}
-        </div>
-      </div>
+        )}
     </div>
   )
 }
 
-// 像素办公室平面图：一间“房间”里平铺所有员工的工位，实时反映谁在忙、在干什么。
-function OfficeFloor({ employees, currentTaskByEmp, onGoMarket }: {
+// ── 办公室模拟器：俯视一间办公室，小人会坐工位干活、空闲时走动/喝水/上厕所带薪拉屎 ──
+type ActorAction = 'desk' | 'wander' | 'cooler' | 'toilet'
+interface Actor { x: number; y: number; pose: Pose; facing: 1 | -1; action: ActorAction; until: number; moveMs: number; bubble?: string }
+const rand = (a: number, b: number) => a + Math.random() * (b - a)
+const TOILET = { x: 88, y: 24 }   // 隔间内部坐标（% of stage）
+const COOLER = { x: 89, y: 74 }
+
+function computeLayout(ids: string[]) {
+  const n = ids.length
+  const cols = Math.min(4, Math.max(2, Math.ceil(Math.sqrt(n))))
+  const rows = Math.max(1, Math.ceil(n / cols))
+  const stageH = Math.min(640, Math.max(300, 140 + rows * 92))
+  const desks = new Map<string, { x: number; y: number }>()
+  ids.forEach((id, i) => {
+    const r = Math.floor(i / cols), c = i % cols
+    const x = cols === 1 ? 16 : 10 + c * (56 / (cols - 1))   // 10..66（右侧 74..98 留给设施）
+    const y = rows === 1 ? 48 : 22 + r * (56 / (rows - 1))   // 22..78
+    desks.set(id, { x, y })
+  })
+  return { cols, rows, stageH, desks }
+}
+
+function OfficeSim({ employees, currentTaskByEmp, onGoMarket }: {
   employees: EmployeeInfo[]
   currentTaskByEmp: Map<string, DeskTask>
   onGoMarket: () => void
 }) {
+  const [, setTick] = useState(0)
+  const actorsRef = useRef<Map<string, Actor>>(new Map())
+  const toiletRef = useRef<string | null>(null)   // 厕所单人占用锁
+  const empRef = useRef(employees); empRef.current = employees
+  const taskRef = useRef(currentTaskByEmp); taskRef.current = currentTaskByEmp
+
+  const idsKey = employees.map(e => e.id).join(',')
+  const layout = useMemo(() => computeLayout(employees.map(e => e.id)), [idsKey])
+  const layoutRef = useRef(layout); layoutRef.current = layout
+
+  useEffect(() => {
+    const startWalk = (a: Actor, tx: number, ty: number, action: ActorAction, now: number) => {
+      const dist = Math.hypot(tx - a.x, ty - a.y)
+      a.facing = tx < a.x ? -1 : 1
+      a.moveMs = Math.min(2800, Math.max(600, dist * 70))
+      a.until = now + a.moveMs
+      a.pose = 'walk'; a.action = action; a.x = tx; a.y = ty; a.bubble = undefined
+    }
+    const tick = () => {
+      const now = Date.now()
+      const emps = empRef.current, tasks = taskRef.current
+      const { desks } = layoutRef.current
+      const actors = actorsRef.current
+      const alive = new Set(emps.map(e => e.id))
+      for (const id of [...actors.keys()]) if (!alive.has(id)) { actors.delete(id); if (toiletRef.current === id) toiletRef.current = null }
+      for (const e of emps) {
+        const dk = desks.get(e.id) || { x: 50, y: 50 }
+        let a = actors.get(e.id)
+        if (!a) { a = { x: dk.x, y: dk.y, pose: 'idle', facing: 1, action: 'desk', until: now + rand(1500, 5000), moveMs: 0 }; actors.set(e.id, a) }
+        const busy = tasks.has(e.id) || e.status === 'busy'
+        if (busy) {
+          if (toiletRef.current === e.id) toiletRef.current = null
+          const atDesk = Math.hypot(a.x - dk.x, a.y - dk.y) < 1.5
+          if (a.pose === 'walk') { if (now >= a.until) { a.pose = atDesk ? 'sit' : 'walk' } }
+          if (!atDesk && a.pose !== 'walk') startWalk(a, dk.x, dk.y, 'desk', now)
+          else if (atDesk && a.pose !== 'walk') { a.pose = 'sit'; a.action = 'desk'; a.bubble = undefined }
+          continue
+        }
+        // 空闲行为机
+        if (a.pose === 'walk') {
+          if (now >= a.until) {
+            if (a.action === 'toilet') { a.pose = 'toilet'; a.bubble = '🚽 带薪拉屎中…'; a.until = now + rand(8000, 15000) }
+            else if (a.action === 'cooler') { a.pose = 'idle'; a.bubble = '💧 喝水摸鱼'; a.until = now + rand(4000, 8000) }
+            else if (a.action === 'wander') { const s = slackOf(e.id); a.pose = 'idle'; a.bubble = `${s.emoji} ${s.label}`; a.until = now + rand(3000, 7000) }
+            else { a.pose = 'idle'; a.bubble = undefined; a.until = now + rand(4000, 9000) }
+          }
+          continue
+        }
+        if (now >= a.until) {
+          if (a.action === 'toilet' && toiletRef.current === e.id) toiletRef.current = null
+          const roll = Math.random()
+          if (roll < 0.15 && toiletRef.current == null) { toiletRef.current = e.id; startWalk(a, TOILET.x, TOILET.y, 'toilet', now) }
+          else if (roll < 0.35) startWalk(a, COOLER.x, COOLER.y, 'cooler', now)
+          else if (roll < 0.65) startWalk(a, rand(8, 70), rand(18, 82), 'wander', now)
+          else startWalk(a, dk.x, dk.y, 'desk', now)
+        }
+      }
+      setTick(t => (t + 1) & 0xffff)
+    }
+    const iv = setInterval(tick, 800)
+    return () => clearInterval(iv)
+  }, [])
+
   if (!employees.length) {
     return (
       <div className="grid place-items-center text-center text-muted-foreground rounded-xl border-2 border-dashed border-border" style={{ height: '46vh' }}>
         <div>
           <Armchair size={44} className="mx-auto mb-3 opacity-50" />
           <h2 className="text-foreground font-semibold mb-1.5">办公室空空如也</h2>
-          <p className="text-[12.5px] mb-4 max-w-sm">还没有员工入职 —— 去人才市场招募你的第一位 AI 员工，TA 就会出现在这里的工位上。</p>
+          <p className="text-[12.5px] mb-4 max-w-sm">还没有员工入职 —— 去人才市场招募你的第一位 AI 员工，TA 就会出现在这里上班。</p>
           <button onClick={onGoMarket} className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-primary text-primary-foreground font-medium text-sm"><Store size={14} /> 去人才市场招募</button>
         </div>
       </div>
     )
   }
-  const busy = employees.filter(e => e.status === 'busy' || currentTaskByEmp.has(e.id)).length
+
+  const busyCount = employees.filter(e => e.status === 'busy' || currentTaskByEmp.has(e.id)).length
   return (
     <div className="rounded-xl border-2 border-border overflow-hidden">
       {/* 门牌 */}
       <div className="flex items-center gap-2 px-3 py-2 border-b-2 border-border bg-card/60">
         <Building2 size={14} className="text-primary" />
         <span className="font-semibold text-[12.5px]">办公室</span>
-        <span className="text-[10.5px] text-muted-foreground">· 忙碌 <b className="text-foreground">{busy}</b> / 共 {employees.length} 人</span>
-        {busy === 0 && <span className="text-[10.5px] text-muted-foreground/60">· 全员空闲，去看板派活让大家动起来</span>}
+        <span className="text-[10.5px] text-muted-foreground">· 忙碌 <b className="text-foreground">{busyCount}</b> / 共 {employees.length} 人</span>
+        {busyCount === 0 && <span className="text-[10.5px] text-muted-foreground/60">· 全员摸鱼中，去看板派活让大家动起来</span>}
       </div>
-      {/* 工位区（地板纹理） */}
-      <div
-        className="p-4 flex flex-wrap gap-x-3 gap-y-6 justify-center"
-        style={{ backgroundImage: 'repeating-linear-gradient(45deg, hsl(var(--muted) / 0.18) 0 12px, transparent 12px 24px)' }}
-      >
-        {employees.map(e => <Desk key={e.id} employee={e} task={currentTaskByEmp.get(e.id)} />)}
+      {/* 舞台 */}
+      <div className="relative" style={{ height: layout.stageH, backgroundImage: 'repeating-linear-gradient(45deg, hsl(var(--muted) / 0.16) 0 14px, transparent 14px 28px)' }}>
+        {/* 厕所隔间 */}
+        <div className="absolute rounded-md border-2 border-border bg-card/70 flex flex-col items-center justify-center" style={{ left: `${TOILET.x}%`, top: `${TOILET.y}%`, width: 64, height: 64, transform: 'translate(-50%,-50%)' }}>
+          <span className="absolute -top-2 text-[9px] px-1 rounded bg-muted text-muted-foreground border border-border">厕所</span>
+          <span className="text-base opacity-70">🚽</span>
+        </div>
+        {/* 饮水机 */}
+        <div className="absolute flex flex-col items-center" style={{ left: `${COOLER.x}%`, top: `${COOLER.y}%`, transform: 'translate(-50%,-50%)' }}>
+          <span className="text-base">💧</span>
+          <span className="text-[8.5px] text-muted-foreground">饮水机</span>
+        </div>
+        {/* 工位家具（在小人之下） */}
+        {employees.map(e => {
+          const dk = layout.desks.get(e.id)!
+          const d = dept(e.dept)
+          const task = currentTaskByEmp.get(e.id)
+          const busy = e.status === 'busy' || !!task
+          const screenStyle = (busy
+            ? { borderColor: d.color, background: d.color + '22', '--glow': d.color }
+            : { borderColor: 'hsl(var(--border))', background: 'hsl(var(--muted))' }) as React.CSSProperties
+          return (
+            <div key={'desk-' + e.id} className="absolute z-[1] flex flex-col items-center" style={{ left: `${dk.x}%`, top: `calc(${dk.y}% + 14px)`, transform: 'translate(-50%,-50%)' }}>
+              <div className={cn('w-7 h-5 rounded-[3px] border-2 grid place-items-center', busy && 'office-glow')} style={screenStyle}>
+                {busy && <span className="text-[8px] font-bold tabular-nums" style={{ color: d.color }}>{task ? task.pct + '%' : ''}</span>}
+              </div>
+              <div className="w-10 h-1.5 rounded-sm mt-0.5" style={{ background: d.color + '40' }} />
+            </div>
+          )
+        })}
+        {/* 小人 */}
+        {employees.map(e => {
+          const a = actorsRef.current.get(e.id) || { x: (layout.desks.get(e.id)?.x ?? 50), y: (layout.desks.get(e.id)?.y ?? 50), pose: 'idle' as Pose, facing: 1 as const, action: 'desk' as ActorAction, until: 0, moveMs: 0 }
+          const d = dept(e.dept)
+          const lv = levelOf(e.stats.done)
+          const task = currentTaskByEmp.get(e.id)
+          const busy = e.status === 'busy' || !!task
+          const tok = (e.stats.tokensIn ?? 0) + (e.stats.tokensOut ?? 0)
+          const walking = a.pose === 'walk'
+          const bubble = busy ? (task ? `${task.taskTitle}${task.pct ? ' · ' + task.pct + '%' : ''}` : '工作中…') : a.bubble
+          return (
+            <div
+              key={'p-' + e.id}
+              className="absolute z-[10] flex flex-col items-center"
+              style={{ left: `${a.x}%`, top: `${a.y}%`, transform: 'translate(-50%,-100%)', transition: walking ? `left ${a.moveMs}ms linear, top ${a.moveMs}ms linear` : 'none' }}
+              title={`${e.name} · ${d.label}\n🧠 ${e.modelId || '默认模型'}\n完成 ${e.stats.done} · 产出 ${e.stats.out} · 🪙 ${formatTokens(tok)} · 💰 ${formatCostUsd(e.stats.cost ?? 0)}`}
+            >
+              {bubble && (
+                <div className="mb-0.5 max-w-[120px]">
+                  <div className={cn('rounded-md border bg-card px-1.5 py-0.5 shadow-[1px_1px_0_rgba(0,0,0,0.12)] text-[9px] leading-tight truncate', busy ? '' : 'text-muted-foreground')} style={{ borderColor: busy ? d.color : undefined }}>
+                    {busy && <span className="office-type mr-0.5" style={{ color: d.color }}>▍</span>}{bubble}
+                  </div>
+                </div>
+              )}
+              <div style={{ transform: `scaleX(${a.facing})` }}>
+                <Character color={d.color} pose={busy ? 'sit' : a.pose} busy={busy} Icon={deptIcon(e.dept)} />
+              </div>
+              <div className="mt-0.5 flex items-center gap-0.5 text-[8.5px] leading-none whitespace-nowrap">
+                <span title={lv.name}>{lv.icon}</span>
+                <span className="font-medium max-w-[56px] truncate">{e.name}</span>
+              </div>
+            </div>
+          )
+        })}
       </div>
     </div>
   )
@@ -797,7 +911,7 @@ export function Board({ employees, onChange, goMarket, goWorkbench }: { employee
       </div>
 
       {view === 'office' && (
-        <OfficeFloor employees={employees} currentTaskByEmp={currentTaskByEmp} onGoMarket={goMarket} />
+        <OfficeSim employees={employees} currentTaskByEmp={currentTaskByEmp} onGoMarket={goMarket} />
       )}
 
       {view === 'flow' && loading && (
