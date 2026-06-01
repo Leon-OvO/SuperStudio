@@ -540,31 +540,66 @@ function slackOf(id: string): { emoji: string; label: string } {
   return SLACK[h % SLACK.length]
 }
 
+// 按 id 稳定地给每个员工不同的肤色 / 发色 / 发型，让小人各不相同（个体辨识；
+// 部门身份仍靠衣服颜色）。
+const SKIN = ['#f7d5b5', '#f1c39c', '#e8b48c', '#c98e6a', '#a06a45', '#8d5a3c']
+const HAIR = ['#3a3a44', '#5b4636', '#222228', '#8a5a2b', '#caa45a', '#9aa3af', '#7a3b34']
+function hashId(id: string, salt: number): number {
+  let h = salt >>> 0
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0
+  return h
+}
+type Look = { skin: string; hair: string; style: number }
+function lookOf(id: string): Look {
+  return { skin: SKIN[hashId(id, 1) % SKIN.length], hair: HAIR[hashId(id, 7) % HAIR.length], style: hashId(id, 13) % 4 }
+}
+// 正面发型（4 种：cap 寸盖 / spiky 刺头 / long 长发 / buzz 短发），画在 16px 头里。
+function FrontHair({ style, hair }: { style: number; hair: string }) {
+  if (style === 1) return (
+    <>
+      <div className="absolute inset-x-0 top-0 h-[5px] rounded-t-full" style={{ background: hair }} />
+      <div className="absolute -top-[3px] left-[3px] w-[3px] h-[4px] rounded-t-full" style={{ background: hair, transform: 'rotate(-18deg)' }} />
+      <div className="absolute -top-[4px] left-1/2 -translate-x-1/2 w-[3px] h-[5px] rounded-t-full" style={{ background: hair }} />
+      <div className="absolute -top-[3px] right-[3px] w-[3px] h-[4px] rounded-t-full" style={{ background: hair, transform: 'rotate(18deg)' }} />
+    </>
+  )
+  if (style === 2) return (
+    <>
+      <div className="absolute inset-x-0 top-0 h-[8px] rounded-t-full" style={{ background: hair }} />
+      <div className="absolute top-[3px] -left-[1px] w-[3px] h-[12px] rounded-full" style={{ background: hair }} />
+      <div className="absolute top-[3px] -right-[1px] w-[3px] h-[12px] rounded-full" style={{ background: hair }} />
+    </>
+  )
+  if (style === 3) return <div className="absolute inset-x-0 top-0 h-[4px] rounded-t-full" style={{ background: hair, opacity: 0.92 }} />
+  return <div className="absolute inset-x-0 top-0 h-[7px] rounded-t-full" style={{ background: hair }} />
+}
+
 type DeskTask = { taskTitle: string; reqTitle: string; pct: number; count: number }
 
 // ── CSS 全身像素小人 ──────────────────────────────────────────────────────────
 // 头 + 躯干(部门色衣服，胸口部门图标) + 两条腿。pose 决定姿势：
 //   walk 双腿交替摆动 + 身体颠；idle 站立呼吸；sit/toilet 收腿（坐姿）。
 type Pose = 'sit' | 'walk' | 'idle' | 'toilet'
-function Character({ color, pose, busy, Icon }: { color: string; pose: Pose; busy: boolean; Icon: LucideIcon }) {
+function Character({ color, pose, busy, Icon, look }: { color: string; pose: Pose; busy: boolean; Icon: LucideIcon; look: Look }) {
+  if (pose === 'sit') return <SeatedCharacter color={color} busy={busy} look={look} />
   const walking = pose === 'walk'
-  const sitting = pose === 'sit' || pose === 'toilet'
+  const toilet = pose === 'toilet'
   return (
     <div className={cn('relative flex flex-col items-center', walking && 'char-bob', pose === 'idle' && 'char-breathe')} style={{ width: 26 }}>
-      {/* 头：肤色圆脸 + 头发帽 + 两只小眼睛（chibi 风更可爱） */}
-      <div className="relative w-4 h-4 rounded-full z-[2]" style={{ background: '#f7d5b5', boxShadow: 'inset 0 -1px 1px rgba(0,0,0,0.08)' }}>
-        <div className="absolute inset-x-0 top-0 h-[7px] rounded-t-full" style={{ background: '#4b4b58' }} />
+      {/* 头：随机肤色圆脸 + 随机发型 + 两只小眼睛 */}
+      <div className="relative w-4 h-4 rounded-full z-[2]" style={{ background: look.skin, boxShadow: 'inset 0 -1px 1px rgba(0,0,0,0.08)' }}>
+        <FrontHair style={look.style} hair={look.hair} />
         <div className="absolute left-[4px] w-[2px] h-[2px] rounded-full bg-slate-700" style={{ top: '8px' }} />
         <div className="absolute right-[4px] w-[2px] h-[2px] rounded-full bg-slate-700" style={{ top: '8px' }} />
       </div>
-      {/* 身体：圆润胶囊（部门色衣服），胸口淡淡的部门图标 + 圆手臂 */}
+      {/* 身体：圆润胶囊（部门色衣服），胸口淡部门图标 + 圆手臂 */}
       <div className="relative -mt-1 w-[18px] h-[18px] rounded-t-[9px] rounded-b-[5px] flex justify-center pt-[3px] shadow-[0_1px_0_rgba(0,0,0,0.12)]" style={{ background: color }}>
         <Icon size={8} className="text-white/75" />
-        <div className={cn('absolute top-[6px] -left-[2px] w-[4px] h-[9px] rounded-full', busy && sitting && 'char-type')} style={{ background: color, filter: 'brightness(0.9)' }} />
-        <div className={cn('absolute top-[6px] -right-[2px] w-[4px] h-[9px] rounded-full', busy && sitting && 'char-type')} style={{ background: color, filter: 'brightness(0.9)' }} />
+        <div className="absolute top-[6px] -left-[2px] w-[4px] h-[9px] rounded-full" style={{ background: color, filter: 'brightness(0.9)' }} />
+        <div className="absolute top-[6px] -right-[2px] w-[4px] h-[9px] rounded-full" style={{ background: color, filter: 'brightness(0.9)' }} />
       </div>
-      {/* 腿：圆润小腿，走路时交替摆动；坐下收成一条 */}
-      {sitting
+      {/* 腿：站立两条圆腿（走路交替摆动）；上厕所坐姿收成一条 */}
+      {toilet
         ? <div className="w-4 h-1 rounded-full -mt-px" style={{ background: '#3f4754' }} />
         : (
           <div className="flex gap-1 -mt-px">
@@ -572,6 +607,34 @@ function Character({ color, pose, busy, Icon }: { color: string; pose: Pose; bus
             <div className={cn('w-[4px] h-[7px] rounded-full origin-top', walking && 'char-legB')} style={{ background: '#3f4754' }} />
           </div>
         )}
+    </div>
+  )
+}
+
+// 侧身坐姿 + 办公椅：坐在工位时的单独样子（侧面），面朝右边的显示器。
+function SeatedCharacter({ color, busy, look }: { color: string; busy: boolean; look: Look }) {
+  return (
+    <div className="relative" style={{ width: 28, height: 32 }}>
+      {/* 办公椅：椅背 + 椅座 + 中柱 + 五星脚 */}
+      <div className="absolute rounded-sm" style={{ left: 3, top: 4, width: 4, height: 17, background: '#6b7280' }} />
+      <div className="absolute rounded-sm" style={{ left: 3, bottom: 9, width: 15, height: 3, background: '#727a86' }} />
+      <div className="absolute" style={{ left: 9, bottom: 3, width: 2, height: 6, background: '#52525b' }} />
+      <div className="absolute rounded-full" style={{ left: 4, bottom: 1, width: 13, height: 2, background: '#52525b' }} />
+      {/* 小腿（向下） */}
+      <div className="absolute rounded-sm" style={{ left: 17, bottom: 2, width: 3, height: 9, background: '#3f4754' }} />
+      {/* 大腿（坐在椅座上水平向前） */}
+      <div className="absolute rounded-sm" style={{ left: 8, bottom: 11, width: 12, height: 4, background: '#3f4754' }} />
+      {/* 躯干（略前倾） */}
+      <div className="absolute rounded-t-md" style={{ left: 7, bottom: 13, width: 9, height: 12, background: color, transform: 'rotate(7deg)', transformOrigin: 'bottom center' }} />
+      {/* 前伸的手臂（打字时抖动） */}
+      <div className={cn('absolute rounded-full', busy && 'char-type')} style={{ left: 13, bottom: 16, width: 9, height: 3, background: color, filter: 'brightness(0.9)', transform: 'rotate(8deg)', transformOrigin: 'left center' }} />
+      {/* 头（侧面）：后脑勺头发 + 头顶 + 朝前的一只眼 */}
+      <div className="absolute rounded-full" style={{ left: 7, top: 0, width: 13, height: 13, background: look.skin }}>
+        <div className="absolute rounded-l-full" style={{ left: 0, top: 0, width: 6, height: 13, background: look.hair }} />
+        <div className="absolute rounded-t-full" style={{ left: 0, top: 0, width: 13, height: look.style === 3 ? 4 : 6, background: look.hair }} />
+        {look.style === 2 && <div className="absolute rounded-b-full" style={{ left: 0, top: 6, width: 4, height: 9, background: look.hair }} />}
+        <div className="absolute rounded-full bg-slate-700" style={{ right: 3, top: 6, width: 2, height: 2 }} />
+      </div>
     </div>
   )
 }
@@ -631,14 +694,14 @@ function OfficeSim({ employees, currentTaskByEmp, onGoMarket }: {
       for (const e of emps) {
         const dk = desks.get(e.id) || { x: 50, y: 50 }
         let a = actors.get(e.id)
-        if (!a) { a = { x: dk.x, y: dk.y, pose: 'idle', facing: 1, action: 'desk', until: now + rand(1500, 5000), moveMs: 0 }; actors.set(e.id, a) }
+        if (!a) { a = { x: dk.x, y: dk.y, pose: 'sit', facing: 1, action: 'desk', until: now + rand(1500, 5000), moveMs: 0 }; actors.set(e.id, a) }
         const busy = tasks.has(e.id) || e.status === 'busy'
         if (busy) {
           if (toiletRef.current === e.id) toiletRef.current = null
           const atDesk = Math.hypot(a.x - dk.x, a.y - dk.y) < 1.5
-          if (a.pose === 'walk') { if (now >= a.until) { a.pose = atDesk ? 'sit' : 'walk' } }
+          if (a.pose === 'walk') { if (now >= a.until) { a.pose = atDesk ? 'sit' : 'walk'; if (atDesk) a.facing = 1 } }
           if (!atDesk && a.pose !== 'walk') startWalk(a, dk.x, dk.y, 'desk', now)
-          else if (atDesk && a.pose !== 'walk') { a.pose = 'sit'; a.action = 'desk'; a.bubble = undefined }
+          else if (atDesk && a.pose !== 'walk') { a.pose = 'sit'; a.facing = 1; a.action = 'desk'; a.bubble = undefined }
           continue
         }
         // 空闲行为机
@@ -647,7 +710,7 @@ function OfficeSim({ employees, currentTaskByEmp, onGoMarket }: {
             if (a.action === 'toilet') { a.pose = 'toilet'; a.bubble = '🚽 带薪拉屎中…'; a.until = now + rand(8000, 15000) }
             else if (a.action === 'cooler') { a.pose = 'idle'; a.bubble = '💧 喝水摸鱼'; a.until = now + rand(4000, 8000) }
             else if (a.action === 'wander') { const s = slackOf(e.id); a.pose = 'idle'; a.bubble = `${s.emoji} ${s.label}`; a.until = now + rand(3000, 7000) }
-            else { a.pose = 'idle'; a.bubble = undefined; a.until = now + rand(4000, 9000) }
+            else { a.pose = 'sit'; a.facing = 1; a.bubble = undefined; a.until = now + rand(4000, 9000) }
           }
           continue
         }
@@ -721,7 +784,7 @@ function OfficeSim({ employees, currentTaskByEmp, onGoMarket }: {
         })}
         {/* 小人 */}
         {employees.map(e => {
-          const a = actorsRef.current.get(e.id) || { x: (layout.desks.get(e.id)?.x ?? 50), y: (layout.desks.get(e.id)?.y ?? 50), pose: 'idle' as Pose, facing: 1 as const, action: 'desk' as ActorAction, until: 0, moveMs: 0 }
+          const a = actorsRef.current.get(e.id) || { x: (layout.desks.get(e.id)?.x ?? 50), y: (layout.desks.get(e.id)?.y ?? 50), pose: 'sit' as Pose, facing: 1 as const, action: 'desk' as ActorAction, until: 0, moveMs: 0 }
           const d = dept(e.dept)
           const lv = levelOf(e.stats.done)
           const task = currentTaskByEmp.get(e.id)
@@ -744,7 +807,7 @@ function OfficeSim({ employees, currentTaskByEmp, onGoMarket }: {
                 </div>
               )}
               <div style={{ transform: `scaleX(${a.facing})` }}>
-                <Character color={d.color} pose={busy ? 'sit' : a.pose} busy={busy} Icon={deptIcon(e.dept)} />
+                <Character color={d.color} pose={busy ? 'sit' : a.pose} busy={busy} Icon={deptIcon(e.dept)} look={lookOf(e.id)} />
               </div>
               <div className="mt-0.5 flex items-center gap-0.5 text-[8.5px] leading-none whitespace-nowrap">
                 <span title={lv.name}>{lv.icon}</span>
