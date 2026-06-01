@@ -550,24 +550,26 @@ function Character({ color, pose, busy, Icon }: { color: string; pose: Pose; bus
   const walking = pose === 'walk'
   const sitting = pose === 'sit' || pose === 'toilet'
   return (
-    <div className={cn('relative flex flex-col items-center', walking && 'char-bob', pose === 'idle' && 'char-breathe')} style={{ width: 22 }}>
-      {/* 头 */}
-      <div className="w-3 h-3 rounded-full border-2 z-[2]" style={{ borderColor: color, background: '#f3cda6' }} />
-      {/* 躯干 + 手臂 */}
-      <div className="relative -mt-px">
-        <div className="w-[15px] h-4 rounded-md grid place-items-center shadow-[1px_1px_0_rgba(0,0,0,0.12)]" style={{ background: color }}>
-          <Icon size={9} className="text-white/90" />
-        </div>
-        <div className={cn('absolute top-1 -left-[3px] w-1 h-2.5 rounded-full', busy && sitting && 'char-type')} style={{ background: color }} />
-        <div className={cn('absolute top-1 -right-[3px] w-1 h-2.5 rounded-full', busy && sitting && 'char-type')} style={{ background: color }} />
+    <div className={cn('relative flex flex-col items-center', walking && 'char-bob', pose === 'idle' && 'char-breathe')} style={{ width: 26 }}>
+      {/* 头：肤色圆脸 + 头发帽 + 两只小眼睛（chibi 风更可爱） */}
+      <div className="relative w-4 h-4 rounded-full z-[2]" style={{ background: '#f7d5b5', boxShadow: 'inset 0 -1px 1px rgba(0,0,0,0.08)' }}>
+        <div className="absolute inset-x-0 top-0 h-[7px] rounded-t-full" style={{ background: '#4b4b58' }} />
+        <div className="absolute left-[4px] w-[2px] h-[2px] rounded-full bg-slate-700" style={{ top: '8px' }} />
+        <div className="absolute right-[4px] w-[2px] h-[2px] rounded-full bg-slate-700" style={{ top: '8px' }} />
       </div>
-      {/* 腿 */}
+      {/* 身体：圆润胶囊（部门色衣服），胸口淡淡的部门图标 + 圆手臂 */}
+      <div className="relative -mt-1 w-[18px] h-[18px] rounded-t-[9px] rounded-b-[5px] flex justify-center pt-[3px] shadow-[0_1px_0_rgba(0,0,0,0.12)]" style={{ background: color }}>
+        <Icon size={8} className="text-white/75" />
+        <div className={cn('absolute top-[6px] -left-[2px] w-[4px] h-[9px] rounded-full', busy && sitting && 'char-type')} style={{ background: color, filter: 'brightness(0.9)' }} />
+        <div className={cn('absolute top-[6px] -right-[2px] w-[4px] h-[9px] rounded-full', busy && sitting && 'char-type')} style={{ background: color, filter: 'brightness(0.9)' }} />
+      </div>
+      {/* 腿：圆润小腿，走路时交替摆动；坐下收成一条 */}
       {sitting
-        ? <div className="w-3.5 h-1.5 rounded-b-md -mt-px" style={{ background: '#475569' }} />
+        ? <div className="w-4 h-1 rounded-full -mt-px" style={{ background: '#3f4754' }} />
         : (
           <div className="flex gap-1 -mt-px">
-            <div className={cn('w-1 h-2.5 rounded-b origin-top', walking && 'char-legA')} style={{ background: '#475569' }} />
-            <div className={cn('w-1 h-2.5 rounded-b origin-top', walking && 'char-legB')} style={{ background: '#475569' }} />
+            <div className={cn('w-[4px] h-[7px] rounded-full origin-top', walking && 'char-legA')} style={{ background: '#3f4754' }} />
+            <div className={cn('w-[4px] h-[7px] rounded-full origin-top', walking && 'char-legB')} style={{ background: '#3f4754' }} />
           </div>
         )}
     </div>
