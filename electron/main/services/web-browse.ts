@@ -1576,7 +1576,9 @@ export async function actOnPage(action: PageAction): Promise<ActResult> {
         try {
           const frames = wc.mainFrame.framesInSubtree
           for (const f of frames) {
-            if (f === wc.mainFrame || !f.url || f.url === 'about:blank') continue
+            // 不跳过 about:blank！小红书把编辑器+发布按钮用 JS 注入到 about:blank iframe，
+            // 页面脚本的 contentDocument 遍历常拿不到，但 WebFrameMain 能直接进它的真实上下文。
+            if (f === wc.mainFrame) continue
             try {
               const r2 = await execJsInFrame<ActResult>(f, buildActJs(action), EXTRACT_TIMEOUT_MS)
               if (r2 && r2.ok) { result = r2; break }
