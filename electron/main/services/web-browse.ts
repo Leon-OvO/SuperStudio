@@ -1380,23 +1380,32 @@ function buildActJs(action: PageAction): string {
       }
       el = best
       if (!el) {
-        // 诊断：dump 页面上所有按钮(文本|类名|尺寸|是否 nav)，定位「发布」到底在不在可达 DOM、
-        // 文本是否有隐藏字符、是否被 nav 误判。iframes 数 > 可达 roots 暗示按钮在跨域 iframe。
+        // 穷尽诊断：① 任意标签里文本=「发布」的元素(tag|class|尺寸|display|nav) —— 判断按钮在不在
+        // DOM、是否被隐藏/被 nav 误判；② .ce-btn / .bg-red 计数 —— 小红书发布按钮的标志类；
+        // ③ 弹窗/遮罩计数 —— 是否有图片裁剪/确认框挡住发布栏。
         let diag = ''
         try {
-          const seen = []
+          const hits = []
+          let ceBtn = 0, bgRed = 0
           for (const r of roots) {
-            let bs; try { bs = r.querySelectorAll('button,[role="button"],input[type="submit"],input[type="button"]') } catch (e) { continue }
-            for (const b of bs) {
-              if (seen.length >= 30) break
-              const t = norm(b.textContent || b.value || b.getAttribute('aria-label') || '')
-              const cls = (b.getAttribute('class') || '').slice(0, 22)
-              let rc = '?'; try { const r2 = b.getBoundingClientRect(); rc = Math.round(r2.width) + 'x' + Math.round(r2.height) } catch (e) {}
-              seen.push((t || '∅').slice(0, 12) + '[' + cls + '|' + rc + (inNavLike(b) ? '|nav' : '') + ']')
+            let all; try { all = r.querySelectorAll('*') } catch (e) { continue }
+            for (const e of all) {
+              try {
+                const cls = e.getAttribute && (e.getAttribute('class') || '')
+                if (/\\bce-btn\\b/.test(cls)) ceBtn++
+                if (/\\bbg-red\\b/.test(cls)) bgRed++
+                if (e.childElementCount === 0 && norm(e.textContent || '') === want) {
+                  if (hits.length < 12) {
+                    let rc = '?'; try { const r2 = e.getBoundingClientRect(); rc = Math.round(r2.width) + 'x' + Math.round(r2.height) } catch (x) {}
+                    let disp = ''; try { disp = (e.ownerDocument.defaultView || window).getComputedStyle(e).display } catch (x) {}
+                    hits.push((e.tagName || '').toLowerCase() + '.' + (cls || '').slice(0, 18) + '|' + rc + '|' + disp + (inNavLike(e) ? '|nav' : ''))
+                  }
+                }
+              } catch (x) {}
             }
           }
-          const ifr = document.querySelectorAll('iframe,frame').length
-          diag = ' || 诊断 按钮' + seen.length + '个 roots=' + roots.length + ' iframes=' + ifr + '：' + seen.join(' ; ')
+          let modals = 0; try { modals = document.querySelectorAll('[role="dialog"],.modal,.d-modal,[class*="modal"],[class*="dialog"],[class*="popup"]').length } catch (e) {}
+          diag = ' || 穷尽诊断 「' + want + '」元素' + hits.length + '个：' + (hits.join(' ; ') || '无') + ' | ce-btn=' + ceBtn + ' bg-red=' + bgRed + ' modal=' + modals + ' roots=' + roots.length
         } catch (e) {}
         return { ok: false, finalUrl: location.href, error: '已滚动到底部仍找不到表单内文字为「' + action.text + '」的提交按钮（侧栏已排除）。' + diag }
       }
