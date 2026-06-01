@@ -13,7 +13,6 @@ import { KnowledgePage } from './pages/Knowledge'
 import { VibePage } from './pages/Vibe'
 import { SkillsPage } from './pages/Skills'
 import { SchedulerPage } from './pages/Scheduler'
-import { CompanyPage } from './pages/Company'
 import { SettingsPage } from './pages/Settings'
 import { ShortcutsHelp } from './components/ui/ShortcutsHelp'
 import { CommandPalette } from './components/ui/CommandPalette'
@@ -314,7 +313,6 @@ export default function App() {
           {currentPage === 'vibe' && <VibePage />}
           {currentPage === 'skills' && <SkillsPage />}
           {currentPage === 'scheduler' && <SchedulerPage />}
-          {currentPage === 'company' && <CompanyPage />}
           {currentPage === 'settings' && <SettingsPage />}
         </main>
       </div>

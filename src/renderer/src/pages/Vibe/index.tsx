@@ -20,7 +20,9 @@ import type {
   ShellOpenTarget
 } from '../../../../shared/ipc-types'
 
-export function VibePage() {
+// The Vibe IDE itself (editor / terminal / requests). Wrapped by WorkbenchPage
+// (Workbench.tsx) which adds the workbench-level tab bar (IDE + company views).
+export function VibeWorkbench() {
   const s = useVibeStore()
   const isDark = useUIStore(u => u.theme === 'dark')
   const terminalHeight = useUIStore(u => u.terminalHeight)
@@ -689,3 +691,7 @@ function PanelPlaceholder({ label, hint }: { label: string; hint: string }) {
     </div>
   )
 }
+
+// Page entry: the workbench shell (IDE tab + 公司视图 tabs). Kept named VibePage
+// so App.tsx's import + page switch stay unchanged.
+export { WorkbenchPage as VibePage } from './Workbench'

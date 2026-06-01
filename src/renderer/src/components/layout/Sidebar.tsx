@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 import {
   MessageSquare, Zap, Image, Film, BookOpen, Code2, Sparkles, CalendarClock, Settings,
-  Building2, Sun, Moon, Languages, PanelLeftClose, PanelLeftOpen, type LucideIcon
+  Sun, Moon, Languages, PanelLeftClose, PanelLeftOpen, type LucideIcon
 } from 'lucide-react'
 import { useUIStore } from '../../stores/ui'
 import { useScheduledNotifications } from '../../stores/scheduledNotifications'
@@ -17,26 +17,16 @@ export function Sidebar() {
 
   // Dashboard is intentionally not in the side nav — accessible from the top-right
   // user menu (TopBarUser) so the left nav stays focused on workspace pages.
-  // Grouped by scenario so the (now 9-item) nav reads as a few short sections
-  // instead of one long list.
-  const navGroups = [
-    { label: t('nav.group.create'), items: [
-      { id: 'chat' as const, icon: MessageSquare, label: t('nav.chat') },
-      { id: 'video' as const, icon: Film, label: t('nav.video') },
-      { id: 'gallery' as const, icon: Image, label: t('nav.gallery') },
-    ] },
-    { label: t('nav.group.build'), items: [
-      { id: 'vibe' as const, icon: Code2, label: t('nav.vibe') },
-      { id: 'company' as const, icon: Building2, label: t('nav.company') },
-      { id: 'workflow' as const, icon: Zap, label: t('nav.workflow') },
-    ] },
-    { label: t('nav.group.assets'), items: [
-      { id: 'knowledge' as const, icon: BookOpen, label: t('nav.knowledge') },
-      { id: 'skills' as const, icon: Sparkles, label: t('nav.skills') },
-    ] },
-    { label: t('nav.group.auto'), items: [
-      { id: 'scheduler' as const, icon: CalendarClock, label: t('nav.scheduler') },
-    ] },
+  // Flat, lean list (company is now merged into the 构建/Workbench page's tabs).
+  const navItems = [
+    { id: 'chat' as const, icon: MessageSquare, label: t('nav.chat') },
+    { id: 'vibe' as const, icon: Code2, label: t('nav.vibe') },
+    { id: 'video' as const, icon: Film, label: t('nav.video') },
+    { id: 'gallery' as const, icon: Image, label: t('nav.gallery') },
+    { id: 'workflow' as const, icon: Zap, label: t('nav.workflow') },
+    { id: 'knowledge' as const, icon: BookOpen, label: t('nav.knowledge') },
+    { id: 'skills' as const, icon: Sparkles, label: t('nav.skills') },
+    { id: 'scheduler' as const, icon: CalendarClock, label: t('nav.scheduler') },
   ]
 
   const themeLabel = theme === 'dark' ? t('nav.themeLight') : t('nav.themeDark')
@@ -61,33 +51,18 @@ export function Sidebar() {
           : <PanelLeftOpen size={15} strokeWidth={1.75} className="opacity-70 group-hover:opacity-100 transition-opacity" />}
       </button>
 
-      {/* Main nav — grouped by scenario with section labels. Collapsed mode
-          shows a thin divider between groups instead of (vertical-text) labels. */}
-      <div className="w-full flex flex-col gap-0.5">
-        {navGroups.map((group, gi) => (
-          <div key={group.label} className="w-full flex flex-col gap-1">
-            {expanded ? (
-              <div className={cn(
-                'px-1.5 text-[9px] font-semibold uppercase tracking-wider text-muted-foreground/45 select-none',
-                gi === 0 ? 'mb-0.5' : 'mt-2 mb-0.5'
-              )}>
-                {group.label}
-              </div>
-            ) : (
-              gi > 0 && <div className="my-1 mx-auto w-5 h-px bg-sidebar-border/70" />
-            )}
-            {group.items.map(({ id, icon, label }) => (
-              <NavButton
-                key={id}
-                icon={icon}
-                label={label}
-                active={currentPage === id}
-                expanded={expanded}
-                dot={id === 'scheduler' && hasUnreadScheduled && currentPage !== 'scheduler'}
-                onClick={() => setPage(id)}
-              />
-            ))}
-          </div>
+      {/* Main nav — flat, icon-over-label stacked cards. */}
+      <div className="w-full flex flex-col gap-1">
+        {navItems.map(({ id, icon, label }) => (
+          <NavButton
+            key={id}
+            icon={icon}
+            label={label}
+            active={currentPage === id}
+            expanded={expanded}
+            dot={id === 'scheduler' && hasUnreadScheduled && currentPage !== 'scheduler'}
+            onClick={() => setPage(id)}
+          />
         ))}
       </div>
 

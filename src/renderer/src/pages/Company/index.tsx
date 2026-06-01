@@ -71,7 +71,7 @@ export function CompanyPage() {
 }
 
 // ── 人才市场 ─────────────────────────────────────────────────────────────────
-function Market({ hiredSoulIds, onHire }: { hiredSoulIds: Set<string>; onHire: () => void }) {
+export function Market({ hiredSoulIds, onHire }: { hiredSoulIds: Set<string>; onHire: () => void }) {
   const [data, setData] = useState<TalentBrowseResult>({ entries: [], total: 0, deptCounts: {} })
   const [deptFilter, setDeptFilter] = useState('all')
   const [keyword, setKeyword] = useState('')
@@ -231,7 +231,7 @@ function Market({ hiredSoulIds, onHire }: { hiredSoulIds: Set<string>; onHire: (
 }
 
 // ── 员工花名册 ───────────────────────────────────────────────────────────────
-function Roster({ employees, providers, onChange, goMarket }: { employees: EmployeeInfo[]; providers: ProviderConfig[]; onChange: () => void; goMarket: () => void }) {
+export function Roster({ employees, providers, onChange, goMarket }: { employees: EmployeeInfo[]; providers: ProviderConfig[]; onChange: () => void; goMarket: () => void }) {
   const dlg = useConfirmDialog()
   const allModels = useMemo(() => providers.flatMap(p => p.models.map(m => ({ providerId: p.id, modelId: m, label: `${m} · ${p.name}` }))), [providers])
 
@@ -316,7 +316,7 @@ function Roster({ employees, providers, onChange, goMarket }: { employees: Emplo
 }
 
 // ── 经营台 ───────────────────────────────────────────────────────────────────
-function Dashboard({ employees }: { employees: EmployeeInfo[] }) {
+export function Dashboard({ employees }: { employees: EmployeeInfo[] }) {
   const busy = employees.filter(e => e.status === 'busy').length
   const out = employees.reduce((s, e) => s + e.stats.out, 0)
   const done = employees.reduce((s, e) => s + e.stats.done, 0)
@@ -370,7 +370,7 @@ const BOARD_COLS: { key: string; name: string; color: string }[] = [
 ]
 function projName(p: string): string { return (p || '').split(/[\/]/).filter(Boolean).pop() || p }
 
-function Board({ employees, onChange, goMarket }: { employees: EmployeeInfo[]; onChange: () => void; goMarket: () => void }) {
+export function Board({ employees, onChange, goMarket, goWorkbench }: { employees: EmployeeInfo[]; onChange: () => void; goMarket: () => void; goWorkbench?: () => void }) {
   const [requests, setRequests] = useState<VibeRequestInfo[]>([])
   const [loading, setLoading] = useState(true)
   const [applying, setApplying] = useState<string | null>(null)
@@ -416,7 +416,7 @@ function Board({ employees, onChange, goMarket }: { employees: EmployeeInfo[]; o
           <p className="text-[12.5px] mb-4">需求出现在这里后，给它<strong>指派一位员工</strong>并点<strong>开工</strong>，员工就会用自己的模型与岗位人格去执行。</p>
           <div className="flex gap-2 justify-center">
             <button onClick={goMarket} className="px-4 py-2 rounded-lg border border-border text-sm">先去招募员工</button>
-            <button onClick={() => useUIStore.getState().setPage('vibe')} className="px-4 py-2 rounded-lg bg-primary text-primary-foreground font-medium text-sm">去 Vibe 提需求 →</button>
+            <button onClick={() => goWorkbench ? goWorkbench() : useUIStore.getState().setPage('vibe')} className="px-4 py-2 rounded-lg bg-primary text-primary-foreground font-medium text-sm">去工作台提需求 →</button>
           </div>
         </div>
       </div>
