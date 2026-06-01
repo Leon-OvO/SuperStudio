@@ -163,6 +163,22 @@ export function listAllRequests(): VibeRequestRow[] {
   return dbAll<VibeRequestRow>(`SELECT * FROM vibe_requests ORDER BY created_at DESC`)
 }
 
+/** Per-request task counts (done/total/running/error) — one GROUP BY pass, so
+ *  the 看板 can show 大需求 → 子任务 progress without an N+1 of vibeTaskList. */
+export function taskRollupByRequest(): Record<string, { total: number; done: number; running: number; error: number }> {
+  const rows = dbAll<{ request_id: string; total: number; done: number; running: number; error: number }>(
+    `SELECT request_id,
+            COUNT(*) AS total,
+            SUM(CASE WHEN status IN ('done','skipped') THEN 1 ELSE 0 END) AS done,
+            SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) AS running,
+            SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS error
+       FROM vibe_tasks GROUP BY request_id`
+  )
+  const map: Record<string, { total: number; done: number; running: number; error: number }> = {}
+  for (const r of rows) map[r.request_id] = { total: r.total, done: r.done, running: r.running, error: r.error }
+  return map
+}
+
 export function updateRequestStatus(id: string, status: RequestStatus): void {
   dbRun(`UPDATE vibe_requests SET status = ? WHERE id = ?`, [status, id])
 }

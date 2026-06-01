@@ -1,10 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Search, X, UserPlus, Trash2, Cpu, Loader2, BadgeCheck, Sparkles } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { toast } from '../../components/ui/Toast'
 import { useConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { useUIStore } from '../../stores/ui'
-import type { TalentEntry, TalentBrowseResult, EmployeeInfo, ProviderConfig, VibeRequestInfo } from '../../../../shared/ipc-types'
+import type { TalentEntry, TalentBrowseResult, EmployeeInfo, ProviderConfig, VibeRequestInfo, VibeTaskInfo } from '../../../../shared/ipc-types'
 import { levelOf, nextLevel } from '../../../../shared/company-levels'
 
 // ── dept metadata ───────────────────────────────────────────────────────────
@@ -325,23 +325,74 @@ const BOARD_COLS: { key: string; name: string; color: string }[] = [
 ]
 function projName(p: string): string { return (p || '').split(/[\/]/).filter(Boolean).pop() || p }
 
+// 子任务进度条（分段：done 绿 / running 蓝 / error 红 / pending 灰）
+function TaskProgressBar({ roll }: { roll?: { total: number; done: number; running: number; error: number } }) {
+  if (!roll || !roll.total) return <div className="text-[10px] text-muted-foreground/60 mt-1.5">尚未拆解子任务</div>
+  const w = (n: number) => (n / roll.total * 100).toFixed(1) + '%'
+  const pendingW = ((roll.total - roll.done - roll.running - roll.error) / roll.total * 100).toFixed(1) + '%'
+  const pct = Math.round(roll.done / roll.total * 100)
+  return (
+    <div className="mt-1.5">
+      <div className="flex h-1.5 rounded-full overflow-hidden bg-muted">
+        <span className="bg-emerald-500" style={{ width: w(roll.done) }} />
+        <span className="bg-blue-500" style={{ width: w(roll.running) }} />
+        <span className="bg-rose-500" style={{ width: w(roll.error) }} />
+        <span style={{ width: pendingW }} />
+      </div>
+      <div className="flex items-center gap-2 mt-1 text-[10px] text-muted-foreground">
+        <span className="text-foreground font-semibold">{pct}%</span>
+        <span>{roll.done}/{roll.total} 子任务</span>
+        {roll.error > 0 && <span className="text-rose-400">⚠ {roll.error} 失败</span>}
+      </div>
+    </div>
+  )
+}
+const TASK_ICON: Record<string, string> = { done: '✓', running: '◌', error: '✕', skipped: '⊘', pending: '○' }
+const TASK_COLOR: Record<string, string> = { done: 'text-emerald-500', running: 'text-blue-400', error: 'text-rose-400', skipped: 'text-muted-foreground/50', pending: 'text-muted-foreground/60' }
+
 export function Board({ employees, onChange, goMarket, goWorkbench }: { employees: EmployeeInfo[]; onChange: () => void; goMarket: () => void; goWorkbench?: () => void }) {
   const [requests, setRequests] = useState<VibeRequestInfo[]>([])
   const [loading, setLoading] = useState(true)
   const [applying, setApplying] = useState<string | null>(null)
+  // 展开看子任务：requestId → 子任务列表
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const [tasksByReq, setTasksByReq] = useState<Record<string, VibeTaskInfo[]>>({})
+  const debTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const refresh = useCallback(() => {
     window.api.vibeRequestListAll()
       .then((r: VibeRequestInfo[]) => setRequests(r.filter(x => x.kind === 'change' || x.kind === 'bugfix')))
       .catch(() => {}).finally(() => setLoading(false))
   }, [])
+
+  const loadTasks = useCallback((reqId: string) => {
+    window.api.vibeTaskList(reqId).then((t: VibeTaskInfo[]) => setTasksByReq(prev => ({ ...prev, [reqId]: t }))).catch(() => {})
+  }, [])
+
+  function toggleExpand(reqId: string) {
+    setExpanded(prev => {
+      const next = new Set(prev)
+      if (next.has(reqId)) next.delete(reqId)
+      else { next.add(reqId); loadTasks(reqId) }
+      return next
+    })
+  }
+
   useEffect(() => {
     refresh()
-    // 实时：执行进度/完成时刷新看板与员工统计
-    const u1 = window.api.onVibeDone(() => { refresh(); onChange() })
-    const u2 = window.api.onVibeProgress(() => { refresh() })
-    return () => { u1?.(); u2?.() }
-  }, [refresh, onChange])
+    // 实时：执行进度/完成时刷新看板与员工统计（progress 高频，防抖 400ms）
+    const debounced = () => {
+      if (debTimer.current) clearTimeout(debTimer.current)
+      debTimer.current = setTimeout(() => {
+        refresh()
+        // 展开中的卡片同步重拉子任务，进度条/子任务状态实时推进
+        setExpanded(cur => { cur.forEach(id => loadTasks(id)); return cur })
+      }, 400)
+    }
+    const u1 = window.api.onVibeDone(() => { debounced(); onChange() })
+    const u2 = window.api.onVibeProgress(() => { debounced() })
+    return () => { u1?.(); u2?.(); if (debTimer.current) clearTimeout(debTimer.current) }
+  }, [refresh, onChange, loadTasks])
 
   async function assign(req: VibeRequestInfo, employeeId: string | null) {
     await window.api.vibeRequestSetAssignee(req.id, employeeId)
@@ -400,16 +451,40 @@ export function Board({ employees, onChange, goMarket, goWorkbench }: { employee
                 {items.length === 0 && <div className="text-[11px] text-muted-foreground/50 text-center py-4 border border-dashed border-border rounded-lg">空</div>}
                 {items.map(r => {
                   const emp = empById(r.assigneeEmployeeId)
+                  const isOpen = expanded.has(r.id)
+                  const subs = tasksByReq[r.id]
                   return (
                     <div key={r.id} className="rounded-lg border border-border bg-card p-2.5">
-                      <div className="text-[13px] font-medium leading-snug">{r.title}</div>
-                      <div className="text-[10px] text-muted-foreground mt-0.5">📁 {projName(r.projectPath)} · {r.kind === 'bugfix' ? '缺陷' : '需求'}</div>
+                      <div className="flex items-start gap-1.5">
+                        <button onClick={() => toggleExpand(r.id)} className="text-muted-foreground/60 hover:text-foreground mt-0.5 text-[11px] w-3 shrink-0" title="展开子任务">{isOpen ? '▾' : '▸'}</button>
+                        <div className="min-w-0 flex-1">
+                          <div className="text-[13px] font-medium leading-snug">{r.title}</div>
+                          <div className="text-[10px] text-muted-foreground mt-0.5">📁 {projName(r.projectPath)} · {r.kind === 'bugfix' ? '缺陷' : '需求'}</div>
+                        </div>
+                      </div>
+
+                      <TaskProgressBar roll={r.taskRollup} />
+
+                      {isOpen && (
+                        <div className="mt-2 pl-3 border-l border-border space-y-1">
+                          {!subs ? <div className="text-[10px] text-muted-foreground/50">加载子任务…</div>
+                            : subs.length === 0 ? <div className="text-[10px] text-muted-foreground/50">无子任务</div>
+                            : subs.map(t => (
+                              <div key={t.id} className="flex items-start gap-1.5 text-[11px]">
+                                <span className={cn('shrink-0 w-3 text-center', TASK_COLOR[t.status] || '')}>{TASK_ICON[t.status] || '○'}</span>
+                                <span className={cn('leading-snug', t.status === 'done' || t.status === 'skipped' ? 'text-muted-foreground/60 line-through' : 'text-foreground/90')}>{t.title}</span>
+                              </div>
+                            ))}
+                        </div>
+                      )}
+
                       <div className="flex items-center gap-1.5 mt-2">
                         <span className="text-[11px]">👤</span>
                         <select value={r.assigneeEmployeeId ?? ''} onChange={e => assign(r, e.target.value || null)}
                           className="flex-1 bg-muted/40 border border-border rounded-md px-1.5 py-1 text-[11px] text-foreground focus:outline-none">
                           <option value="">未指派</option>
                           {employees.map(emp2 => <option key={emp2.id} value={emp2.id}>{emp2.name}</option>)}
+                          {r.assigneeEmployeeId && !employees.some(e => e.id === r.assigneeEmployeeId) && <option value={r.assigneeEmployeeId}>（已离职）</option>}
                         </select>
                       </div>
                       {emp && <div className="text-[10px] text-muted-foreground mt-1">🧠 {emp.modelId || '默认模型'}{r.status === 'applying' ? ' · 执行中…' : ''}</div>}

@@ -524,6 +524,8 @@ export interface VibeRequestInfo {
   createdAt: number
   /** AI-company employee承接该需求；null = 未指派。 */
   assigneeEmployeeId?: string | null
+  /** 子任务进度卷积（仅 listAll 看板路径带）。 */
+  taskRollup?: { total: number; done: number; running: number; error: number }
 }
 
 export interface VibeTaskInfo {
