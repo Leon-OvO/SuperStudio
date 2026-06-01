@@ -1410,7 +1410,13 @@ function buildActJs(action: PageAction): string {
                + ' 弹窗[' + (modalCls.join(' , ') || '无') + ']'
                + ' 动作候选' + acts.length + '：' + (acts.join(' ; ') || '无') + ' roots=' + roots.length
         } catch (e) {}
-        return { ok: false, finalUrl: location.href, error: '已滚动到底部仍找不到表单内文字为「' + action.text + '」的提交按钮（侧栏已排除）。' + diag }
+        // 发布栏整组(发布/存草稿)都不在 DOM = 页面没挂载发布区，不是按钮难找。常见于：①图片还在
+        // 上传/处理；②经历过草稿箱来回跳导致 SPA 半渲染。给 agent 明确恢复路径而非干等。
+        const onPublish = /publish|create|compose|editor|new[-_/]?post/i.test(location.href)
+        const guide = onPublish
+          ? '页面没有任何「发布/存草稿/下一步」控件——发布区未挂载（可能图片仍在上传，或页面经历草稿箱跳转后处于异常状态）。请：① 先等几秒确认图片全部上传完成；② 若仍无发布栏，用 web_open 重新打开 https://creator.xiaohongshu.com/publish/publish 从头上传+填写一次（不要走草稿箱恢复，那会触发本问题）。'
+          : '页面上找不到「' + action.text + '」按钮。请 web_snapshot 看看当前有哪些元素。'
+        return { ok: false, finalUrl: location.href, error: guide + diag }
       }
     } else {
       const pool = exact.length ? exact : partial
