@@ -23,7 +23,8 @@ import type {
   VibeRequestInfo,
   VibeTaskInfo,
   VibeMessageInfo,
-  VibeProjectInfo
+  VibeProjectInfo,
+  VibeIntent
 } from '../../../src/shared/ipc-types'
 import { getMainWindow } from '../index'
 import { getProviders, getSettings } from '../services/store'
@@ -50,6 +51,7 @@ import { dbRun } from '../db/sqlite'
 import { writeProposalMd, writeTasksMd } from '../services/vibe-spec'
 import { getActiveSkillsForScenario, type InstalledSkill } from '../services/skills-db'
 import { buildSkillTools } from '../agent/skill-tools'
+import { classifyVibeIntent } from '../agent/classify'
 import { runShell } from '../services/shell'
 import { computeCost } from '../services/model-pricing'
 
@@ -1017,153 +1019,21 @@ export function vibeHandlers(): void {
     })
   })
 
-  // ----- PROPOSE ----------------------------------------------------------
-  // ----- EXPLORE (chat mode, read-only) -----------------------------------
-  // Simple Q&A with the codebase — no propose, no apply, no disk artifacts.
-  // Reuses an existing 'explore' request to keep conversation history, or
-  // creates a new one on first prompt.
+  // ----- EXPLORE (read-only investigation) --------------------------------
+  // Same engine as chat/bugfix (runStreamMode handles history/skills/usage),
+  // just with read-only tools. Previously a 130-line duplicate of runStreamMode.
   ipcMain.handle(IPC.VIBE_EXPLORE, async (_e, args: { projectPath: string; prompt: string; requestId?: string }) => {
-    const win = getMainWindow()
-    if (!win) return { error: 'No window' }
-    const projectPath = path.resolve(args.projectPath)
-    if (!isAllowedProjectPath(projectPath)) {
-      win.webContents.send(IPC.VIBE_ERROR, { projectPath, error: 'Project path not allowed' })
-      return { started: false }
-    }
-
-    const project = upsertProject(projectPath)
-    let modelInfo
-    try { modelInfo = resolveProjectModel(project) }
-    catch (e) {
-      win.webContents.send(IPC.VIBE_ERROR, { projectPath, error: (e as Error).message })
-      return { started: false }
-    }
-
-    // Resolve or create the request that will hold this conversation
-    let request: VibeRequestRow | null = args.requestId ? getRequest(args.requestId) : null
-    if (!request) {
-      const title = args.prompt.trim().slice(0, 60).replace(/\s+/g, ' ') || '探索'
-      request = createRequest({
-        projectPath,
-        slug: slugify(title),
-        title,
-        summary: '',
-        kind: 'explore'
-      })
-    }
-
-    activeRuns.get(projectPath)?.abort()
-    const ctl = new AbortController()
-    activeRuns.set(projectPath, ctl)
-
-    const requestId = request.id
-    const emit = (e: Omit<VibeProgressEvent, 'projectPath'>) => {
-      win.webContents.send(IPC.VIBE_PROGRESS, { ...e, projectPath, requestId })
-    }
-
-    // Persist the user message
-    appendMessage({ requestId, role: 'user', content: args.prompt })
-
-    // Tell the renderer right away which request to display
-    emit({ type: 'request_ready', requestId, text: '探索中…' })
-
-    ;(async () => {
-      try {
-        const model = createLLMClient(modelInfo.providerId, modelInfo.modelId)
-        const toolEmit = (e: Omit<VibeProgressEvent, 'projectPath'>) => {
-          emit(e)
-          if (e.type === 'tool_use') {
-            appendMessage({
-              requestId, role: 'tool',
-              content: e.toolArgsPreview ?? '',
-              toolName: e.toolName, isError: false
-            })
-          } else if (e.type === 'tool_result') {
-            appendMessage({
-              requestId, role: 'tool',
-              content: e.toolResultPreview ?? '',
-              toolName: e.toolName, isError: !!e.isError
-            })
-          }
-        }
-        const rawTools = buildReadOnlyVibeTools(projectPath, toolEmit, ctl.signal)
-
-        const { section: skillsSection, skills: activeSkills } = buildVibeSkillsSection()
-        let tools: Record<string, Tool> = applyVibeSkillsFilter(rawTools, activeSkills)
-        const runtimeSkills = activeSkills.filter(s => s.runtime)
-        if (runtimeSkills.length) {
-          tools = { ...tools, ...buildVibeSkillTools(projectPath, runtimeSkills, toolEmit, ctl.signal) }
-        }
-
-        // Reuse existing conversation history as context
-        const history = listMessages(requestId)
-          .filter(m => m.role === 'user' || m.role === 'assistant')
-          .map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }))
-
-        let accumulated = ''
-        let runError: Error | null = null
-        let usage: { promptTokens?: number; completionTokens?: number } | null = null
-        try {
-          const result = streamText({
-            model,
-            system: EXPLORE_SYSTEM + skillsSection,
-            messages: history,
-            tools,
-            maxSteps: 15,
-            maxRetries: 2,
-            abortSignal: ctl.signal,
-            onError: ({ error }) => {
-              console.error('[vibe] explore streamText error:', error)
-              runError = error as Error
-            }
-          })
-          for await (const chunk of result.textStream) {
-            if (ctl.signal.aborted) break
-            if (chunk) {
-              accumulated += chunk
-              emit({ type: 'text', text: chunk })
-            }
-          }
-          await result.finishReason.catch(() => null)
-          usage = await result.usage.catch(() => null)
-        } catch (err) {
-          runError = err as Error
-        }
-
-        if (ctl.signal.aborted) {
-          win.webContents.send(IPC.VIBE_DONE, { projectPath, requestId, cancelled: true })
-          return
-        }
-        if (runError) {
-          win.webContents.send(IPC.VIBE_ERROR, { projectPath, requestId, error: runError.message })
-          return
-        }
-
-        if (accumulated.trim()) {
-          const inTok = finiteUsage(usage?.promptTokens)
-          const outTok = finiteUsage(usage?.completionTokens)
-          const cost = inTok != null && outTok != null && (inTok > 0 || outTok > 0)
-            ? computeCost(modelInfo.modelId, inTok, outTok)
-            : null
-          appendMessage({
-            requestId, role: 'assistant', content: accumulated.trim(),
-            inputTokens: inTok, outputTokens: outTok, costUsd: cost, model: modelInfo.modelId
-          })
-        }
-        win.webContents.send(IPC.VIBE_DONE, { projectPath, requestId })
-      } catch (err) {
-        const msg = (err as Error)?.message || String(err)
-        console.error('[vibe] explore failed:', err)
-        win.webContents.send(IPC.VIBE_ERROR, { projectPath, requestId, error: msg })
-      } finally {
-        if (activeRuns.get(projectPath) === ctl) activeRuns.delete(projectPath)
-      }
-    })()
-
-    return { started: true, requestId }
+    return runStreamMode(args, {
+      kind: 'explore', label: '探索',
+      systemPrompt: EXPLORE_SYSTEM,
+      buildTools: buildReadOnlyVibeTools,
+      maxSteps: 15
+    })
   })
 
-  ipcMain.handle(IPC.VIBE_PROPOSE, async (_e, args: { projectPath: string; prompt: string; requestId?: string }) => {
+  // Extracted as a named function so VIBE_RUN can dispatch to it after auto-
+  // classifying the intent as 'change'. Behavior unchanged.
+  function runPropose(args: { projectPath: string; prompt: string; requestId?: string }) {
     const win = getMainWindow()
     if (!win) return { error: 'No window' }
     const projectPath = path.resolve(args.projectPath)
@@ -1343,6 +1213,48 @@ export function vibeHandlers(): void {
     })()
 
     return { started: true }
+  }
+
+  ipcMain.handle(IPC.VIBE_PROPOSE, async (_e, args: { projectPath: string; prompt: string; requestId?: string }) => runPropose(args))
+
+  // ----- VIBE_RUN — unified entry: auto-classify intent then dispatch --------
+  // The user no longer manually picks chat/explore/bugfix/change. Pass
+  // forceIntent to override (manual lock). Returns the resolved intent so the
+  // renderer can show the right running banner.
+  ipcMain.handle(IPC.VIBE_RUN, async (_e, args: { projectPath: string; prompt: string; requestId?: string; forceIntent?: VibeIntent }) => {
+    const win = getMainWindow()
+    if (!win) return { error: 'No window' }
+    const projectPath = path.resolve(args.projectPath)
+    if (!isAllowedProjectPath(projectPath)) {
+      win.webContents.send(IPC.VIBE_ERROR, { projectPath, error: 'Project path not allowed' })
+      return { started: false }
+    }
+
+    let intent: VibeIntent
+    if (args.forceIntent) {
+      intent = args.forceIntent
+    } else {
+      // Classify with the project's model (falls back to 'chat' on any failure).
+      try {
+        const mi = resolveProjectModel(upsertProject(projectPath))
+        intent = await classifyVibeIntent(args.prompt, mi.providerId, mi.modelId)
+      } catch { intent = 'chat' }
+    }
+
+    const passthrough = { projectPath: args.projectPath, prompt: args.prompt, requestId: args.requestId }
+    let res: { started?: boolean; requestId?: string; error?: string }
+    switch (intent) {
+      case 'explore':
+        res = runStreamMode(passthrough, { kind: 'explore', label: '探索', systemPrompt: EXPLORE_SYSTEM, buildTools: buildReadOnlyVibeTools, maxSteps: 15 }); break
+      case 'bugfix':
+        res = runStreamMode(passthrough, { kind: 'bugfix', label: '修复', systemPrompt: BUGFIX_SYSTEM, buildTools: buildVibeTools, maxSteps: 20 }); break
+      case 'change':
+        res = runPropose(passthrough); break
+      case 'chat':
+      default:
+        res = runStreamMode(passthrough, { kind: 'chat', label: '对话', systemPrompt: CHAT_SYSTEM, buildTools: buildVibeTools, maxSteps: 15 }); break
+    }
+    return { ...res, intent }
   })
 
   // ----- APPLY ------------------------------------------------------------

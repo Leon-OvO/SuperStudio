@@ -51,6 +51,8 @@ const api = {
     ipcRenderer.invoke(IPC.VIBE_BUGFIX, args),
   vibePropose: (args: { projectPath: string; prompt: string; requestId?: string }) =>
     ipcRenderer.invoke(IPC.VIBE_PROPOSE, args),
+  vibeRun: (args: { projectPath: string; prompt: string; requestId?: string; forceIntent?: 'chat' | 'explore' | 'bugfix' | 'change' }) =>
+    ipcRenderer.invoke(IPC.VIBE_RUN, args),
   vibeApply: (args: { requestId: string }) => ipcRenderer.invoke(IPC.VIBE_APPLY, args),
   vibeStop: (args: { projectPath: string }) => ipcRenderer.invoke(IPC.VIBE_STOP, args),
   vibeRequestList: (projectPath: string) => ipcRenderer.invoke(IPC.VIBE_REQUEST_LIST, projectPath),

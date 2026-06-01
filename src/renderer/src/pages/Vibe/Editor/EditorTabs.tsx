@@ -37,10 +37,7 @@ interface Props {
   messages: VibeMessageInfo[]
   streamingTaskId: string | null
   running: 'propose' | 'apply' | 'explore' | 'chat' | 'bugfix' | null
-  onChat: (prompt: string, requestId?: string) => void
-  onExplore: (prompt: string, requestId?: string) => void
-  onBugfix: (prompt: string, requestId?: string) => void
-  onPropose: (prompt: string, requestId?: string) => void
+  onRun: (prompt: string, requestId?: string, forceIntent?: 'chat' | 'explore' | 'bugfix' | 'change') => void
   onApply: () => void
   onStop: () => void
   onToggleTaskStatus: (taskId: string, status: 'pending' | 'done' | 'skipped') => void
@@ -53,7 +50,7 @@ export function EditorTabs({
   onSwitchTab, onCloseTab, onChangeContent, onSave,
   onCloseOthers, onCloseToRight, onCloseAll, onSaveAll, onReorder, onRevealInSidebar, projectPath,
   requests, tasks, messages, streamingTaskId, running,
-  onChat, onExplore, onBugfix, onPropose, onApply, onStop, onToggleTaskStatus,
+  onRun, onApply, onStop, onToggleTaskStatus,
   hasProject
 }: Props) {
   const active = tabs.find(t => t.key === activeTabKey)
@@ -227,10 +224,7 @@ export function EditorTabs({
           <EmptyStateHero
             hasProject={hasProject}
             running={running}
-            onChat={onChat}
-            onExplore={onExplore}
-            onBugfix={onBugfix}
-            onPropose={onPropose}
+            onRun={onRun}
           />
         </div>
         {renderCtxMenu()}
@@ -326,10 +320,7 @@ export function EditorTabs({
             messages={messages}
             streamingTaskId={streamingTaskId}
             running={running}
-            onChat={onChat}
-            onExplore={onExplore}
-            onBugfix={onBugfix}
-            onPropose={onPropose}
+            onRun={onRun}
             onApply={onApply}
             onStop={onStop}
             onToggleTaskStatus={onToggleTaskStatus}

@@ -176,6 +176,7 @@ export const IPC = {
   VIBE_EXPLORE: 'vibe:explore',     // read-only investigation (read/glob/grep)
   VIBE_BUGFIX: 'vibe:bugfix',       // autonomous fix agent (full tools, no propose step)
   VIBE_PROPOSE: 'vibe:propose',     // decompose clear requirement into structured tasks
+  VIBE_RUN: 'vibe:run',             // 统一入口：自动识别意图(可 forceIntent 覆盖)后分派
   VIBE_APPLY: 'vibe:apply',         // execute tasks
   // ---- Requests / tasks / messages ----
   VIBE_REQUEST_LIST: 'vibe:request-list',

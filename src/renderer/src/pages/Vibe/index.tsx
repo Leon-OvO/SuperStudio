@@ -323,7 +323,10 @@ export function VibeWorkbench() {
     }
   }
 
-  function handleChat(prompt: string, requestId?: string) {
+  // Unified send: backend auto-classifies (or honors forceIntent) and dispatches.
+  // We optimistically show a generic running state, then refine it from the
+  // returned intent so the banner reads correctly.
+  function handleRun(prompt: string, requestId?: string, forceIntent?: 'chat' | 'explore' | 'bugfix' | 'change') {
     if (!s.projectPath) return
     s.setErrorBanner(null)
     if (!requestId) {
@@ -331,60 +334,18 @@ export function VibeWorkbench() {
       s.setMessages([])
       s.setTasks([])
     }
-    s.setRunning('chat')
-    window.api.vibeChat?.({ projectPath: s.projectPath, prompt, requestId }).catch((e: Error) => {
-      s.setRunning(null)
-      s.setErrorBanner(e.message)
-    })
-  }
-
-  function handleExplore(prompt: string, requestId?: string) {
-    if (!s.projectPath) return
-    s.setErrorBanner(null)
-    if (!requestId) {
-      useVibeStore.setState({ activeTabKey: null, activeRequestId: null })
-      s.setMessages([])
-      s.setTasks([])
-    }
-    s.setRunning('explore')
-    window.api.vibeExplore?.({ projectPath: s.projectPath, prompt, requestId }).catch((e: Error) => {
-      s.setRunning(null)
-      s.setErrorBanner(e.message)
-    })
-  }
-
-  function handleBugfix(prompt: string, requestId?: string) {
-    if (!s.projectPath) return
-    s.setErrorBanner(null)
-    if (!requestId) {
-      useVibeStore.setState({ activeTabKey: null, activeRequestId: null })
-      s.setMessages([])
-      s.setTasks([])
-    }
-    s.setRunning('bugfix')
-    window.api.vibeBugfix?.({ projectPath: s.projectPath, prompt, requestId }).catch((e: Error) => {
-      s.setRunning(null)
-      s.setErrorBanner(e.message)
-    })
-  }
-
-  function handlePropose(prompt: string, requestId?: string) {
-    if (!s.projectPath) return
-    s.setErrorBanner(null)
-    if (requestId) {
-      // Promotion: stay on the current tab. The same request now gets tasks added.
-      // Don't clear messages — the explore conversation is the context.
-    } else {
-      // New request: deselect current tab so EmptyStateHero displays loading banner.
-      useVibeStore.setState({ activeTabKey: null, activeRequestId: null })
-      s.setMessages([])
-      s.setTasks([])
-    }
-    s.setRunning('propose')
-    window.api.vibePropose?.({ projectPath: s.projectPath, prompt, requestId }).catch((e: Error) => {
-      s.setRunning(null)
-      s.setErrorBanner(e.message)
-    })
+    // Optimistic: assume the lightest mode until the classifier returns.
+    s.setRunning(forceIntent === 'change' ? 'propose' : (forceIntent ?? 'chat'))
+    window.api.vibeRun?.({ projectPath: s.projectPath, prompt, requestId, forceIntent })
+      .then((res: { intent?: 'chat' | 'explore' | 'bugfix' | 'change'; error?: string }) => {
+        if (res?.error) { s.setRunning(null); s.setErrorBanner(res.error); return }
+        // change → propose running label (apply may follow); others map 1:1.
+        if (res?.intent) s.setRunning(res.intent === 'change' ? 'propose' : res.intent)
+      })
+      .catch((e: Error) => {
+        s.setRunning(null)
+        s.setErrorBanner(e.message)
+      })
   }
 
   function handleApply() {
@@ -627,10 +588,7 @@ export function VibeWorkbench() {
               messages={s.messages}
               streamingTaskId={s.streamingTaskId}
               running={s.running}
-              onChat={handleChat}
-              onExplore={handleExplore}
-              onBugfix={handleBugfix}
-              onPropose={handlePropose}
+              onRun={handleRun}
               onApply={handleApply}
               onStop={handleStop}
               onToggleTaskStatus={handleToggleTaskStatus}

@@ -14,10 +14,8 @@ interface Props {
   messages: VibeMessageInfo[]
   streamingTaskId: string | null
   running: 'propose' | 'apply' | 'explore' | 'chat' | 'bugfix' | null
-  onChat: (prompt: string, requestId?: string) => void
-  onExplore: (prompt: string, requestId?: string) => void
-  onBugfix: (prompt: string, requestId?: string) => void
-  onPropose: (prompt: string, requestId?: string) => void
+  /** Unified send: auto-detect intent unless forceIntent is given (manual lock). */
+  onRun: (prompt: string, requestId?: string, forceIntent?: VibeIntent) => void
   onApply: () => void
   onStop: () => void
   onToggleTaskStatus: (taskId: string, status: 'pending' | 'done' | 'skipped') => void
@@ -32,14 +30,11 @@ const INTENT_META: Record<VibeIntent, { label: string; Icon: typeof MessageSquar
 
 export function RequestTabContent({
   request, tasks, messages, streamingTaskId, running,
-  onChat, onExplore, onBugfix, onPropose, onApply, onStop, onToggleTaskStatus
+  onRun, onApply, onStop, onToggleTaskStatus
 }: Props) {
   const [input, setInput] = useState('')
-  // Default intent: continue the request's existing kind, or 'change' for new
-  const [intent, setIntent] = useState<VibeIntent>(() => {
-    if (!request) return 'change'
-    return request.kind as VibeIntent
-  })
+  // Mode: 'auto' = let the backend classify; a VibeIntent = manual lock.
+  const [mode, setMode] = useState<'auto' | VibeIntent>('auto')
   const messagesRef = useRef<HTMLDivElement>(null)
   const messagesContentRef = useRef<HTMLDivElement>(null)
   const taRef = useRef<HTMLTextAreaElement>(null)
@@ -61,9 +56,9 @@ export function RequestTabContent({
   // when the user scrolls up; flips back to true when they scroll near bottom.
   const stickRef = useRef(true)
 
-  // When switching requests, default intent to that request's kind + snap to bottom
+  // When switching requests, reset mode to auto + snap to bottom
   useEffect(() => {
-    if (request) setIntent(request.kind as VibeIntent)
+    setMode('auto')
     stickRef.current = true
     const el = messagesRef.current
     if (el) el.scrollTop = el.scrollHeight
@@ -120,10 +115,7 @@ export function RequestTabContent({
   function submit() {
     const t = input.trim()
     if (!t || running || !request) return
-    if (intent === 'chat')    onChat(t, request.id)
-    if (intent === 'explore') onExplore(t, request.id)
-    if (intent === 'bugfix')  onBugfix(t, request.id)
-    if (intent === 'change')  onPropose(t, request.id)
+    onRun(t, request.id, mode === 'auto' ? undefined : mode)
     setInput('')
     // User just sent a message — always pin them to the bottom.
     stickRef.current = true
@@ -333,44 +325,25 @@ export function RequestTabContent({
         </div>
       </div>
 
-      {/* Input — pinned to bottom, with intent picker */}
+      {/* Input — pinned to bottom, auto-intent with optional manual lock */}
       <div className="border-t border-border p-3 shrink-0 bg-card/30 space-y-2">
-        {/* Intent chips — let user switch modes per turn */}
         <div className="flex items-center gap-1.5">
-          {(['chat', 'explore', 'bugfix', 'change'] as VibeIntent[]).map(k => {
-            const m = INTENT_META[k]
-            const Icon = m.Icon
-            const active = intent === k
-            return (
-              <button
-                key={k}
-                onClick={() => setIntent(k)}
-                disabled={running !== null}
-                className={cn(
-                  'flex items-center gap-1 px-2 py-1 rounded-md border text-[11px] transition-colors',
-                  active
-                    ? cn(m.bg, m.color, 'font-semibold')
-                    : 'bg-card border-border text-muted-foreground hover:text-foreground hover:bg-accent',
-                  running !== null && 'opacity-40 cursor-not-allowed'
-                )}
-                title={
-                  k === 'chat'    ? '随便聊聊，不读项目' :
-                  k === 'explore' ? '让 AI 读代码回答问题（只读）' :
-                  k === 'bugfix'  ? '描述 BUG，AI 自动定位修复' :
-                                    '把需求拆成任务列表'
-                }
-              >
-                <Icon size={11} /> {m.label}
-              </button>
-            )
-          })}
-          {/* Hint about what current intent will do to this request */}
+          <span className="text-[11px] text-muted-foreground">模式</span>
+          <select
+            value={mode}
+            onChange={e => setMode(e.target.value as 'auto' | VibeIntent)}
+            disabled={running !== null}
+            className="bg-card border border-border rounded-md px-2 py-1 text-[11px] text-foreground focus:outline-none disabled:opacity-40"
+            title="🪄 自动让 AI 判断该聊天/探索/修复/拆需求；也可手动锁定某模式"
+          >
+            <option value="auto">🪄 自动识别</option>
+            <option value="chat">{INTENT_META.chat.label}（不读项目）</option>
+            <option value="explore">{INTENT_META.explore.label}（只读代码）</option>
+            <option value="bugfix">{INTENT_META.bugfix.label}（自动定位修复）</option>
+            <option value="change">{INTENT_META.change.label}（拆成任务）</option>
+          </select>
           <span className="text-[11px] text-muted-foreground ml-auto">
-            {intent === requestKind
-              ? '继续当前模式'
-              : intent === 'change'
-                ? '→ 把对话内容拆成任务'
-                : `→ 切换为${INTENT_META[intent].label}模式`}
+            {mode === 'auto' ? 'AI 自动判断你的意图' : `已锁定：${INTENT_META[mode].label}`}
           </span>
         </div>
 
@@ -390,10 +363,11 @@ export function RequestTabContent({
             placeholder={
               running
                 ? '运行中… 等完成再说'
-                : intent === 'chat'    ? '随便聊点什么…'
-                : intent === 'explore' ? '问 AI 关于这个项目的问题…'
-                : intent === 'bugfix'  ? '描述 BUG：症状、复现步骤、报错…'
-                                       : '描述要做的改动…'
+                : mode === 'auto'    ? '说出你的需求，AI 自动判断（聊天/探索/修复/拆需求）…'
+                : mode === 'chat'    ? '随便聊点什么…'
+                : mode === 'explore' ? '问 AI 关于这个项目的问题…'
+                : mode === 'bugfix'  ? '描述 BUG：症状、复现步骤、报错…'
+                                     : '描述要做的改动…'
             }
             className="flex-1 resize-none rounded-lg bg-background border border-border px-3 py-2 text-[13px] leading-[18px] outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary/40 disabled:opacity-50 min-h-[70px]"
             style={{ maxHeight: '200px' }}
@@ -410,10 +384,10 @@ export function RequestTabContent({
               onClick={submit}
               disabled={!input.trim()}
               className="h-[70px] w-[60px] rounded-lg bg-primary text-primary-foreground text-xs font-medium hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed flex flex-col items-center justify-center gap-1 shrink-0"
-              title={`Enter — ${INTENT_META[intent].label}`}
+              title={mode === 'auto' ? 'Enter — 自动' : `Enter — ${INTENT_META[mode].label}`}
             >
               <Send size={14} />
-              <span className="text-[10px]">{INTENT_META[intent].label}</span>
+              <span className="text-[10px]">{mode === 'auto' ? '发送' : INTENT_META[mode].label}</span>
             </button>
           )}
         </div>

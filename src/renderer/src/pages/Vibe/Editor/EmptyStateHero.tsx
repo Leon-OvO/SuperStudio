@@ -1,15 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { Send, Loader2, Sparkles, FolderOpen, MessageSquare, Search, Bug, Wrench } from 'lucide-react'
-import { cn } from '../../../lib/utils'
 import type { VibeIntent } from '../../../../../shared/ipc-types'
 
 interface Props {
   hasProject: boolean
   running: 'propose' | 'apply' | 'explore' | 'chat' | 'bugfix' | null
-  onChat: (prompt: string) => void
-  onExplore: (prompt: string) => void
-  onBugfix: (prompt: string) => void
-  onPropose: (prompt: string) => void
+  /** Unified send: auto-detect intent unless forceIntent given (manual lock). */
+  onRun: (prompt: string, requestId?: string, forceIntent?: VibeIntent) => void
 }
 
 const INTENT_META: Record<VibeIntent, {
@@ -46,9 +43,9 @@ const EXAMPLES: Record<VibeIntent, string[]> = {
   ]
 }
 
-export function EmptyStateHero({ hasProject, running, onChat, onExplore, onBugfix, onPropose }: Props) {
+export function EmptyStateHero({ hasProject, running, onRun }: Props) {
   const [input, setInput] = useState('')
-  const [intent, setIntent] = useState<VibeIntent>('change')
+  const [mode, setMode] = useState<'auto' | VibeIntent>('auto')
   const taRef = useRef<HTMLTextAreaElement>(null)
 
   useEffect(() => {
@@ -61,10 +58,7 @@ export function EmptyStateHero({ hasProject, running, onChat, onExplore, onBugfi
   function submit() {
     const t = input.trim()
     if (!t || running) return
-    if (intent === 'chat')    onChat(t)
-    if (intent === 'explore') onExplore(t)
-    if (intent === 'bugfix')  onBugfix(t)
-    if (intent === 'change')  onPropose(t)
+    onRun(t, undefined, mode === 'auto' ? undefined : mode)
     setInput('')
   }
 
@@ -84,53 +78,40 @@ export function EmptyStateHero({ hasProject, running, onChat, onExplore, onBugfi
     )
   }
 
-  const ActiveIcon = INTENT_META[intent].Icon
   const isRunning = running !== null
+  // Flatten a few examples across intents for the auto-mode starter list.
+  const STARTER = [...EXAMPLES.change.slice(0, 2), EXAMPLES.bugfix[0], EXAMPLES.explore[0]]
 
   return (
     <div className="max-w-2xl w-full space-y-5">
       <div className="text-center space-y-2">
         <div className="w-14 h-14 mx-auto rounded-full bg-primary/10 flex items-center justify-center">
-          <ActiveIcon size={24} className="text-primary" />
+          <Sparkles size={24} className="text-primary" />
         </div>
-        <h3 className="text-lg font-semibold">开始工作</h3>
+        <h3 className="text-lg font-semibold">说出你的需求</h3>
         <p className="text-xs text-muted-foreground">
-          先选模式，再描述你想做什么
+          AI 自动判断该聊天 / 探索代码 / 修复 BUG / 拆解成任务 —— 也可手动锁定模式
         </p>
       </div>
 
-      {/* Intent chips */}
-      <div className="grid grid-cols-4 gap-2">
-        {(Object.keys(INTENT_META) as VibeIntent[]).map(k => {
-          const m = INTENT_META[k]
-          const Icon = m.Icon
-          const active = intent === k
-          return (
-            <button
-              key={k}
-              onClick={() => setIntent(k)}
-              disabled={isRunning}
-              className={cn(
-                'flex flex-col items-center gap-1 px-2 py-2.5 rounded-lg border transition-all text-xs',
-                active
-                  ? cn(m.bg, m.color, 'shadow-sm font-semibold')
-                  : 'bg-card border-border text-muted-foreground hover:text-foreground hover:bg-accent',
-                isRunning && 'opacity-40 cursor-not-allowed'
-              )}
-              title={m.hint}
-            >
-              <Icon size={16} />
-              <span>{m.label}</span>
-            </button>
-          )
-        })}
-      </div>
-
-      <div className="text-[11px] text-muted-foreground/70 text-center -mt-2">
-        {INTENT_META[intent].hint}
-      </div>
-
       <div className="space-y-2">
+        <div className="flex items-center gap-1.5">
+          <span className="text-[11px] text-muted-foreground">模式</span>
+          <select
+            value={mode}
+            onChange={e => setMode(e.target.value as 'auto' | VibeIntent)}
+            disabled={isRunning}
+            className="bg-card border border-border rounded-md px-2 py-1 text-[11px] text-foreground focus:outline-none disabled:opacity-40"
+          >
+            <option value="auto">🪄 自动识别</option>
+            <option value="chat">{INTENT_META.chat.label}（不读项目）</option>
+            <option value="explore">{INTENT_META.explore.label}（只读代码）</option>
+            <option value="bugfix">{INTENT_META.bugfix.label}（自动定位修复）</option>
+            <option value="change">{INTENT_META.change.label}（拆成任务）</option>
+          </select>
+          <span className="text-[11px] text-muted-foreground ml-auto">{mode === 'auto' ? 'AI 自动判断' : `已锁定：${INTENT_META[mode].label}`}</span>
+        </div>
+
         <textarea
           ref={taRef}
           value={input}
@@ -144,10 +125,11 @@ export function EmptyStateHero({ hasProject, running, onChat, onExplore, onBugfi
           rows={5}
           disabled={isRunning}
           placeholder={
-            intent === 'chat'    ? '随便聊点什么…' :
-            intent === 'explore' ? '问 AI 关于这个项目的任何问题…' :
-            intent === 'bugfix'  ? '描述 BUG：症状、复现步骤、报错信息…' :
-                                   '描述你要做的改动，AI 会拆解成可执行任务…'
+            mode === 'auto'    ? '比如：加一个深色模式切换按钮 / 这段代码怎么工作 / 保存点了没反应…' :
+            mode === 'chat'    ? '随便聊点什么…' :
+            mode === 'explore' ? '问 AI 关于这个项目的任何问题…' :
+            mode === 'bugfix'  ? '描述 BUG：症状、复现步骤、报错信息…' :
+                                 '描述你要做的改动，AI 会拆解成可执行任务…'
           }
           className="w-full resize-none rounded-xl bg-card border border-border px-4 py-3 text-sm leading-relaxed outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary/40 disabled:opacity-50 min-h-[120px] shadow-sm"
           style={{ maxHeight: '300px' }}
@@ -164,7 +146,7 @@ export function EmptyStateHero({ hasProject, running, onChat, onExplore, onBugfi
           >
             {isRunning
               ? <><Loader2 size={13} className="animate-spin" /> 运行中…</>
-              : <><Send size={13} /> {INTENT_META[intent].label}</>
+              : <><Send size={13} /> {mode === 'auto' ? '发送' : INTENT_META[mode].label}</>
             }
           </button>
         </div>
@@ -183,10 +165,10 @@ export function EmptyStateHero({ hasProject, running, onChat, onExplore, onBugfi
 
       <div className="text-xs text-muted-foreground/70 space-y-1.5 pt-3 border-t border-border/50">
         <div className="flex items-center gap-1.5 text-muted-foreground/80">
-          <Sparkles size={11} /> {INTENT_META[intent].label}模式试试：
+          <Sparkles size={11} /> 试试：
         </div>
         <div className="space-y-1">
-          {EXAMPLES[intent].map(ex => (
+          {STARTER.map(ex => (
             <button
               key={ex}
               onClick={() => setInput(ex)}
