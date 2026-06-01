@@ -1560,6 +1560,7 @@ export async function actOnPage(action: PageAction): Promise<ActResult> {
       // 一个 iframe 中，主框架 querySelectorAll 永远抓不到。用 WebFrameMain 在每个子框架各自
       // 上下文里跑同一脚本（含按文本定位 + 滚动重试），取第一个成功的。
       if (!result.ok && /找不到|失效|不存在/.test(result.error || '')) {
+        const frameDiag: string[] = []
         try {
           const frames = wc.mainFrame.framesInSubtree
           for (const f of frames) {
@@ -1568,8 +1569,18 @@ export async function actOnPage(action: PageAction): Promise<ActResult> {
               const r2 = await execJsInFrame<ActResult>(f, buildActJs(action), EXTRACT_TIMEOUT_MS)
               if (r2 && r2.ok) { result = r2; break }
             } catch { /* detached / dead frame — skip */ }
+            // 还没成功 → 探测该框架：URL + 按钮数 + 是否有「发布/提交」类按钮，定位真按钮在哪个框架。
+            if (!result.ok) {
+              try {
+                const probe = await execJsInFrame<string>(f, `(()=>{try{const bs=[...document.querySelectorAll('button,[role=\"button\"],input[type=\"submit\"],input[type=\"button\"]')];const pub=bs.filter(b=>/发布|提交|publish|submit/i.test((b.textContent||b.value||'').replace(/\\s+/g,''))).slice(0,3).map(b=>((b.textContent||b.value||'').replace(/\\s+/g,'')||'∅').slice(0,8)+'·'+(b.getAttribute('class')||'').slice(0,16));return JSON.stringify({u:location.host+location.pathname.slice(0,24),n:bs.length,pub})}catch(e){return JSON.stringify({err:String(e&&e.message||e).slice(0,30)})}})()`, 4000)
+                frameDiag.push(probe)
+              } catch (e) { frameDiag.push('{probe-timeout:' + f.url.slice(0, 40) + '}') }
+            }
           }
         } catch { /* framesInSubtree unavailable — keep main-frame result */ }
+        if (!result.ok && frameDiag.length) {
+          result = { ...result, error: (result.error || '') + ' || 子框架(' + frameDiag.length + ')：' + frameDiag.join(' ;; ') }
+        }
       }
       const targetLabel = action.type === 'click' ? (action.ref || `text:${action.text ?? ''}`) : action.ref
       console.log('[web-automation]', action.type, targetLabel, '→', result.ok ? 'ok' : `fail: ${result.error}`)
