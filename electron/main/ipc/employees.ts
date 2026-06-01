@@ -1,9 +1,10 @@
 import { ipcMain } from 'electron'
 import { IPC } from '../../../src/shared/ipc-types'
-import { listEmployees, hireEmployee, fireEmployee, setEmployeeModel, setEmployeeDept } from '../services/employees-db'
+import { listEmployees, hireEmployee, fireEmployee, setEmployeeModel, setEmployeeDept, getCompanySpendRange } from '../services/employees-db'
 
 export function employeeHandlers(): void {
   ipcMain.handle(IPC.EMP_LIST, () => listEmployees())
+  ipcMain.handle(IPC.EMP_SPEND_RANGE, (_e, args: { fromMs: number; toMs: number }) => getCompanySpendRange(args.fromMs, args.toMs))
   ipcMain.handle(IPC.EMP_HIRE, (_e, soulId: string) => hireEmployee(soulId))
   ipcMain.handle(IPC.EMP_FIRE, (_e, id: string) => { fireEmployee(id); return { ok: true } })
   ipcMain.handle(IPC.EMP_SET_MODEL, (_e, args: { id: string; providerId: string; modelId: string }) => {

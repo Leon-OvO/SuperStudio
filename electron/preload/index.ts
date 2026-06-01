@@ -248,6 +248,7 @@ const api = {
   fireEmployee: (id: string) => ipcRenderer.invoke(IPC.EMP_FIRE, id),
   setEmployeeModel: (args: { id: string; providerId: string; modelId: string }) => ipcRenderer.invoke(IPC.EMP_SET_MODEL, args),
   setEmployeeDept: (args: { id: string; dept: string }) => ipcRenderer.invoke(IPC.EMP_SET_DEPT, args),
+  companySpendRange: (fromMs: number, toMs: number): Promise<Array<{ id: string; cost: number; tokensIn: number; tokensOut: number }>> => ipcRenderer.invoke(IPC.EMP_SPEND_RANGE, { fromMs, toMs }),
 
   // --- Remote model.conf (managed default models from GitHub) ---
   syncModelConf: () => ipcRenderer.invoke(IPC.MODEL_CONF_SYNC) as Promise<{

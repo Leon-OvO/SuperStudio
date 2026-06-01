@@ -298,32 +298,95 @@ export function Roster({ employees, providers, onChange, goMarket }: { employees
 }
 
 // ── 经营台 ───────────────────────────────────────────────────────────────────
+type RangeKey = '7d' | '30d' | 'all' | 'custom'
+type Spend = { cost: number; tokensIn: number; tokensOut: number }
+const ZERO_SPEND: Spend = { cost: 0, tokensIn: 0, tokensOut: 0 }
+const RANGE_PRESETS: { key: RangeKey; label: string }[] = [
+  { key: '7d', label: '最近 7 天' },
+  { key: '30d', label: '最近 30 天' },
+  { key: 'all', label: '全部' },
+  { key: 'custom', label: '自定义' }
+]
+
 export function Dashboard({ employees }: { employees: EmployeeInfo[] }) {
+  const [rangeKey, setRangeKey] = useState<RangeKey>('7d')
+  const [customFrom, setCustomFrom] = useState('')
+  const [customTo, setCustomTo] = useState('')
+  // 区间内的消耗（按 created_at 从 vibe_messages 聚合）。累计完成数无完成时间戳，
+  // 故只有「成本 / token」按区间统计；员工/在岗/完成保持当前累计。
+  const [spend, setSpend] = useState<Map<string, Spend>>(new Map())
+
+  useEffect(() => {
+    const now = Date.now(), DAY = 86400000
+    let fromMs = 0, toMs = now
+    if (rangeKey === '7d') fromMs = now - 7 * DAY
+    else if (rangeKey === '30d') fromMs = now - 30 * DAY
+    else if (rangeKey === 'all') fromMs = 0
+    else {
+      fromMs = customFrom ? new Date(customFrom + 'T00:00:00').getTime() : 0
+      toMs = customTo ? new Date(customTo + 'T23:59:59.999').getTime() : now
+    }
+    window.api.companySpendRange?.(fromMs, toMs)
+      .then(rows => setSpend(new Map((rows || []).map(r => [r.id, { cost: r.cost, tokensIn: r.tokensIn, tokensOut: r.tokensOut }]))))
+      .catch(() => {})
+  }, [rangeKey, customFrom, customTo, employees.length])
+
+  const sp = (id: string): Spend => spend.get(id) ?? ZERO_SPEND
+  const ranged = rangeKey !== 'all'
   const busy = employees.filter(e => e.status === 'busy').length
   const done = employees.reduce((s, e) => s + e.stats.done, 0)
-  const cost = employees.reduce((s, e) => s + (e.stats.cost ?? 0), 0)
-  const tokens = employees.reduce((s, e) => s + (e.stats.tokensIn ?? 0) + (e.stats.tokensOut ?? 0), 0)
+  const cost = employees.reduce((s, e) => s + sp(e.id).cost, 0)
+  const tokens = employees.reduce((s, e) => s + sp(e.id).tokensIn + sp(e.id).tokensOut, 0)
   const kpis: { Icon: LucideIcon; value: string; label: string; color: string; bg: string }[] = [
     { Icon: Users,        value: String(employees.length),        label: '员工',      color: 'text-indigo-500',  bg: 'bg-indigo-500/12' },
     { Icon: UserCheck,    value: String(employees.length - busy), label: '在岗空闲',  color: 'text-emerald-500', bg: 'bg-emerald-500/12' },
-    { Icon: CheckCircle2, value: String(done),                    label: '完成需求',  color: 'text-sky-500',     bg: 'bg-sky-500/12' },
-    { Icon: Coins,        value: formatTokens(tokens),            label: '累计 token', color: 'text-amber-500',   bg: 'bg-amber-500/12' },
-    { Icon: Wallet,       value: formatCostUsd(cost),             label: '累计成本',  color: 'text-rose-500',    bg: 'bg-rose-500/12' }
+    { Icon: CheckCircle2, value: String(done),                    label: '完成需求(累计)', color: 'text-sky-500', bg: 'bg-sky-500/12' },
+    { Icon: Coins,        value: formatTokens(tokens),            label: ranged ? '区间 token' : '累计 token', color: 'text-amber-500', bg: 'bg-amber-500/12' },
+    { Icon: Wallet,       value: formatCostUsd(cost),             label: ranged ? '区间花费' : '累计花费',     color: 'text-rose-500',  bg: 'bg-rose-500/12' }
   ]
   const byDept: Record<string, EmployeeInfo[]> = {}
   for (const e of employees) (byDept[e.dept] = byDept[e.dept] || []).push(e)
   const maxN = Math.max(1, ...Object.values(byDept).map(a => a.length))
-  // 成本榜：按累计花费降序（其次产出），让用户一眼看清「谁烧钱最多」。
+  // 成本榜：按所选区间的花费降序（其次产出），让用户一眼看清「本期谁烧钱最多」。
   const spenders = [...employees]
-    .sort((a, b) => (b.stats.cost ?? 0) - (a.stats.cost ?? 0) || b.stats.out - a.stats.out)
+    .sort((a, b) => sp(b.id).cost - sp(a.id).cost || b.stats.out - a.stats.out)
     .slice(0, 6)
   // 名次徽章配色：前三金/银/铜，其余中性。
   const rankTint = ['bg-amber-400/20 text-amber-600 dark:text-amber-400', 'bg-slate-300/30 text-slate-500 dark:text-slate-300', 'bg-orange-500/15 text-orange-600 dark:text-orange-400']
 
-  if (!employees.length) return <div className="grid place-items-center text-muted-foreground text-sm" style={{ height: '50vh' }}><div className="text-center"><Sparkles className="mx-auto mb-2 opacity-60" /> 招募员工并完成需求后，这里会显示团队经营数据</div></div>
+  const rangeBar = (
+    <div className="flex items-center gap-2 flex-wrap">
+      <div className="flex gap-0.5 rounded-lg bg-muted/40 border border-border p-0.5">
+        {RANGE_PRESETS.map(r => (
+          <button key={r.key} onClick={() => setRangeKey(r.key)}
+            className={cn('px-2.5 py-1 rounded-md text-[11px] transition-colors', rangeKey === r.key ? 'bg-background text-foreground font-semibold shadow-sm' : 'text-muted-foreground hover:text-foreground')}>
+            {r.label}
+          </button>
+        ))}
+      </div>
+      {rangeKey === 'custom' && (
+        <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+          <input type="date" value={customFrom} max={customTo || undefined} onChange={e => setCustomFrom(e.target.value)}
+            className="h-7 px-2 rounded-md border border-border bg-card text-foreground focus:outline-none focus:ring-1 focus:ring-primary/40" />
+          <span>至</span>
+          <input type="date" value={customTo} min={customFrom || undefined} onChange={e => setCustomTo(e.target.value)}
+            className="h-7 px-2 rounded-md border border-border bg-card text-foreground focus:outline-none focus:ring-1 focus:ring-primary/40" />
+        </div>
+      )}
+      <span className="text-[10.5px] text-muted-foreground/70">成本 / token 按所选区间统计；员工 · 在岗 · 完成为当前累计</span>
+    </div>
+  )
+
+  if (!employees.length) return (
+    <div className="space-y-4">
+      {rangeBar}
+      <div className="grid place-items-center text-muted-foreground text-sm" style={{ height: '44vh' }}><div className="text-center"><Sparkles className="mx-auto mb-2 opacity-60" /> 招募员工并完成需求后，这里会显示团队经营数据</div></div>
+    </div>
+  )
 
   return (
     <div className="space-y-4">
+      {rangeBar}
       <div className="grid grid-cols-5 gap-3">
         {kpis.map(k => (
           <div key={k.label} className="rounded-xl border border-border bg-card p-3.5">
@@ -351,7 +414,8 @@ export function Dashboard({ employees }: { employees: EmployeeInfo[] }) {
         <div className="rounded-xl border border-border bg-card p-3.5">
           <h4 className="flex items-center gap-1.5 text-[12.5px] font-semibold mb-3"><Flame size={14} className="text-rose-500" /> 成本 / 消耗榜</h4>
           {spenders.map((e, i) => {
-            const tok = (e.stats.tokensIn ?? 0) + (e.stats.tokensOut ?? 0)
+            const s = sp(e.id)
+            const tok = s.tokensIn + s.tokensOut
             return (
               <div key={e.id} className="flex items-center gap-2.5 py-2 border-b border-border last:border-0">
                 <span className={cn('w-5 h-5 shrink-0 rounded-full grid place-items-center text-[10px] font-bold tabular-nums', rankTint[i] ?? 'bg-muted text-muted-foreground')}>{i + 1}</span>
@@ -359,8 +423,8 @@ export function Dashboard({ employees }: { employees: EmployeeInfo[] }) {
                   <span className="w-2 h-2 rounded-sm shrink-0" style={{ background: dept(e.dept).color }} title={dept(e.dept).label} />
                   <span className="truncate">{e.name}</span>
                 </span>
-                <span className="text-[11px] text-muted-foreground tabular-nums shrink-0" title={`输入 ${(e.stats.tokensIn ?? 0).toLocaleString()} · 输出 ${(e.stats.tokensOut ?? 0).toLocaleString()} tokens · ${e.stats.done} 完成`}>
-                  {formatTokens(tok)} tok · <span className="text-amber-600 dark:text-amber-400 font-medium">{formatCostUsd(e.stats.cost ?? 0)}</span>
+                <span className="text-[11px] text-muted-foreground tabular-nums shrink-0" title={`输入 ${s.tokensIn.toLocaleString()} · 输出 ${s.tokensOut.toLocaleString()} tokens`}>
+                  {formatTokens(tok)} tok · <span className="text-amber-600 dark:text-amber-400 font-medium">{formatCostUsd(s.cost)}</span>
                 </span>
               </div>
             )

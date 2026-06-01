@@ -213,6 +213,7 @@ export const IPC = {
   EMP_FIRE: 'emp:fire',
   EMP_SET_MODEL: 'emp:set-model',
   EMP_SET_DEPT: 'emp:set-dept',
+  EMP_SPEND_RANGE: 'emp:spend-range',
 
   // Terminal (PTY-backed shell in Vibe page)
   TERMINAL_CREATE: 'terminal:create',

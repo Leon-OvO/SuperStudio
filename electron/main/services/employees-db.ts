@@ -89,6 +89,32 @@ export function listEmployees(): EmployeeInfo[] {
   return employees
 }
 
+/** Per-employee spend (cost + tokens) aggregated from vibe_messages whose
+ *  created_at falls in [fromMs, toMs). Attribution mirrors listEmployees:
+ *  sub-task assignee when known, else the request's default assignee. Powers
+ *  the 经营台 date-range filter (cumulative stats can't be sliced by date). */
+export function getCompanySpendRange(
+  fromMs: number,
+  toMs: number
+): Array<{ id: string; cost: number; tokensIn: number; tokensOut: number }> {
+  try {
+    const rows = dbAll<{ eid: string; cost: number; tin: number; tout: number }>(
+      `SELECT COALESCE(t.assignee_employee_id, r.assignee_employee_id) AS eid,
+              COALESCE(SUM(m.cost_usd), 0)      AS cost,
+              COALESCE(SUM(m.input_tokens), 0)  AS tin,
+              COALESCE(SUM(m.output_tokens), 0) AS tout
+         FROM vibe_messages m
+         JOIN vibe_requests r ON m.request_id = r.id
+         LEFT JOIN vibe_tasks t ON m.task_id = t.id
+        WHERE COALESCE(t.assignee_employee_id, r.assignee_employee_id) IS NOT NULL
+          AND m.created_at >= ? AND m.created_at < ?
+        GROUP BY eid`,
+      [fromMs, toMs]
+    )
+    return rows.map(r => ({ id: r.eid, cost: r.cost, tokensIn: r.tin, tokensOut: r.tout }))
+  } catch { return [] }
+}
+
 export function getEmployee(id: string): EmployeeInfo | null {
   const r = dbGet<EmployeeRow>(`SELECT * FROM employees WHERE id = ?`, [id])
   return r ? rowToInfo(r) : null
