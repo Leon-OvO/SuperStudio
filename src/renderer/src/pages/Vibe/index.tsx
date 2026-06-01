@@ -394,6 +394,13 @@ export function VibeWorkbench() {
     if (s.activeRequestId) await loadMessagesAndTasks(s.activeRequestId)
   }
 
+  async function handleReassignTask(taskId: string, employeeId: string | null) {
+    await window.api.vibeTaskSetAssignee?.(taskId, employeeId)
+    // Reload tasks so the dropdown reflects the new assignee (was only
+    // refreshing the employee list before — the change looked like a no-op).
+    if (s.activeRequestId) await loadMessagesAndTasks(s.activeRequestId)
+  }
+
   async function handleDeleteRequest(id: string) {
     await window.api.vibeRequestDelete?.(id)
     // Close any tab for this request
@@ -592,6 +599,7 @@ export function VibeWorkbench() {
               onApply={handleApply}
               onStop={handleStop}
               onToggleTaskStatus={handleToggleTaskStatus}
+              onReassignTask={handleReassignTask}
               hasProject={!!s.projectPath}
             />
           </div>

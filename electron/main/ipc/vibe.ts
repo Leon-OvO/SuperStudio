@@ -508,14 +508,18 @@ function toTaskInfo(t: VibeTaskRow): VibeTaskInfo {
 /** Pick an employee for a task by its PM-tagged dept. Same-dept idle first, then
  *  round-robin within dept; no dept match → request fallback → all-employee
  *  round-robin; zero employees → null (apply falls back to default model). */
+/** Pick an employee for a task by its PM-tagged dept. Same-dept idle first, then
+ *  round-robin within that dept. If there's no dept match (or the PM didn't tag
+ *  one), fall back to the request's default assignee, else leave UNASSIGNED
+ *  (null) — we deliberately do NOT round-robin across unrelated departments,
+ *  which looked random to users. */
 function pickEmployeeForDept(
   employees: EmployeeInfo[],
   dept: string | null | undefined,
   rr: { i: number },
   fallbackId: string | null
 ): string | null {
-  if (!employees.length) return fallbackId
-  if (dept) {
+  if (dept && employees.length) {
     const inDept = employees.filter(e => e.dept === dept)
     if (inDept.length) {
       const idle = inDept.filter(e => e.status === 'idle')
@@ -523,8 +527,9 @@ function pickEmployeeForDept(
       return pool[rr.i++ % pool.length].id
     }
   }
-  if (fallbackId) return fallbackId
-  return employees[rr.i++ % employees.length].id
+  // No matching department → request default, else leave unassigned for the
+  // user to pick manually (NOT a random unrelated employee).
+  return fallbackId
 }
 
 function toMessageInfo(m: VibeMessageRow): VibeMessageInfo {

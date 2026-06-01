@@ -41,6 +41,7 @@ interface Props {
   onApply: () => void
   onStop: () => void
   onToggleTaskStatus: (taskId: string, status: 'pending' | 'done' | 'skipped') => void
+  onReassignTask: (taskId: string, employeeId: string | null) => void
 
   hasProject: boolean
 }
@@ -50,7 +51,7 @@ export function EditorTabs({
   onSwitchTab, onCloseTab, onChangeContent, onSave,
   onCloseOthers, onCloseToRight, onCloseAll, onSaveAll, onReorder, onRevealInSidebar, projectPath,
   requests, tasks, messages, streamingTaskId, running,
-  onRun, onApply, onStop, onToggleTaskStatus,
+  onRun, onApply, onStop, onToggleTaskStatus, onReassignTask,
   hasProject
 }: Props) {
   const active = tabs.find(t => t.key === activeTabKey)
@@ -324,6 +325,7 @@ export function EditorTabs({
             onApply={onApply}
             onStop={onStop}
             onToggleTaskStatus={onToggleTaskStatus}
+            onReassignTask={onReassignTask}
           />
         ) : null}
       </div>
