@@ -1871,6 +1871,31 @@ export async function uploadToPage(ref: string | null | undefined, filePaths: st
       attached = false
       // Upload triggers a previewer / preview-grid render in most editors — let it settle.
       await new Promise(r => setTimeout(r, 500))
+      // 等图片上传完成（关键）：小红书等创作平台在图片处理完之前，标题/正文/发布区都不渲染
+      // ——agent 这时填标题、点发布必然扑空（实测「发布按钮不在 DOM」的真因）。参考 1980⭐
+      // xhs_ai_publisher 的 wait_for_upload_ready：轮询直到「标题输入框」可见，最多 ~45s。
+      // 仅对小红书类站点做长等待，避免拖慢普通上传。
+      try {
+        const host = await execJs<string>(wc, 'location.host', 1500).catch(() => '')
+        if (/xiaohongshu|xhs/i.test(host || '')) {
+          const READY_JS = `(() => { try {
+            const vis = (e) => { try { const r = e.getBoundingClientRect(); const s = getComputedStyle(e); return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden' } catch (x) { return false } }
+            for (const e of document.querySelectorAll('input,textarea,[contenteditable]')) {
+              const p = (e.getAttribute && (e.getAttribute('placeholder') || e.getAttribute('data-placeholder') || '')) || ''
+              if (/标题/.test(p) && vis(e)) return true
+            }
+            return false
+          } catch (e) { return false } })()`
+          const deadline = Date.now() + 45000
+          let ready = false
+          while (Date.now() < deadline) {
+            try { if (await execJs<boolean>(wc, READY_JS, 2000)) { ready = true; break } } catch { /* keep polling */ }
+            await new Promise(r => setTimeout(r, 1000))
+          }
+          console.log('[web-automation] upload-ready wait →', ready ? 'ready' : 'timeout')
+          if (ready) await new Promise(r => setTimeout(r, 600))  // 标题区出现后再稳一下
+        }
+      } catch { /* wait is best-effort; fall through to snapshot */ }
       const result: UploadResult = { ok: true, autoLocated }
       // Retry the post-upload snapshot: upload triggers a heavy re-render
       // (preview grid, encoder, validators) and 500ms isn't always enough on
