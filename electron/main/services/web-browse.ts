@@ -1328,25 +1328,26 @@ function buildActJs(action: PageAction): string {
     }
     const ACTION_WORDS_RE = /^(发布|立即发布|提交|确认|发送|确定|完成|保存|Submit|Send|Post|Publish|Save)$/i
     let pool = collect()
-    // 真发布/提交按钮常在表单底部惰性挂载（IntersectionObserver）。编辑时页面没滚到底，
-    // 它还没渲染，text="发布" 只会匹配到侧栏「发布笔记」→ 误点进草稿箱（用户复现的根因）。
-    // 所以「按动作词找不到任何真按钮」时，先把页面 + 所有内部可滚动容器滚到底触发挂载、
-    // 等一下，再找一次——而不是误点侧栏或直接报错。
-    if (ACTION_WORDS_RE.test(want) && !pool.some(isRealButton)) {
-      try { window.scrollTo(0, document.body.scrollHeight) } catch (e) {}
-      try { const se = document.scrollingElement || document.documentElement; se.scrollTop = se.scrollHeight } catch (e) {}
-      // 创作类 SPA 常把表单放进内层 overflow 容器（外层 100vh overflow:hidden），
-      // 只滚 window 不够——把页面上可滚动的容器也滚到底（上限 60 个，避免开销）。
-      try {
-        let n = 0
-        for (const sc of document.querySelectorAll('*')) {
-          if (n > 60) break
-          try { if (sc.scrollHeight - sc.clientHeight > 120) { sc.scrollTop = sc.scrollHeight; n++ } } catch (e) {}
-        }
-      } catch (e) {}
-      await new Promise(r => setTimeout(r, 800))
-      const pool2 = collect()
-      if (pool2.some(isRealButton) || !pool.length) pool = pool2
+    // 真发布/提交按钮常在表单底部惰性挂载（IntersectionObserver），且要等图片上传完才启用。
+    // 编辑时页面没滚到底它还没渲染，text="发布" 只会匹配到侧栏「发布笔记」(partial 含「发布」)
+    // → 误点进草稿箱（用户复现的根因）。所以「按动作词找不到任何真 <button>」时，把页面 +
+    // 所有内部可滚动容器滚到底触发挂载，等一下再找一次，最多重试 2 轮（约 1.5s）。
+    if (ACTION_WORDS_RE.test(want)) {
+      for (let attempt = 0; attempt < 2 && !pool.some(isRealButton); attempt++) {
+        try { window.scrollTo(0, document.body.scrollHeight) } catch (e) {}
+        try { const se = document.scrollingElement || document.documentElement; se.scrollTop = se.scrollHeight } catch (e) {}
+        // 创作类 SPA 常把表单放进内层 overflow 容器（外层 100vh overflow:hidden），
+        // 只滚 window 不够——把页面上可滚动的容器也滚到底（上限 60 个，避免开销）。
+        try {
+          let n = 0
+          for (const sc of document.querySelectorAll('*')) {
+            if (n > 60) break
+            try { if (sc.scrollHeight - sc.clientHeight > 120) { sc.scrollTop = sc.scrollHeight; n++ } } catch (e) {}
+          }
+        } catch (e) {}
+        await new Promise(r => setTimeout(r, 750))
+        pool = collect()
+      }
     }
     el = pool[0] || null
     if (!el) return { ok: false, finalUrl: location.href, error: '页面上找不到文字为「' + action.text + '」的可点击元素，请先 web_snapshot 看看现在有哪些元素' }
