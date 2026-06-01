@@ -197,6 +197,22 @@ function execJs<T>(wc: WebContents, js: string, timeoutMs: number): Promise<T> {
     .finally(() => { if (timer) clearTimeout(timer) })
 }
 
+/**
+ * Run page JS inside a SPECIFIC frame's own context via WebFrameMain. Unlike
+ * wc.executeJavaScript (main frame only, blind to cross-origin iframes), this
+ * reaches into cross-origin sub-frames — needed because 小红书 creator 的发布
+ * 按钮渲染在一个 iframe 里，主框架脚本 querySelectorAll 永远找不到它。
+ */
+function execJsInFrame<T>(frame: Electron.WebFrameMain, js: string, timeoutMs: number): Promise<T> {
+  let timer: NodeJS.Timeout | undefined
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`frame script timed out (${timeoutMs}ms)`)), timeoutMs)
+    timer.unref?.()
+  })
+  return Promise.race([frame.executeJavaScript(js) as Promise<T>, timeout])
+    .finally(() => { if (timer) clearTimeout(timer) })
+}
+
 // Injected AFTER navigation + settle to trigger lazy-loaded content (comment
 // sections, infinite feeds). Scrolls to the bottom repeatedly until the page
 // stops growing (2 stable polls), or the step/time budget is hit, then returns
@@ -1539,7 +1555,22 @@ export async function actOnPage(action: PageAction): Promise<ActResult> {
     const { wc } = requireWindow()
     if (idleTimer) { clearTimeout(idleTimer); idleTimer = null }
     try {
-      const result = await execJs<ActResult>(wc, buildActJs(action), EXTRACT_TIMEOUT_MS)
+      let result = await execJs<ActResult>(wc, buildActJs(action), EXTRACT_TIMEOUT_MS)
+      // 跨框架兜底：主框架找不到目标时，元素可能在(跨域)子 iframe 里——小红书发布按钮就渲染在
+      // 一个 iframe 中，主框架 querySelectorAll 永远抓不到。用 WebFrameMain 在每个子框架各自
+      // 上下文里跑同一脚本（含按文本定位 + 滚动重试），取第一个成功的。
+      if (!result.ok && /找不到|失效|不存在/.test(result.error || '')) {
+        try {
+          const frames = wc.mainFrame.framesInSubtree
+          for (const f of frames) {
+            if (f === wc.mainFrame || !f.url || f.url === 'about:blank') continue
+            try {
+              const r2 = await execJsInFrame<ActResult>(f, buildActJs(action), EXTRACT_TIMEOUT_MS)
+              if (r2 && r2.ok) { result = r2; break }
+            } catch { /* detached / dead frame — skip */ }
+          }
+        } catch { /* framesInSubtree unavailable — keep main-frame result */ }
+      }
       const targetLabel = action.type === 'click' ? (action.ref || `text:${action.text ?? ''}`) : action.ref
       console.log('[web-automation]', action.type, targetLabel, '→', result.ok ? 'ok' : `fail: ${result.error}`)
       if (result.ok) {
