@@ -33,7 +33,7 @@ export async function classifyIntent(
   message: string,
   providerId: string,
   model: string,
-  timeoutMs = 2500
+  timeoutMs = 6000
 ): Promise<AutoModelIntent> {
   try {
     const llm = createLLMClient(providerId, model)
@@ -85,7 +85,7 @@ export async function classifyVibeIntent(
   message: string,
   providerId: string,
   model: string,
-  timeoutMs = 2500
+  timeoutMs = 6000
 ): Promise<VibeIntent> {
   try {
     const llm = createLLMClient(providerId, model)

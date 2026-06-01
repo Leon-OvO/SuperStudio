@@ -27,7 +27,13 @@ export function installFetchLogger(): void {
       return res
     } catch (err) {
       const ms = Date.now() - started
-      console.error(`[fetch] ✗ ${url} (${ms}ms)`, err)
+      // 主动中断（分类超时 / 用户点停止 / 看门狗）是预期行为，不是网络错误——
+      // 用安静日志，避免控制台刷出吓人的 ✗ AbortError。
+      if ((err as Error)?.name === 'AbortError') {
+        console.log(`[fetch] ⊘ aborted ${url} (${ms}ms)`)
+      } else {
+        console.error(`[fetch] ✗ ${url} (${ms}ms)`, err)
+      }
       throw err
     }
   }
