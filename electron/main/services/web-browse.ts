@@ -1715,7 +1715,9 @@ export async function actOnPage(action: PageAction): Promise<ActResult> {
       const msg = (e as Error).message || '操作失败'
       const lbl = action.type === 'click' ? (action.ref ?? action.text ?? '') : action.ref
       console.warn('[web-automation]', action.type, lbl, '→ threw:', msg)
-      return { ok: false, finalUrl: '', error: msg }
+      // [WB#10] 构建标记：看到它=跑的是最新代码。若仍报笼统 "Script failed to execute"，
+      // 说明 buildActJs 是【解析错】(内层 try 接不住)，我据此从 out/main 精确定位语法点。
+      return { ok: false, finalUrl: '', error: '[WB#10] ' + msg }
     } finally {
       armIdleClose(OP_IDLE_CLOSE_MS)
     }
