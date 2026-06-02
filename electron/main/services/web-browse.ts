@@ -1414,7 +1414,7 @@ function buildActJs(action: PageAction): string {
         // 上传/处理；②经历过草稿箱来回跳导致 SPA 半渲染。给 agent 明确恢复路径而非干等。
         const onPublish = /publish|create|compose|editor|new[-_/]?post/i.test(location.href)
         const guide = onPublish
-          ? '页面没有任何「发布/存草稿/下一步」控件——发布区未挂载（可能图片仍在上传，或页面经历草稿箱跳转后处于异常状态）。请：① 先等几秒确认图片全部上传完成；② 若仍无发布栏，用 web_open 重新打开 https://creator.xiaohongshu.com/publish/publish 从头上传+填写一次（不要走草稿箱恢复，那会触发本问题）。'
+          ? '页面没有任何「发布/存草稿」控件——发布区未挂载。小红书最常见原因：① 直开了 /publish/publish（残缺壳，发布栏不挂载）——正确做法是 web_open https://creator.xiaohongshu.com/new/home 再 web_click(text=\'发布笔记\') 进编辑器；② 图片还没上传完（标题/正文/发布都要等图片处理完才出现）。请按此重走，不要走草稿箱恢复。'
           : '页面上找不到「' + action.text + '」按钮。请 web_snapshot 看看当前有哪些元素。'
         return { ok: false, finalUrl: location.href, error: guide + diag }
       }
