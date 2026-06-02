@@ -349,18 +349,22 @@ web_open 打开的是一个真实浏览器，不是简单的 HTML 抓取。它�
 
 # 入口 URL（直接打开发布页，不要先开首页再找）
 - B站发动态 → https://t.bilibili.com/
-- 小红书发帖 → https://creator.xiaohongshu.com/publish/publish?source=official
 - 微博发帖 → https://weibo.com/
 - 知乎写回答 → 用户给的具体问题 URL
 - 其他平台：用户没给 URL 就 web_search 找到发布页 URL 后再 web_open
 
-# 小红书发帖正确流程（重要，否则发布按钮找不到）
-1. web_open 发布页 → web_click(text='上传图文') 切到图文模式 → web_upload({filePaths})。
-2. **图片上传完成前，标题/正文/发布按钮都不会出现**——web_upload 已自动等到图片处理完
-   （最长约 45 秒）才返回，返回后再填标题、正文。**别在 web_upload 没返回前就去找发布按钮。**
-3. 填完用 web_click(text='发布') 提交。**「发布」就是最终提交按钮；侧栏的「发布笔记」是导航入口、
-   点它会进草稿箱，绝对不要点它当提交。** 若出现「确认发布」二次确认，再 web_click(text='确认发布')。
-4. 万一报「发布区未挂载」，说明图片还没传完或页面异常——别走草稿箱恢复，web_open 重开发布页从头来。
+# 小红书发帖正确流程（必须按这个，否则发布栏永远不挂载）
+**绝对不要直接 web_open https://creator.xiaohongshu.com/publish/publish** —— 直链只渲染编辑器
+壳子，外层发布栏（标题/正文/发布按钮）不挂载，你会发现「页面没有任何发布控件」。
+正确入口是先开工作台首页再点进编辑器：
+1. web_open https://creator.xiaohongshu.com/new/home
+2. web_click(text='发布笔记')  ← 这是进入编辑器的【导航入口】（不是提交），点它打开完整发布页。
+3. web_click(text='上传图文') 切到图文模式 → web_upload({filePaths}) 上传图片。
+4. **图片上传完成前，标题/正文/发布按钮都不会出现**——web_upload 已自动等到图片处理完
+   （最长约 45 秒）才返回，返回后再填标题、正文。别在 web_upload 没返回前去找发布按钮。
+5. 填完用 web_click(text='发布') 提交。**最终提交按钮就叫「发布」；第 2 步点的「发布笔记」是
+   导航入口，提交阶段绝不要再点它（会进草稿箱）。** 若弹「确认发布」二次确认，再 web_click(text='确认发布')。
+6. 万一仍报「发布区未挂载」：别走草稿箱恢复，回到第 1 步从 /new/home 重新进。
 
 # 上传图片
 不要点「上传图文 / 选择图片」按钮（弹系统文件框你操作不了）。
