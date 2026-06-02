@@ -1257,6 +1257,7 @@ function buildActJs(action: PageAction): string {
     }
     return acc
   }
+  try {
   const roots = [document, ...allShadowRoots(document, [])]
   let el = null
   if (action.ref) {
@@ -1563,6 +1564,11 @@ function buildActJs(action: PageAction): string {
   }
 
   return { ok: false, finalUrl: location.href, error: '未知动作：' + action.type }
+  } catch (__e) {
+    // 顶层兜底：任何未被内层 try 捕获的运行时异常都返回结构化错误，绝不让脚本 reject 成
+    // "Script failed to execute"（那样既不可操作、也看不到真实原因）。
+    return { ok: false, finalUrl: (typeof location !== 'undefined' ? location.href : ''), error: 'click 脚本运行时异常：' + (__e && __e.message ? __e.message : String(__e)) }
+  }
 })()`
 }
 
