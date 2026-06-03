@@ -47,6 +47,12 @@ let pendingShellPath: ShellOpenTarget | null = null
  *  painting a window onto a process that failed/hung during startup yields a
  *  UI where every ipcRenderer.invoke fails with "No handler registered". */
 let startupComplete = false
+/** Guards the one-time whenReady startup body. whenReady can fire more than once
+ *  in a single process (observed after app.relaunch / hot upgrade — the same
+ *  reason the local-file protocol below detaches a stale handler). Re-running
+ *  init throws "Attempted to register a second handler for ..." on the first
+ *  ipcMain.handle, and would double-create windows/listeners. */
+let startupBegun = false
 
 // Single-instance lock — Explorer's right-click "用 SuperStudio 打开" should
 // FOCUS the existing window and forward the path, NOT spawn a second app
@@ -245,6 +251,17 @@ app.whenReady().then(async () => {
   // errors ("Failed to register protocol: local-file") that mask real failures
   // in the primary's log.
   if (!gotSingleInstanceLock) return
+
+  // whenReady can fire again within the same process (app.relaunch / hot
+  // upgrade). Everything below is one-time init; re-running it throws on the
+  // duplicate ipcMain.handle('app:version') registration (and would re-create
+  // the window + re-add app.on listeners). Skip cleanly on any later fire — the
+  // first run already built the window, and app.on('activate') re-shows it.
+  if (startupBegun) {
+    console.warn('[startup] whenReady fired again — skipping duplicate init')
+    return
+  }
+  startupBegun = true
 
   electronApp.setAppUserModelId('com.superstudio.app')
 
