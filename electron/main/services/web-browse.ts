@@ -92,6 +92,173 @@ let win: BrowserWindow | null = null
 let browseSession: Session | null = null
 let mutex: Promise<unknown> = Promise.resolve()
 let idleTimer: NodeJS.Timeout | null = null
+// Consecutive 发布/存草稿 clicks that failed because the publish bar isn't
+// findable in the DOM (lazy-mount / not rendered). After a couple of these we
+// surface the (otherwise inactive) window so the user can finish with one
+// manual click — content is already filled. Reset on any successful action.
+let publishFailStreak = 0
+
+
+/** 用 CDP 穿透【闭合 Shadow DOM】定位并真实点击发布按钮。实测小红书图文页的真发布按钮用户可见、
+ *  Tab 聚焦不到、页面 JS(document+开放 shadow+iframe)完全扫不到 —— 极可能在 closed shadow root。
+ *  页面脚本进不去闭合 shadow，但 CDP DOM.performSearch 能穿透。流程：搜「发布笔记/发布」节点 →
+ *  resolveNode 拿 objectId → callFunctionOn 跑 getBoundingClientRect 取【视口坐标】(避开 box-model
+ *  坐标系歧义) → 过滤到动作区(右下/底部、按钮尺寸) → sendInputEvent 发真实(isTrusted)点击。
+ *  返回 {clicked, info}：clicked=穿透找到并点了；否则 info 说明(没找到=可能图片未传完/未挂载)。 */
+async function cdpClickPublishButton(wc: WebContents, w: BrowserWindow): Promise<{ clicked: boolean; info: string }> {
+  try {
+    try { wc.debugger.attach('1.3') } catch (e) {
+      if (!/already attached/i.test((e as Error).message || '')) return { clicked: false, info: 'CDP attach 失败' }
+    }
+    await wc.debugger.sendCommand('DOM.enable')
+    await wc.debugger.sendCommand('Runtime.enable')
+    // 取视口矩形 + tag/文本 + 【是否禁用】。小红书发布按钮在图片/封面上传到 CDN 完成前是 disabled 灰态,
+    // 点了无反应(实测真因)。禁用判据:pointer-events:none / opacity<0.5 / 类名含 disab|gray|loading / aria-disabled。
+    const RECT_FN = 'function(){var r=this.getBoundingClientRect();var cs=null;try{cs=getComputedStyle(this)}catch(e){}var cls="";try{cls=(typeof this.className==="string"?this.className:(this.className&&this.className.baseVal)||"")}catch(e){}var dis=false;try{dis=(!!cs&&(cs.pointerEvents==="none"||parseFloat(cs.opacity||"1")<0.5))||/disab|gray|grey|loading|uploading|不可/i.test(cls)||(this.getAttribute&&this.getAttribute("aria-disabled")==="true")||this.disabled===true}catch(e){}return JSON.stringify({l:r.left,t:r.top,w:r.width,h:r.height,tag:(this.tagName||"").toLowerCase(),txt:(this.textContent||"").replace(/\\s+/g,"").slice(0,8),dis:dis,cls:String(cls).slice(0,30)});}'
+    type Cand = { cx: number; cy: number; w: number; h: number; tag: string; txt: string; dis: boolean; cls: string }
+    // 单次扫描：穿透闭合 shadow 找发布节点,返回动作区候选(按最靠下右排序)+ 概览/诊断。
+    const scan = async (): Promise<{ inZone: Cand[]; overview: string; diag: string[] }> => {
+      await wc.debugger.sendCommand('DOM.getDocument', { depth: -1, pierce: true })
+      const all: Cand[] = []
+      const diag: string[] = []
+      for (const q of ['发布笔记', '发布', '立即发布', '提交', '存草稿']) {
+        let searchId = '', count = 0
+        try {
+          const r = await wc.debugger.sendCommand('DOM.performSearch', { query: q, includeUserAgentShadowDOM: true }) as { searchId: string; resultCount: number }
+          searchId = r.searchId; count = r.resultCount || 0
+        } catch { diag.push(q + ':搜索异常'); continue }
+        let got = 0
+        if (count > 0) {
+          let ids: number[] = []
+          try {
+            const rr = await wc.debugger.sendCommand('DOM.getSearchResults', { searchId, fromIndex: 0, toIndex: Math.min(count, 50) }) as { nodeIds: number[] }
+            ids = rr.nodeIds || []
+          } catch {}
+          for (const nodeId of ids) {
+            try {
+              const rn = await wc.debugger.sendCommand('DOM.resolveNode', { nodeId }) as { object?: { objectId?: string } }
+              const objectId = rn.object && rn.object.objectId
+              if (!objectId) continue
+              const cf = await wc.debugger.sendCommand('Runtime.callFunctionOn', { objectId, functionDeclaration: RECT_FN, returnByValue: true }) as { result?: { value?: string } }
+              const v = cf.result && cf.result.value
+              if (!v) continue
+              const o = JSON.parse(v) as { l: number; t: number; w: number; h: number; tag: string; txt: string; dis: boolean; cls: string }
+              if (!(o.w > 0 && o.h > 0)) continue
+              got++
+              all.push({ cx: Math.round(o.l + o.w / 2), cy: Math.round(o.t + o.h / 2), w: Math.round(o.w), h: Math.round(o.h), tag: o.tag, txt: o.txt, dis: !!o.dis, cls: o.cls })
+            } catch {}
+          }
+        }
+        diag.push(`${q}:${count}/${got}`)
+        try { await wc.debugger.sendCommand('DOM.discardSearchResults', { searchId }) } catch {}
+      }
+      let vw = 1280, vh = 800
+      try {
+        const m = await wc.debugger.sendCommand('Page.getLayoutMetrics') as { cssVisualViewport?: { clientWidth: number; clientHeight: number }; visualViewport?: { clientWidth: number; clientHeight: number } }
+        const vp = m.cssVisualViewport || m.visualViewport
+        if (vp) { vw = vp.clientWidth || vw; vh = vp.clientHeight || vh }
+      } catch {}
+      const seen = new Set<string>()
+      const overview = all.filter(c => { const k = c.tag + c.txt + c.w + c.h + c.cx; if (seen.has(k)) return false; seen.add(k); return true })
+        .slice(0, 8).map(c => `${c.tag}·${c.txt}·${c.w}x${c.h}@${c.cx},${c.cy}${c.dis ? '·禁用' : ''}`).join(' ; ')
+      // 动作区:按钮尺寸 + 非左侧栏(x>220) + 视口下半(y>40%) + 视口内。宽度上限 760(全宽发布栏 xhs-publish-btn 680x90)。
+      const inZone = all.filter(c => c.w >= 40 && c.w <= 760 && c.h >= 20 && c.h <= 140
+        && c.cx > Math.min(220, vw * 0.18) && c.cy > vh * 0.4 && c.cy < vh + 40 && c.cx < vw + 40)
+      inZone.sort((a, b) => (b.cy - a.cy) || (b.cx - a.cx))  // 真提交按钮在右下:最靠下、再靠右
+      return { inZone, overview, diag }
+    }
+    // 轮询等【启用】再点:发布按钮在图片/封面传完前禁用,点了无效。最多 ~30s 覆盖 CDN 上传。
+    let lastInfo = ''
+    for (let round = 0; round < 15; round++) {
+      const { inZone, overview, diag } = await scan()
+      if (!inZone.length) {
+        lastInfo = `穿透[${diag.join(',')}] 候选[${overview || '无'}]→动作区无发布按钮`
+      } else {
+        const pick = inZone[0]
+        lastInfo = `${pick.tag}·${pick.cls}·${pick.w}x${pick.h}@${pick.cx},${pick.cy}${pick.dis ? '·禁用(等上传)' : '·可点'} [${diag.join(',')}]`
+        if (!pick.dis) {
+          // 点击前把窗口聚焦置顶(真人成功时窗口在前台有焦点)
+          try {
+            if (w.isMinimized()) w.restore()
+            w.show(); w.moveTop(); w.focus(); wc.focus()
+          } catch { /* window torn down */ }
+          await new Promise(r => setTimeout(r, 250))
+          // 诊断:用 getNodeForLocation 报告点击点(cx,cy)【实际命中的节点】(含闭合 shadow),验证坐标是否
+          // 真落在发布按钮上——若命中的不是 xhs-publish-btn/其子节点,说明 680 宽栏中心是空档,要换点位。
+          let hit = ''
+          try {
+            const loc = await wc.debugger.sendCommand('DOM.getNodeForLocation', { x: pick.cx, y: pick.cy, includeUserAgentShadowDOM: true }) as { backendNodeId?: number }
+            if (loc.backendNodeId) {
+              const rn = await wc.debugger.sendCommand('DOM.resolveNode', { backendNodeId: loc.backendNodeId }) as { object?: { objectId?: string } }
+              const oid = rn.object && rn.object.objectId
+              if (oid) {
+                const d = await wc.debugger.sendCommand('Runtime.callFunctionOn', { objectId: oid, functionDeclaration: 'function(){var c=(typeof this.className==="string"?this.className:(this.className&&this.className.baseVal)||"");return (this.tagName||"").toLowerCase()+"."+String(c).slice(0,24);}', returnByValue: true }) as { result?: { value?: string } }
+                hit = (d.result && d.result.value) || ''
+              }
+            }
+          } catch { /* 诊断失败不影响点击 */ }
+          // 真实点击:优先 CDP Input.dispatchMouseEvent(Playwright 发小红书成功用的就是这个,比
+          // webContents.sendInputEvent 更底层、更接近真实输入);失败再退回 sendInputEvent。
+          try {
+            await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseMoved', x: pick.cx, y: pick.cy, buttons: 0 })
+            await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mousePressed', x: pick.cx, y: pick.cy, button: 'left', buttons: 1, clickCount: 1 })
+            await new Promise(r => setTimeout(r, 50))
+            await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseReleased', x: pick.cx, y: pick.cy, button: 'left', buttons: 0, clickCount: 1 })
+          } catch {
+            wc.sendInputEvent({ type: 'mouseMove', x: pick.cx, y: pick.cy })
+            wc.sendInputEvent({ type: 'mouseDown', x: pick.cx, y: pick.cy, button: 'left', clickCount: 1 })
+            await new Promise(r => setTimeout(r, 40))
+            wc.sendInputEvent({ type: 'mouseUp', x: pick.cx, y: pick.cy, button: 'left', clickCount: 1 })
+          }
+          // 二次确认:点发布后可能弹【确认弹窗】(同样可能在闭合 shadow,我们快照看不到→没点确认→没真发)。
+          // 等一下,穿透搜【明确的发布确认词】(不用裸"确认/确定"以免误点)并真实点击。没有就跳过。
+          let confirmInfo = '无确认弹窗'
+          await new Promise(r => setTimeout(r, 1300))
+          try {
+            for (const cq of ['确认发布', '确定发布', '确认并发布', '立即发布']) {
+              let sid = ''
+              try {
+                const sr = await wc.debugger.sendCommand('DOM.performSearch', { query: cq, includeUserAgentShadowDOM: true }) as { searchId: string; resultCount: number }
+                sid = sr.searchId
+                if (sr.resultCount > 0) {
+                  const gr = await wc.debugger.sendCommand('DOM.getSearchResults', { searchId: sid, fromIndex: 0, toIndex: Math.min(sr.resultCount, 20) }) as { nodeIds: number[] }
+                  for (const nid of (gr.nodeIds || [])) {
+                    try {
+                      const rn = await wc.debugger.sendCommand('DOM.resolveNode', { nodeId: nid }) as { object?: { objectId?: string } }
+                      const oid = rn.object && rn.object.objectId; if (!oid) continue
+                      const cf = await wc.debugger.sendCommand('Runtime.callFunctionOn', { objectId: oid, functionDeclaration: RECT_FN, returnByValue: true }) as { result?: { value?: string } }
+                      const cv = cf.result && cf.result.value; if (!cv) continue
+                      const co = JSON.parse(cv) as { l: number; t: number; w: number; h: number; dis: boolean }
+                      if (co.w >= 40 && co.w <= 420 && co.h >= 20 && co.h <= 110 && !co.dis) {
+                        const ccx = Math.round(co.l + co.w / 2), ccy = Math.round(co.t + co.h / 2)
+                        await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseMoved', x: ccx, y: ccy, buttons: 0 })
+                        await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mousePressed', x: ccx, y: ccy, button: 'left', buttons: 1, clickCount: 1 })
+                        await new Promise(r => setTimeout(r, 50))
+                        await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseReleased', x: ccx, y: ccy, button: 'left', buttons: 0, clickCount: 1 })
+                        confirmInfo = `点了确认「${cq}」@${ccx},${ccy}`
+                        break
+                      }
+                    } catch { /* skip node */ }
+                  }
+                }
+              } finally { if (sid) { try { await wc.debugger.sendCommand('DOM.discardSearchResults', { searchId: sid }) } catch {} } }
+              if (confirmInfo.startsWith('点了')) break
+            }
+          } catch { /* 确认步骤 best-effort */ }
+          return { clicked: true, info: `CDP-Input点击@${pick.cx},${pick.cy} 命中[${hit || '未知'}] | ${confirmInfo}(已聚焦,等${round * 2}s启用) ${lastInfo}` }
+        }
+      }
+      await new Promise(r => setTimeout(r, 2000))
+    }
+    return { clicked: false, info: `等待~30s 发布按钮仍禁用/未出现——图片或封面可能尚未上传完成。${lastInfo}` }
+  } catch (e) {
+    return { clicked: false, info: 'CDP点击异常:' + ((e as Error).message || String(e)) }
+  } finally {
+    // 用完必须 detach：debugger 常驻会干扰后续页面的 executeJavaScript(通用登录检测/快照就走 execJs),
+    // 之前文件框拦截把它挂着不放,导致「通用页面登录检测失效」。这里恢复"只临时附加"的原状。
+    try { wc.debugger.detach() } catch { /* already detached */ }
+  }
+}
 
 /** (Re)arm the idle timer that tears the window down once browsing stops. */
 function armIdleClose(ms: number = IDLE_CLOSE_MS): void {
@@ -1235,14 +1402,21 @@ export interface ActResult {
   /** Set only when the action succeeded but the follow-up snapshot couldn't be
    *  captured — tells the model how to recover instead of stalling. */
   hint?: string
+  /** Click only (coordsOnly mode): viewport-center coords of the resolved element,
+   *  so the MAIN PROCESS can dispatch a TRUSTED (isTrusted=true) OS-level click via
+   *  webContents.sendInputEvent. Synthetic in-page clicks have isTrusted=false and
+   *  some強校验 SPA buttons (小红书「发布」) silently ignore them. */
+  clickX?: number
+  clickY?: number
 }
 
 // Find the [data-ss-ref] element across light + shadow trees, then perform the
 // action. Returns { ok, error? }. Built per-call with the action JSON inlined.
-function buildActJs(action: PageAction): string {
+function buildActJs(action: PageAction, opts: { coordsOnly?: boolean } = {}): string {
   const payload = JSON.stringify(action)
   return `(async () => {
   const action = ${payload}
+  const COORDS_ONLY = ${opts.coordsOnly ? 'true' : 'false'}
   function allShadowRoots(root, acc) {
     let els
     try { els = root.querySelectorAll('*') } catch (e) { return acc }
@@ -1330,6 +1504,48 @@ function buildActJs(action: PageAction): string {
     const isPublishStyled = (e) => {
       try { return isRealButton(e) && /\\b(bg-red|btn-danger|btn-primary|is-primary|primary|danger|publish|submit|ce-btn)\\b/i.test(e.getAttribute('class') || '') } catch (x) { return false }
     }
+    // CTA-like 但非真 <button>：现代 SPA(小红书)把提交按钮做成 <div class="publish-video">→
+    // <div class="btn-wrapper">→<span class="btn-text">发布笔记</span> 这种嵌套 div/span，无 button
+    // 标签/role。实测小红书图文页真发布按钮就是这形态(文本是「发布笔记」不是「发布」)。放宽到
+    // 「带 btn/button/publish/submit/cta 类名 + 可见 + 非 nav」也算候选，否则真按钮永远点不到。
+    const areaOf = (e) => { try { const r = e.getBoundingClientRect(); return r.width * r.height } catch (x) { return 0 } }
+    // 仅认【强提交类名】publish/submit/ce-btn/publishbtn——不要泛用 btn(菜单项也带 btn 会误中)。
+    const SUBMIT_CLASS_RE = /\\b([\\w-]*(publish|submit|ce-btn|publishbtn)[\\w-]*)\\b/i
+    // 排除【模式切换/菜单】项：「发布视频/发布图文/发布长文/直播」等——它们点了会跳去别的发布流、
+    // 把当前图文编辑器内容丢光(实测 text=发布 误中「发布视频」→ target=video 全丢)。按文本判断。
+    const MODE_SWITCH_RE = /(视频|图文笔记|图文|长文|直播|live|video)/i
+    // 真提交按钮永远在表单【右下/底部动作区】——绝不在左侧栏(x 很小)或顶栏(y 很小)。那两处带「发布」
+    // 字样的多是导航/「发布笔记」侧栏入口/「发布视频」模式切换菜单,点了会跳页或切视频把已填内容丢光
+    // (实测 text=发布 误中左上(104,102)的侧栏项 → target=video 全丢)。inNavLike 抓不全小红书侧栏,故用位置兜底。
+    const inActionZone = (e) => {
+      try {
+        const r = e.getBoundingClientRect()
+        const cx = r.left + r.width / 2, cy = r.top + r.height / 2
+        const vw = window.innerWidth || 1280, vh = window.innerHeight || 800
+        return cx > Math.min(220, vw * 0.18) && cy > vh * 0.4
+      } catch (x) { return false }
+    }
+    const isSubmitBtn = (e) => {
+      try {
+        if (inNavLike(e)) return false
+        const r = e.getBoundingClientRect()
+        if (!(r.width > 0 && r.height > 0)) return false
+        if (!SUBMIT_CLASS_RE.test(e.getAttribute('class') || '')) return false
+        const t = norm(e.textContent || e.value || '')
+        if (MODE_SWITCH_RE.test(t)) return false
+        if (!inActionZone(e)) return false
+        return true
+      } catch (x) { return false }
+    }
+    // 真提交按钮醒目(小红书 div.publish-video 约 208x76),菜单/切换项小——挑【面积最大】的强提交元素。
+    // 点击时再用 elementFromPoint 命中其中心的最上层节点、靠冒泡触达挂在容器上的 handler(见下方点击派发)。
+    // 若动作区没有任何强提交元素 → 返回 null(上层报「未挂载」让 agent 等/兜底显形),绝不退而点顶栏/侧栏。
+    const submitPick = (arr) => {
+      const c = arr.filter(isSubmitBtn)
+      if (!c.length) return null
+      c.sort((a, b) => areaOf(b) - areaOf(a))
+      return c[0]
+    }
     // 收集文字匹配 want 的候选：精确(exact)与包含(partial)分开返回，各自按分排序。
     const collect = () => {
       const exact = [], partial = []
@@ -1358,6 +1574,8 @@ function buildActJs(action: PageAction): string {
       exact.find(c => isRealButton(c) && !inNavLike(c))
       || exact.find(c => isPublishStyled(c))
       || partial.find(c => isPublishStyled(c) && !inNavLike(c))
+      || submitPick(exact)               // 精确文本的强提交 div/span(排除菜单/模式切换)
+      || submitPick(partial)             // partial 文本的强提交元素 —— 覆盖「发布笔记」这种 div 提交按钮
       || exact.find(c => !inNavLike(c))
       || null
     let { exact, partial } = collect()
@@ -1392,7 +1610,7 @@ function buildActJs(action: PageAction): string {
             for (const e of all) {
               try {
                 const cls = (e.getAttribute && e.getAttribute('class')) || ''
-                if (modalCls.length < 6 && /\\b([\\w-]*(modal|dialog|popup|drawer|overlay|mask)[\\w-]*)\\b/i.test(cls)) {
+                if (modalCls.length < 6 && !/hover/i.test(cls) && /\\b([\\w-]*(modal|dialog|popup|drawer|overlay|mask)[\\w-]*)\\b/i.test(cls)) {
                   let vis = false; try { const rr = e.getBoundingClientRect(); vis = rr.width > 30 && rr.height > 30 } catch (x) {}
                   if (vis) modalCls.push(cls.slice(0, 26))
                 }
@@ -1406,17 +1624,55 @@ function buildActJs(action: PageAction): string {
               } catch (x) {}
             }
           }
+          // 发布按钮专项搜寻：动作候选(NEXT_RE 精确 + childCount<=1)会漏掉「发布笔记」「发布(1/1)」、
+          // 文本埋更深、或 class=submitBtn 的真按钮。这里放宽——任意标签、文本【包含】发布类词(≤12字)
+          // 或 class 含 submit/publish 即报，带 tag·自身文本·class·尺寸·隐藏·nav。下次失败一看便知发布
+          // 按钮到底是什么形态/在不在 DOM。
+          const PUB_RE = /(发布|发表|存草稿|暂存|提交|publish|submit)/i
+          const pubHits = []; const seenK = {}
+          for (const r of roots) {
+            let all2; try { all2 = r.querySelectorAll('button,[role="button"],a,div,span,li,[class*="submit"],[class*="publish"],[class*="footer"]') } catch (e) { continue }
+            for (const e of all2) {
+              if (pubHits.length >= 14) break
+              try {
+                const cls = (e.getAttribute && e.getAttribute('class')) || ''
+                // 自身直接文本，避免父容器把整页文本算进来
+                let own = ''
+                try { for (const n of e.childNodes) { if (n.nodeType === 3) own += n.textContent } } catch (x) {}
+                const t = norm(own) || norm(e.textContent || e.value || '')
+                const clsHit = /submit|publish/i.test(cls)
+                if (!((PUB_RE.test(t) && t.length <= 12) || clsHit)) continue
+                let rc = '?', xy = '', vis = false; try { const rr = e.getBoundingClientRect(); rc = Math.round(rr.width) + 'x' + Math.round(rr.height); xy = '@' + Math.round(rr.left + rr.width / 2) + ',' + Math.round(rr.top + rr.height / 2); vis = rr.width > 0 && rr.height > 0 } catch (x) {}
+                const key = (e.tagName || '') + '|' + t.slice(0, 10) + '|' + cls.slice(0, 20)
+                if (seenK[key]) continue; seenK[key] = 1
+                pubHits.push((e.tagName || '').toLowerCase() + '·' + (t.slice(0, 8) || '∅') + '·' + cls.slice(0, 22) + '|' + rc + xy + (vis ? '' : '|hidden') + (inNavLike(e) ? '|nav' : ''))
+              } catch (x) {}
+            }
+          }
+          let elCount = 0; try { elCount = document.querySelectorAll('*').length } catch (e) {}
+          let ifr = 0; try { ifr = document.querySelectorAll('iframe').length } catch (e) {}
           let title = ''; try { title = (document.title || '').slice(0, 30) } catch (e) {}
           diag = ' || 全景 url=' + location.host + location.pathname.slice(0, 28) + ' 标题=' + title
                + ' 弹窗[' + (modalCls.join(' , ') || '无') + ']'
                + ' 动作候选' + acts.length + '：' + (acts.join(' ; ') || '无') + ' roots=' + roots.length
+               + ' 发布搜寻' + pubHits.length + '：' + (pubHits.join(' ; ') || '无') + ' 元素数=' + elCount + ' iframe=' + ifr
         } catch (e) {}
-        // 发布栏整组(发布/存草稿)都不在 DOM = 页面没挂载发布区，不是按钮难找。常见于：①图片还在
-        // 上传/处理；②经历过草稿箱来回跳导致 SPA 半渲染。给 agent 明确恢复路径而非干等。
+        // 发布栏整组(发布/存草稿)都不在 DOM。关键：要先分清「还没进编辑器(残缺壳)」与「已在编辑器、
+        // 只是发布栏暂未挂载」——后者若误判成前者、让 agent 重开 /new/home，会把已填的标题/正文/图片
+        // 全部丢掉、陷入死循环。editorActive：标题/正文编辑器或已上传图片在场 = 确实在真编辑器里。
+        let editorActive = false
+        try {
+          editorActive = !!(
+            document.querySelector('input[placeholder*="标题"], textarea, [contenteditable="true"], .ql-editor, [class*="titleInput"], [class*="title-input"]')
+            || document.querySelector('.hover-mask, [class*="img"] img, [class*="preview"] img, [class*="upload"] img')
+          )
+        } catch (e) {}
         const onPublish = /publish|create|compose|editor|new[-_/]?post/i.test(location.href)
-        const guide = onPublish
-          ? '页面没有任何「发布/存草稿」控件——发布区未挂载。小红书最常见原因：① 直开了 /publish/publish（残缺壳，发布栏不挂载）——正确做法是 web_open https://creator.xiaohongshu.com/new/home 再 web_click(text=「发布笔记」) 进编辑器；② 图片还没上传完（标题/正文/发布都要等图片处理完才出现）。请按此重走，不要走草稿箱恢复。'
-          : '页面上找不到「' + action.text + '」按钮。请 web_snapshot 看看当前有哪些元素。'
+        const guide = editorActive
+          ? '已在编辑器内（标题/正文/图片在场），只是「发布/存草稿」栏暂未挂载——【不要重开页面、不要走草稿箱】，已填内容还在。最可能：① 图片仍在处理（等 2-3 秒后再 web_snapshot → web_click(text=「发布」) 重试）；② 见上方「弹窗[…]」有遮罩挡住发布区（先点遮罩里的关闭/完成按钮、或点遮罩外空白处把它关掉，再点发布）。继续在本页面等待+重试即可。'
+          : onPublish
+            ? '页面没有任何「发布/存草稿」控件——发布区未挂载。小红书最常见原因：① 直开了 /publish/publish（残缺壳，发布栏不挂载）——正确做法是 web_open https://creator.xiaohongshu.com/new/home 再 web_click(text=「发布笔记」) 进编辑器；② 图片还没上传完（标题/正文/发布都要等图片处理完才出现）。请按此重走，不要走草稿箱恢复。'
+            : '页面上找不到「' + action.text + '」按钮。请 web_snapshot 看看当前有哪些元素。'
         return { ok: false, finalUrl: location.href, error: guide + diag }
       }
     } else {
@@ -1431,11 +1687,31 @@ function buildActJs(action: PageAction): string {
 
   if (action.type === 'click') {
     try {
-      const opts = { bubbles: true, cancelable: true, view: window }
-      el.dispatchEvent(new MouseEvent('pointerdown', opts))
-      el.dispatchEvent(new MouseEvent('mousedown', opts))
-      el.dispatchEvent(new MouseEvent('mouseup', opts))
-      el.click()
+      // 在元素中心用 elementFromPoint 命中【真实最上层节点】(可能是更深的子节点),再带坐标派发完整
+      // pointer/mouse 序列——事件向上冒泡,能触达挂在任意祖先(如 div.publish-video)上的 click handler。
+      // 比直接在容器上 el.click() 更接近真人点击,div 假按钮(无 button 标签/role,Tab 也聚焦不到)也能触发。
+      let target = el, cx, cy
+      try {
+        const r = el.getBoundingClientRect()
+        if (r.width > 0 && r.height > 0) {
+          cx = Math.floor(r.left + r.width / 2)
+          cy = Math.floor(r.top + r.height / 2)
+          const hit = document.elementFromPoint(cx, cy)
+          if (hit && (hit === el || el.contains(hit))) target = hit
+        }
+      } catch (e) {}
+      // 主框架优先返回坐标，让主进程用 sendInputEvent 发【真实(isTrusted)】点击——小红书发布按钮
+      // 等强校验控件忽略合成事件。坐标拿不到(无尺寸/异常)时退回页面内合成点击。
+      if (COORDS_ONLY && cx != null && cy != null) {
+        return { ok: true, finalUrl: location.href, clickX: cx, clickY: cy }
+      }
+      const opts = (cx != null && cy != null)
+        ? { bubbles: true, cancelable: true, view: window, clientX: cx, clientY: cy }
+        : { bubbles: true, cancelable: true, view: window }
+      target.dispatchEvent(new MouseEvent('pointerdown', opts))
+      target.dispatchEvent(new MouseEvent('mousedown', opts))
+      target.dispatchEvent(new MouseEvent('mouseup', opts))
+      target.click()
     } catch (e) { return { ok: false, finalUrl: location.href, error: '点击失败：' + (e && e.message) } }
     return { ok: true, finalUrl: location.href }
   }
@@ -1471,9 +1747,29 @@ function buildActJs(action: PageAction): string {
             sel.addRange(range)
           } catch (e) {}
         }
-        selectAll()
+        // REPLACE, not append. 小红书自研编辑器对合成 paste 不会删除选区，导致第二次 fill
+        // 把正文整段追加、出现重复。所以每次插入前【显式清空】：选中全部→execCommand('delete')
+        // →仍未空则硬清 textContent。这样 fill 幂等(重填=覆盖)、且空字符串能真正清空。
+        const clearAll = () => {
+          selectAll()
+          try { document.execCommand('delete', false) } catch (e) {}
+          try {
+            if ((el.textContent || '').length) {
+              el.textContent = ''
+              el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward' }))
+            }
+          } catch (e) {}
+        }
+        clearAll()
 
         const want = v.replace(/\\s+/g, ' ').trim()
+        // 空值 = 只清空。clearAll 已执行，回读确认确实清空了。
+        if (want.length === 0) {
+          await new Promise(r => setTimeout(r, 50))
+          const got0 = (el.textContent || '').replace(/\\s+/g, ' ').trim()
+          if (got0.length === 0) return { ok: true, finalUrl: location.href }
+          return { ok: false, finalUrl: location.href, error: '清空失败：富文本编辑器仍保留内容（回读："' + got0.slice(0, 40) + '"）。' }
+        }
         const checkOk = () => {
           const got = (el.textContent || '').replace(/\\s+/g, ' ').trim()
           if (want.length === 0) return { ok: true, got }
@@ -1504,9 +1800,9 @@ function buildActJs(action: PageAction): string {
         await new Promise(r => setTimeout(r, 100))
         let res = checkOk()
 
-        // 2. execCommand fallback.
+        // 2. execCommand fallback. 先 clearAll 抹掉上一策略可能插入的残片，避免叠加。
         if (!res.ok) {
-          selectAll()
+          clearAll()
           try { document.execCommand('insertText', false, v) } catch (e) {}
           await new Promise(r => setTimeout(r, 100))
           res = checkOk()
@@ -1514,7 +1810,7 @@ function buildActJs(action: PageAction): string {
 
         // 3. beforeinput + raw mutation fallback.
         if (!res.ok) {
-          selectAll()
+          clearAll()
           try {
             el.dispatchEvent(new InputEvent('beforeinput', {
               bubbles: true, cancelable: true, inputType: 'insertFromPaste', data: v
@@ -1576,14 +1872,33 @@ function buildActJs(action: PageAction): string {
  *  navigates by itself, but the page's own handlers may. */
 export async function actOnPage(action: PageAction): Promise<ActResult> {
   return withMutex(async () => {
-    const { wc } = requireWindow()
+    const { w, wc } = requireWindow()
     if (idleTimer) { clearTimeout(idleTimer); idleTimer = null }
     try {
-      let result = await execJs<ActResult>(wc, buildActJs(action), EXTRACT_TIMEOUT_MS)
+      // 主框架点击：让页面脚本只【解析坐标】，再由主进程用 sendInputEvent 发真实(isTrusted)点击。
+      let result = await execJs<ActResult>(wc, buildActJs(action, { coordsOnly: action.type === 'click' }), EXTRACT_TIMEOUT_MS)
+      if (action.type === 'click' && result.ok && typeof result.clickX === 'number' && typeof result.clickY === 'number') {
+        const x = result.clickX, y = result.clickY
+        try {
+          // 真实鼠标点击：经 Chromium 输入管线，isTrusted=true，等同真人——合成 click 点不动的强校验
+          // 按钮(小红书「发布」)这样才会响应。move→down→(短延时)→up 贴近真人节奏。
+          wc.sendInputEvent({ type: 'mouseMove', x, y })
+          wc.sendInputEvent({ type: 'mouseDown', x, y, button: 'left', clickCount: 1 })
+          await new Promise(r => setTimeout(r, 30))
+          wc.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 1 })
+        } catch (e) {
+          // sendInputEvent 不可用 → 退回页面内合成点击，保证不比以前差。
+          console.warn('[web-automation] sendInputEvent failed, fallback to synthetic click:', (e as Error).message)
+          result = await execJs<ActResult>(wc, buildActJs(action, { coordsOnly: false }), EXTRACT_TIMEOUT_MS)
+        }
+      }
       // 跨框架兜底：主框架找不到目标时，元素可能在(跨域)子 iframe 里——小红书发布按钮就渲染在
       // 一个 iframe 中，主框架 querySelectorAll 永远抓不到。用 WebFrameMain 在每个子框架各自
       // 上下文里跑同一脚本（含按文本定位 + 滚动重试），取第一个成功的。
-      if (!result.ok && /找不到|失效|不存在/.test(result.error || '')) {
+      // 触发条件必须涵盖动作词(发布/提交)找不到时的 guide 文案——它说的是「发布区未挂载/
+      // 没有任何…控件」而非「找不到」。小红书的真发布按钮就在 about:blank iframe 里，主框架
+      // 必然返回「未挂载」；若这里漏掉这些词，跨框架兜底永不触发 → 永远进不了那个 iframe。
+      if (!result.ok && /找不到|失效|不存在|未挂载|没有任何/.test(result.error || '')) {
         const frameDiag: string[] = []
         try {
           const frames = wc.mainFrame.framesInSubtree
@@ -1598,7 +1913,7 @@ export async function actOnPage(action: PageAction): Promise<ActResult> {
             // 还没成功 → 探测该框架：URL + 按钮数 + 是否有「发布/提交」类按钮，定位真按钮在哪个框架。
             if (!result.ok) {
               try {
-                const probe = await execJsInFrame<string>(f, `(()=>{try{const bs=[...document.querySelectorAll('button,[role=\"button\"],input[type=\"submit\"],input[type=\"button\"]')];const pub=bs.filter(b=>/发布|提交|publish|submit/i.test((b.textContent||b.value||'').replace(/\\s+/g,''))).slice(0,3).map(b=>((b.textContent||b.value||'').replace(/\\s+/g,'')||'∅').slice(0,8)+'·'+(b.getAttribute('class')||'').slice(0,16));return JSON.stringify({u:location.host+location.pathname.slice(0,24),n:bs.length,pub})}catch(e){return JSON.stringify({err:String(e&&e.message||e).slice(0,30)})}})()`, 4000)
+                const probe = await execJsInFrame<string>(f, `(()=>{try{const bs=[...document.querySelectorAll('button,[role=\"button\"],input[type=\"submit\"],input[type=\"button\"]')];const all=[...document.querySelectorAll('button,[role=\"button\"],a,div,span,li,[class*=\"submit\"],[class*=\"publish\"],[class*=\"footer\"]')];const norm=s=>(s||'').replace(/\\s+/g,'');const pub=[];const seen={};for(const e of all){if(pub.length>=8)break;try{let own='';for(const n of e.childNodes){if(n.nodeType===3)own+=n.textContent}const t=norm(own)||norm(e.textContent||e.value||'');const cls=(e.getAttribute&&e.getAttribute('class'))||'';if(!((/(发布|发表|存草稿|暂存|提交|publish|submit)/i.test(t)&&t.length<=12)||/submit|publish/i.test(cls)))continue;const k=(e.tagName||'')+t.slice(0,8)+cls.slice(0,16);if(seen[k])continue;seen[k]=1;let rc='?';try{const r=e.getBoundingClientRect();rc=Math.round(r.width)+'x'+Math.round(r.height)}catch(x){}pub.push((e.tagName||'').toLowerCase()+'·'+(t.slice(0,8)||'∅')+'·'+cls.slice(0,18)+'|'+rc)}catch(x){}}return JSON.stringify({u:location.host+location.pathname.slice(0,24),n:bs.length,el:document.querySelectorAll('*').length,pub})}catch(e){return JSON.stringify({err:String(e&&e.message||e).slice(0,30)})}})()`, 4000)
                 frameDiag.push(probe)
               } catch (e) { frameDiag.push('{probe-timeout:' + f.url.slice(0, 40) + '}') }
             }
@@ -1613,6 +1928,69 @@ export async function actOnPage(action: PageAction): Promise<ActResult> {
       }
       const targetLabel = action.type === 'click' ? (action.ref || `text:${action.text ?? ''}`) : action.ref
       console.log('[web-automation]', action.type, targetLabel, '→', result.ok ? 'ok' : `fail: ${result.error}`)
+      // Graceful fallback: when a 发布/存草稿 click keeps failing because the publish
+      // bar can't be found in the DOM (lazy-mount this version doesn't expose) but the
+      // editor IS active (content filled), surface the window so the user finishes with
+      // one manual click. The agent CAN'T do it and telling it to "wait" just loops.
+      const isPublishClick = action.type === 'click' &&
+        /^(发布|立即发布|存草稿|暂存离开|暂存|提交|发布笔记)$/.test((action.text || '').replace(/\s+/g, ''))
+      // 闭合 Shadow 兜底：小红书(及抖音等创作平台)真发布按钮常在 closed shadow root,页面 JS/快照/text
+      // 点击都扫不到(用户可见、Tab 聚焦不到)。失败时用 CDP 穿透闭合 shadow 定位发布按钮并发真实点击;
+      // 仍发不出去则弹窗交人工(半自动)。仅对已知创作平台启用,避免普通站点误触发。
+      if (!result.ok && isPublishClick && /xiaohongshu\.com|douyin\.com/i.test(result.finalUrl || '') && /已在编辑器内|未挂载|找不到/.test(result.error || '')) {
+        const cdp = await cdpClickPublishButton(wc, w)
+        console.log('[web-automation] cdp publish fallback →', cdp.info)
+        if (cdp.clicked) {
+          // 点了不代表发布成功：小红书发布按钮可能因「未设封面/图片未传完」而禁用,点了无反应;发布也
+          // 可能是异步的。轮询校验:编辑器(标题输入框)消失 / URL 跳走 / 出现「发布成功」=真发布。最多 ~6s。
+          let published = false, detail = ''
+          for (let i = 0; i < 4 && !published; i++) {
+            await new Promise(r => setTimeout(r, 1500))
+            try {
+              const chk = await execJs<string>(wc, `(()=>{try{
+                const editorGone = !document.querySelector('input[placeholder*="标题"],[class*="titleInput"] input,[class*="title-input"] input');
+                const okToast = /发布成功|笔记发布成功|已发布|发布完成/.test(document.body.innerText||'');
+                const url = location.href;
+                // 真实成功信号:跳到成功页/作品管理页(小红书 publish/success、抖音 content/manage)
+                const urlOk = /publish\\/success|content\\/manage|\\/success(\\?|$)/i.test(url);
+                return JSON.stringify({editorGone, okToast, urlOk, url: location.pathname});
+              }catch(e){return '{}'}})()`, 2000).catch(() => '{}')
+              const o = JSON.parse(chk || '{}')
+              detail = `editorGone=${o.editorGone} toast=${o.okToast} urlOk=${o.urlOk} path=${o.url}`
+              if (o.okToast || o.urlOk || (o.editorGone && !/\/publish\/publish/.test(o.url || '/publish/publish'))) published = true
+            } catch { /* keep polling */ }
+          }
+          if (published) {
+            result = { ok: true, finalUrl: result.finalUrl, hint: `✅ 发布成功(真实点击发布按钮后页面已离开编辑器/出现成功提示)。${detail}` }
+          } else {
+            // 实测确认:小红书发布按钮在 closed shadow + 反自动化,程序点(含 CDP trusted Input)不生效,
+            // 只有真人 OS 点击能发(用户已核实自动点击没真发出去)。→ 半自动:全自动到此,最后一步弹窗交人工。
+            // 【硬性交接,让 agent 立即停手,绝不再点/不去草稿箱/不重开】——历史上正是反复重试攒出几十篇草稿。
+            surfaceWindow(w)
+            publishFailStreak = 0
+            result = {
+              ok: false, finalUrl: result.finalUrl,
+              error: `全自动已完成到发布前的最后一步(标题/正文/图片/话题都填好了)。【最后一下「发布」无法自动完成】——该创作平台对发布按钮做了反自动化(按钮在闭合 shadow、程序点击即使真实输入也不生效,只有真人鼠标点击能发,已用真实输入+精确坐标+聚焦窗口验证过)。已把浏览器窗口弹到最前。【agent 必须立即停止本轮:不要再点发布、不要去草稿箱、不要重开页面、不要重填】。请把这句原样转告用户:「内容已全部填好,请在弹出的浏览器窗口右下角手动点一下『发布』即可完成发布。」`
+            }
+          }
+        } else {
+          result = { ...result, error: (result.error || '') + ' || [cdp] ' + cdp.info }
+        }
+      }
+      if (result.ok) {
+        publishFailStreak = 0
+      } else if (isPublishClick && /已在编辑器内|未挂载|找不到/.test(result.error || '')) {
+        publishFailStreak++
+        if (publishFailStreak >= 2) {
+          surfaceWindow(w)
+          publishFailStreak = 0
+          result = {
+            ...result,
+            error: (result.error || '') +
+              ' || ⚠️ 已把浏览器窗口弹到最前并置顶：内容(标题/正文/图片/话题)已全部填好，但自动定位「发布」按钮多次失败（该按钮未渲染进可访问 DOM）。请在窗口右下角手动点一下「发布」即可完成发布——不要重开页面、不要走草稿箱。【agent 请停止自动重试，把这句原样转告用户并结束本轮，等待用户手动点发布。】'
+          }
+        }
+      }
       if (result.ok) {
         // Auto-snapshot so the agent gets fresh refs without a second tool round-trip.
         // Click can trigger navigation or DOM mutation — give the page a moment to settle.

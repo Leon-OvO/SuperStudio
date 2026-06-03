@@ -20,7 +20,13 @@ async function getDb() {
   return lanceDb
 }
 
-async function getEmbedding(text: string): Promise<number[]> {
+/** Hard ceiling for a single embedding HTTP call. A dead/slow provider that
+ *  holds the TCP connection open without ever responding would otherwise hang
+ *  the caller forever — and because callers run under the shared agentRun
+ *  semaphore, a few such hangs leak every slot and freeze 对话 + 工作台 alike. */
+const EMBEDDING_TIMEOUT_MS = 12_000
+
+async function getEmbedding(text: string, signal?: AbortSignal): Promise<number[]> {
   const settings = getSettings()
   const { getProviders } = await import('./store')
   const providers = getProviders()
@@ -30,14 +36,25 @@ async function getEmbedding(text: string): Promise<number[]> {
   // Strip trailing /v1 so users can configure baseUrl with or without it
   const baseUrl = (provider.baseUrl || 'https://api.openai.com').replace(/\/v1\/?$/, '')
   const model = settings.defaultEmbeddingModel || 'text-embedding-3-small'
-  const res = await fetch(`${baseUrl}/v1/embeddings`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${provider.apiKey}`
-    },
-    body: JSON.stringify({ model, input: text })
-  })
+  // Combine the caller's abort signal (so Stop interrupts it) with a timeout
+  // (so an unresponsive provider can never hang the request indefinitely).
+  const timeout = AbortSignal.timeout(EMBEDDING_TIMEOUT_MS)
+  const reqSignal = signal ? AbortSignal.any([signal, timeout]) : timeout
+  let res: Response
+  try {
+    res = await fetch(`${baseUrl}/v1/embeddings`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${provider.apiKey}`
+      },
+      body: JSON.stringify({ model, input: text }),
+      signal: reqSignal
+    })
+  } catch (e) {
+    if (timeout.aborted) throw new Error(`Embedding 请求超时（>${EMBEDDING_TIMEOUT_MS / 1000}s），Embedding 服务无响应`)
+    throw e
+  }
   if (!res.ok) {
     const err = await res.text().catch(() => res.statusText)
     throw new Error(`Embedding (${res.status}): ${err}`)
@@ -125,13 +142,14 @@ export async function deleteBySourceId(sourceId: string): Promise<void> {
 export async function searchKnowledge(
   query: string,
   spaceIds: string[],
-  topK = 5
+  topK = 5,
+  signal?: AbortSignal
 ): Promise<Array<{ content: string; score: number; spaceId: string; sourceId: string }>> {
   if (spaceIds.length === 0) return []
   const db = await getDb()
   try {
     const table = await db.openTable('kb_chunks')
-    const queryVec = await getEmbedding(query)
+    const queryVec = await getEmbedding(query, signal)
     const results = await table
       .vectorSearch(queryVec)
       .limit(topK * 4)

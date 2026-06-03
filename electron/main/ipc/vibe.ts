@@ -367,7 +367,7 @@ function buildVibeTools(
       description: 'Regex search across project files. Returns matching file:line snippets.',
       parameters: z.object({
         pattern: z.string(),
-        glob: z.string().nullable().describe('Optional file filter; null for all files')
+        glob: z.string().nullable().optional().describe('Optional file filter; omit or null for all files')
       }),
       execute: async ({ pattern, glob }) => {
         emit({ type: 'tool_use', toolName: 'code_grep', toolArgsPreview: pattern })
@@ -684,13 +684,55 @@ Do NOT:
 // Schema
 // ---------------------------------------------------------------------------
 
-// Some models (Claude via OpenAI-compat proxies in particular) return nested
-// arrays as JSON-encoded strings instead of actual arrays. z.preprocess
-// transparently decodes those before validation so we don't lose the turn.
-const decodeIfStringArray = (v: unknown): unknown => {
-  if (typeof v === 'string') {
-    try { return JSON.parse(v) } catch { /* leave as-is — schema will reject */ }
+// Walk a JSON-ish string and escape any double-quote that sits INSIDE a string
+// value but isn't the structural closing quote. A real closing quote is followed
+// (after whitespace) by one of : , } ] or end-of-input; anything else means the
+// quote is stray content — common when Chinese text uses ASCII " as 引号, e.g.
+// 阅读项目"材料"目录 — and must be escaped. Best-effort: only invoked after a
+// strict parse already failed, so it can only help (a still-broken result is
+// rejected exactly as before).
+function repairUnescapedQuotes(s: string): string {
+  let out = ''
+  let inStr = false
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i]
+    if (!inStr) {
+      out += c
+      if (c === '"') inStr = true
+      continue
+    }
+    if (c === '\\') {            // keep existing escape sequences verbatim
+      out += c + (s[i + 1] ?? '')
+      i++
+      continue
+    }
+    if (c === '"') {
+      let j = i + 1
+      while (j < s.length && /\s/.test(s[j])) j++
+      const next = s[j]
+      if (next === undefined || next === ':' || next === ',' || next === '}' || next === ']') {
+        out += c               // structural closing quote
+        inStr = false
+      } else {
+        out += '\\"'           // stray content quote → escape it
+      }
+      continue
+    }
+    out += c
   }
+  return out
+}
+
+// Some models (Claude via OpenAI-compat proxies in particular) return nested
+// arrays as JSON-encoded strings instead of actual arrays. Worse, when they
+// stringify they often escape quotes for only ONE level of nesting, so inner
+// content quotes arrive unescaped and a plain JSON.parse chokes. We decode
+// transparently, and on failure run repairUnescapedQuotes before retrying — so a
+// botched-but-recoverable proposal doesn't lose the whole turn.
+const decodeIfStringArray = (v: unknown): unknown => {
+  if (typeof v !== 'string') return v
+  try { return JSON.parse(v) } catch { /* fall through to repair */ }
+  try { return JSON.parse(repairUnescapedQuotes(v)) } catch { /* leave as-is — schema will reject */ }
   return v
 }
 
@@ -1012,9 +1054,10 @@ export function vibeHandlers(): void {
         let stalled = false
         let stallTimer: ReturnType<typeof setTimeout> | null = null
         const STALL_MS = 75000
-        const armStall = () => {
+        const TOOL_STALL_MS = 180000
+        const armStall = (ms = STALL_MS) => {
           if (stallTimer) clearTimeout(stallTimer)
-          stallTimer = setTimeout(() => { if (!ctl.signal.aborted) { stalled = true; ctl.abort() } }, STALL_MS)
+          stallTimer = setTimeout(() => { if (!ctl.signal.aborted) { stalled = true; ctl.abort() } }, ms)
         }
         try {
           const result = streamText({
@@ -1031,12 +1074,17 @@ export function vibeHandlers(): void {
             }
           })
           armStall()
-          for await (const chunk of result.textStream) {
+          // 看门狗盯【整条事件流】(文本/思考/工具调用/工具结果/步骤),而非只盯可见文本——
+          // 模型在生成工具调用、思考、等工具执行时本就没有文本输出,只盯文本会把正常的多步
+          // 工具流误判成「无响应」。任何事件都续期；tool-call 后的工具执行期给更长窗口。
+          for await (const part of result.fullStream) {
             if (ctl.signal.aborted) break
-            if (chunk) {
-              accumulated += chunk
-              emit({ type: 'text', text: chunk })
-              armStall()
+            armStall(part.type === 'tool-call' ? TOOL_STALL_MS : STALL_MS)
+            if (part.type === 'text-delta' && part.textDelta) {
+              accumulated += part.textDelta
+              emit({ type: 'text', text: part.textDelta })
+            } else if (part.type === 'error') {
+              runError = part.error as Error
             }
           }
           await result.finishReason.catch(() => null)
@@ -1433,6 +1481,21 @@ export function vibeHandlers(): void {
     let accumulated = ''
     let runError: Error | null = null
     let usage: { promptTokens?: number; completionTokens?: number } | null = null
+    // 看门狗：盯【整条事件流】(文本/思考/工具调用/工具结果/步骤)的活性,STALL_MS 内毫无任何事件
+    // 才算真卡死。只中断【本任务】——绝不动共享的 request signal,否则会误杀并行的其他任务。
+    // 没有它,一条挂死的流会永远占着 agentRunSemaphore 槽位,槽位耗尽后对话+工作台全卡。
+    // 注意：绝不能只盯文本 token——模型在生成工具调用、思考、或等工具执行时本就没有文本输出,
+    // 那样会把正常的多步工具流误判成「无响应」。tool-call 后的工具执行期给更长容忍窗口。
+    let stalled = false
+    let stallTimer: ReturnType<typeof setTimeout> | null = null
+    const STALL_MS = 75000
+    const TOOL_STALL_MS = 180000
+    const taskCtl = new AbortController()
+    const taskSignal = AbortSignal.any([signal, taskCtl.signal])
+    const armStall = (ms: number = STALL_MS): void => {
+      if (stallTimer) clearTimeout(stallTimer)
+      stallTimer = setTimeout(() => { if (!taskSignal.aborted) { stalled = true; taskCtl.abort() } }, ms)
+    }
     try {
       const model = createLLMClient(modelInfo.providerId, modelInfo.modelId)
       const result = streamText({
@@ -1442,22 +1505,43 @@ export function vibeHandlers(): void {
         tools,
         maxSteps: 25,
         maxRetries: 2,
-        abortSignal: signal,
+        abortSignal: taskSignal,
         onError: ({ error }) => { console.error('[vibe] task streamText error:', error); runError = error as Error }
       })
-      for await (const chunk of result.textStream) {
-        if (signal.aborted) break
-        if (chunk) { accumulated += chunk; emit({ type: 'text', text: chunk, taskId: task.id }) }
+      armStall()
+      for await (const part of result.fullStream) {
+        if (taskSignal.aborted) break
+        // 任何事件都算「活着」并续期；工具执行(tool-call→tool-result)给更长窗口。
+        armStall(part.type === 'tool-call' ? TOOL_STALL_MS : STALL_MS)
+        if (part.type === 'text-delta' && part.textDelta) {
+          accumulated += part.textDelta
+          emit({ type: 'text', text: part.textDelta, taskId: task.id })
+        } else if (part.type === 'error') {
+          runError = part.error as Error
+        }
       }
       await result.finishReason.catch(() => null)
       usage = await result.usage.catch(() => null)
     } catch (err) {
       runError = err as Error
+    } finally {
+      if (stallTimer) clearTimeout(stallTimer)
     }
 
     // Release busy state only if this employee has no other active task here.
     const releaseEmp = () => { if (taskEmp && !hasOtherActiveTask(request.id, taskEmp.id, task.id)) setEmployeeStatus(taskEmp.id, 'idle') }
 
+    // Stall watchdog tripped → mark this task as failed (not cancelled) so the
+    // slot is released and the run surfaces a clear error instead of hanging.
+    if (stalled) {
+      const msg = 'AI 长时间无响应（可能是模型、网络或代理异常），已自动停止该任务。请重试，或到「设置 → 模型 / 网络代理」检查配置。'
+      updateTaskStatus(task.id, 'error', msg)
+      await withFileLock('tasksmd:' + request.id, () => writeTasksMd({ projectPath, slug: request.slug, tasks: listTasks(request.id) }))
+      emit({ type: 'task_status', taskId: task.id, taskStatus: 'error', text: msg })
+      appendMessage({ requestId: request.id, role: 'system', taskId: task.id, content: `任务失败：${msg}`, isError: true })
+      releaseEmp()
+      return 'error'
+    }
     if (signal.aborted) {
       updateTaskStatus(task.id, 'pending')
       await withFileLock('tasksmd:' + request.id, () => writeTasksMd({ projectPath, slug: request.slug, tasks: listTasks(request.id) }))

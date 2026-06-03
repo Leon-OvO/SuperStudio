@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { scrubAddresses } from '../../../../shared/scrub'
 import type {
   FileTreeNode, VibeProgressEvent, VibeRequestInfo, VibeTaskInfo, VibeMessageInfo, VibeProjectInfo,
   ShellOpenTarget
@@ -182,12 +183,17 @@ export const useVibeStore = create<VibeState>((set, get) => ({
       id: `live-${Date.now()}-${Math.random()}`,
       requestId: s.activeRequestId ?? '',
       role: e.type === 'text' ? 'assistant' : (e.type === 'system' ? 'system' : 'tool'),
-      content:
+      // Scrub URLs/IPs/domains from anything surfaced in the live run log — tool
+      // arg/result previews and streamed text can carry the provider host or
+      // fetched URLs. Only the transient `live-` messages are affected; the
+      // final DB-persisted messages (re-fetched on done) stay faithful.
+      content: scrubAddresses(
         e.type === 'text' ? (e.text ?? '') :
         e.type === 'tool_use' ? (e.toolArgsPreview ?? '') :
         e.type === 'tool_result' ? (e.toolResultPreview ?? '') :
         e.type === 'system' ? (e.text ?? '') :
-        '',
+        ''
+      ),
       toolName: e.toolName ?? null,
       toolArgs: null,
       isError: !!e.isError,
@@ -198,7 +204,7 @@ export const useVibeStore = create<VibeState>((set, get) => ({
     if (e.type === 'text' && s.messages.length > 0) {
       const last = s.messages[s.messages.length - 1]
       if (last.role === 'assistant' && last.taskId === (e.taskId ?? null) && last.id.startsWith('live-')) {
-        const merged = { ...last, content: last.content + (e.text ?? '') }
+        const merged = { ...last, content: last.content + scrubAddresses(e.text ?? '') }
         set({ messages: [...s.messages.slice(0, -1), merged] })
         return
       }

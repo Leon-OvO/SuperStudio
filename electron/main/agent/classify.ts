@@ -65,15 +65,22 @@ const VIBE_VALID: VibeIntent[] = ['chat', 'explore', 'bugfix', 'change']
 const VIBE_CLASSIFIER_SYSTEM = `你是一个研发意图分类器。判断用户在代码项目里想做什么，只输出 JSON：{"intent":"<label>"}，不要解释。
 
 标签定义：
-- explore: 想理解/调研现有代码（"这段代码怎么工作""为什么这样设计""找一下哪里处理了登录"）—— 只读，不改代码。
-- bugfix: 报告一个故障/错误/异常行为要修（"点击没反应""报错 xxx""样式错位""崩溃了"）。
-- change: 要新增功能或改造（"加一个深色模式按钮""把所有 var 改成 let""为页面加 SEO meta"）—— 需要拆解成任务实现。
-- chat: 一般问答/闲聊/与本项目代码无关的问题（"你好""React 和 Vue 哪个好"）。
+- change: 要写代码 / 改代码 / 从零开发（新增功能、改造现有代码、从零做一个新项目·网站·应用、实现一个完整功能）—— 需要拆解成多步任务实现。
+- bugfix: 报告一个已存在的故障/错误/异常行为要修（"点击没反应""报错 xxx""样式错位""崩溃了"）。
+- explore: 纯只读地理解/调研现有代码，且明确不需要改动（"这段代码怎么工作""为什么这样设计""找一下哪里处理了登录"）。
+- chat: 打招呼、与本项目代码无关的闲聊、或纯知识问答（"你好""React 和 Vue 哪个好""tailwind 怎么写渐变"）。
+
+判定优先级（重要）：
+1. 只要请求最终需要**实际写或改代码**（哪怕同时夹带大量背景说明、项目管理/流程要求、长篇描述，或要求"先调研/先复习资料再实现"），一律归 change —— 这些前置说明不改变"动手做"的本质。
+2. explore 仅用于用户明确"我只想看懂/调研、先别动代码"的纯只读场景。
+3. chat 仅用于打招呼 / 与代码无关 / 纯知识问答。
+4. 在 change 与 explore（或 change 与 chat）之间拿不准时，优先 change。
 
 示例：
-用户：这个项目的路由是怎么配置的 → {"intent":"explore"}
+用户：这个项目的路由是怎么配置的，先别改 → {"intent":"explore"}
 用户：保存按钮点了没反应，控制台报 undefined → {"intent":"bugfix"}
 用户：帮我加一个导出 PDF 的功能 → {"intent":"change"}
+用户：我要做一个面向中职学生的教学网站，要有教师端实时大屏、学生在线练习与量化统计、实训提交，请先复习资料再制定开发计划逐步实现 → {"intent":"change"}
 用户：顺便问下 tailwind 怎么写渐变 → {"intent":"chat"}`
 
 /**
@@ -95,7 +102,9 @@ export async function classifyVibeIntent(
       const { text } = await generateText({
         model: llm,
         system: VIBE_CLASSIFIER_SYSTEM,
-        prompt: message.slice(0, 400),
+        // 放宽到 1200 字：长需求里的"实现要求"往往在后半段，截太短会只看到
+        // 开头的背景/管理描述而误判成 chat，错过 change。
+        prompt: message.slice(0, 1200),
         temperature: 0,
         maxTokens: 30,
         abortSignal: controller.signal

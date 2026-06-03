@@ -9,6 +9,7 @@ import { generateVideo } from '../services/video'
 import { readFile, writeFile } from '../services/fileops'
 import { searchWeb } from '../services/search'
 import { openPage, snapshotPage, actOnPage, uploadToPage } from '../services/web-browse'
+import { publishXiaohongshuNote } from '../services/web-publish-playwright'
 import { saveGalleryItem } from '../services/gallery'
 import { mcpManager, type McpTool } from '../services/mcp'
 import { getActiveSkillsForScenario, type InstalledSkill } from '../services/skills-db'
@@ -86,7 +87,15 @@ export async function runAgent(
   // Bound global concurrency: a burst of scheduled tasks (or many windows) must
   // not spawn unbounded simultaneous LLM streams + browsers. The run is already
   // registered in runningAgents, so Stop/supersede works while it waits here.
-  const releaseSlot = await agentRunSemaphore.acquire()
+  let releaseSlot: () => void = () => {}
+  try {
+    releaseSlot = await agentRunSemaphore.acquire(abort.signal)
+  } catch {
+    // Stopped or superseded while queued for a slot — the renderer is already
+    // unblocked by handleStop, so stay silent and just deregister.
+    if (runningAgents.get(sessionId) === abort) runningAgents.delete(sessionId)
+    return
+  }
   if (isStaleRun()) {
     releaseSlot()
     if (runningAgents.get(sessionId) === abort) runningAgents.delete(sessionId)
@@ -113,40 +122,44 @@ export async function runAgent(
     return
   }
 
-  // Fetch MCP tools BEFORE building the system prompt so we can describe
-  // them inline + decide whether to suppress overlapping builtin tools.
-  const mcpTools = await mcpManager.listAllTools().catch(err => {
-    console.warn('[Agent] MCP listAllTools failed:', (err as Error).message)
-    return [] as McpTool[]
-  })
-
-  // Build system prompt with knowledge context (mounted spaces take priority over global)
-  const kbContext = await buildKbContext(message, sessionId, settings, mountedSpaceIds)
-
-  // Gather skills configured for the chat scenario — each one contributes a
-  // system prompt fragment and (optionally) restricts the tool list.
-  let activeSkills: InstalledSkill[] = []
+  // Everything past slot acquisition runs inside this try so its `finally`
+  // (far below) ALWAYS releases the slot — even if MCP/KB/prompt building
+  // throws. A leaked slot here would permanently shrink the shared pool and,
+  // once drained, freeze every later 对话 + 工作台 run at acquire().
   try {
-    activeSkills = getActiveSkillsForScenario('chat')
-    if (activeSkills.length) {
-      console.log(`[Agent] active chat skills: ${activeSkills.map(s => s.id).join(', ')}`)
+    // Fetch MCP tools BEFORE building the system prompt so we can describe
+    // them inline + decide whether to suppress overlapping builtin tools.
+    const mcpTools = await mcpManager.listAllTools().catch(err => {
+      console.warn('[Agent] MCP listAllTools failed:', (err as Error).message)
+      return [] as McpTool[]
+    })
+
+    // Build system prompt with knowledge context (mounted spaces take priority over global)
+    const kbContext = await buildKbContext(message, sessionId, settings, mountedSpaceIds, abort.signal)
+
+    // Gather skills configured for the chat scenario — each one contributes a
+    // system prompt fragment and (optionally) restricts the tool list.
+    let activeSkills: InstalledSkill[] = []
+    try {
+      activeSkills = getActiveSkillsForScenario('chat')
+      if (activeSkills.length) {
+        console.log(`[Agent] active chat skills: ${activeSkills.map(s => s.id).join(', ')}`)
+      }
+    } catch (e) {
+      console.warn('[Agent] failed to load active skills:', (e as Error).message)
     }
-  } catch (e) {
-    console.warn('[Agent] failed to load active skills:', (e as Error).message)
-  }
-  // Set below after computeToolAllowSet. When web_snapshot is allowed (i.e.
-  // 网页操作 skill is active), web_open auto-includes the snapshot in its
-  // return — fixes a class of failures where the model treats web_open's
-  // 12K-char text result as user-facing content, narrates "现在获取页面快照…"
-  // then stops with finish_reason='stop' instead of calling web_snapshot.
-  let webSnapshotAvailable = false
-  const systemPrompt = buildSystemPrompt(kbContext, mcpTools, activeSkills, scheduledContext)
+    // Set below after computeToolAllowSet. When web_snapshot is allowed (i.e.
+    // 网页操作 skill is active), web_open auto-includes the snapshot in its
+    // return — fixes a class of failures where the model treats web_open's
+    // 12K-char text result as user-facing content, narrates "现在获取页面快照…"
+    // then stops with finish_reason='stop' instead of calling web_snapshot.
+    let webSnapshotAvailable = false
+    const systemPrompt = buildSystemPrompt(kbContext, mcpTools, activeSkills, scheduledContext)
 
-  const toolCallLog: Array<{ toolName: string; args: unknown; result: unknown }> = []
-  let stepIndex = 0
+    const toolCallLog: Array<{ toolName: string; args: unknown; result: unknown }> = []
+    let stepIndex = 0
 
-  let streamErr: Error | null = null
-  try {
+    let streamErr: Error | null = null
     if (!effectiveProviderId || !effectiveModel) {
       throw new Error('请先在「设置 → 默认模型」配置对话模型，或在对话顶部下拉框选一个模型。')
     }
@@ -391,8 +404,8 @@ export async function runAgent(
             'On success ALSO returns a fresh snapshot (`elements`, `title`, `finalUrl`) — use those refs directly for the next action; do NOT chain a web_snapshot call. ' +
             'Returns { ok, finalUrl, error?, elements?, title? }.',
           parameters: z.object({
-            ref: z.string().nullable().describe('Element ref from a recent snapshot, e.g. "e12". Preferred when available.'),
-            text: z.string().nullable().describe('Exact visible text of the button/link to click (e.g. "发布"). Fallback when the element has no ref. Pass null when using ref.')
+            ref: z.string().nullable().optional().describe('Element ref from a recent snapshot, e.g. "e12". Preferred when available. Omit (or null) when clicking by text.'),
+            text: z.string().nullable().optional().describe('Exact visible text of the button/link to click (e.g. "发布"). Fallback when the element has no ref. Omit (or null) when using ref.')
           }),
           execute: async ({ ref, text }) => {
             const myIdx = stepIndex++
@@ -416,13 +429,16 @@ export async function runAgent(
           description:
             'Fill text into an input / textarea / contenteditable, or pick a <select> option, on the open page by `ref`. ' +
             'Uses the native value setter + input/change events for inputs, execCommand("insertText") for rich-text editors (Quill/Slate/Draft), with readback verification. ' +
+            'REPLACES the whole field (idempotent): it clears existing content first, so calling web_fill again OVERWRITES — it never appends. ' +
+            'To CLEAR a field, fill value="". ' +
+            'CRITICAL — do NOT re-fill to "finish" long text: when ok=true the ENTIRE value was written. The snapshot/readback only echoes a TRUNCATED PREFIX of long fields (a display cap, not real truncation); seeing a short readback does NOT mean the fill was cut off. Filling "the rest" only corrupts/duplicates the content. If unsure, trust ok=true and move on. ' +
             'Set kind="select" to choose a <select> option (value matches the option value OR its visible label); otherwise leave kind null for normal text fields. ' +
             'On success ALSO returns a fresh snapshot (`elements`, `title`, `finalUrl`) — the next ref (e.g. the "发布" button) is in there; do NOT chain a web_snapshot call. ' +
             'Returns { ok, finalUrl, error?, elements?, title? }.',
           parameters: z.object({
             ref: z.string().describe('Element ref from web_snapshot'),
             value: z.string().describe('Text to type, or the option value/label when kind="select"'),
-            kind: z.enum(['fill', 'select']).nullable().describe('"select" to pick a <select> option; null/"fill" for text inputs')
+            kind: z.enum(['fill', 'select']).nullable().optional().describe('"select" to pick a <select> option; omit/null/"fill" for text inputs')
           }),
           execute: async ({ ref, value, kind }) => {
             const myIdx = stepIndex++
@@ -484,12 +500,49 @@ export async function runAgent(
             }
           }
         }),
+        xhs_publish: tool({
+          description:
+            '【小红书图文一键发布·首选】用真实系统浏览器(Playwright)全自动发布小红书图文笔记:自己开浏览器→(首次需用户扫码登录)→传图→填标题正文话题→点发布→等成功页。' +
+            '比 web_open/web_upload/web_click 那套更可靠——小红书发布按钮反自动化,Electron 内置点击点不发出去。**发小红书图文优先用本工具**,把准备好的内容一次性传进来。' +
+            'imagePaths 必须本地绝对路径(用户附件路径或 image_generate 的 path)。title 上限 20 字会自动截断。' +
+            '返回 { ok, finalUrl, error?, hint? }:ok=true 即已发布。若 error 说需手动确认/扫码登录,转告用户照做,不要重复调用以免重复发。',
+          parameters: z.object({
+            imagePaths: z.array(z.string()).describe('本地绝对路径的图片(至少 1 张)'),
+            title: z.string().describe('笔记标题(≤20 字,超长自动截断)'),
+            body: z.string().describe('笔记正文'),
+            topics: z.array(z.string()).nullable().optional().describe('话题标签(不带 #,可选)')
+          }),
+          execute: async ({ imagePaths, title, body, topics }) => {
+            const myIdx = stepIndex++
+            // 路径沙箱:同 web_upload,只允许用户附件/本应用生成的文件,防注入页面外泄本地文件。
+            const unapproved = (imagePaths || []).filter(p => !isApproved(p))
+            if (unapproved.length) {
+              const msg = `路径未授权，已拒绝:${unapproved.join(', ')}。只能用用户附加或本应用生成的图片。`
+              emit({ stepIndex: myIdx, stepName: '发布小红书', toolName: 'xhs_publish', status: 'error', message: msg })
+              toolCallLog.push({ toolName: 'xhs_publish', args: { imagePaths, title }, result: { error: msg } })
+              return `[xhs_publish error] ${msg}`
+            }
+            if (abort.signal.aborted) return '[xhs_publish aborted]'
+            emit({ stepIndex: myIdx, stepName: '发布小红书', toolName: 'xhs_publish', status: 'running', message: `${imagePaths.length} 图 · ${title.slice(0, 16)}` })
+            try {
+              const result = await publishXiaohongshuNote({ imagePaths, title, body, topics: topics ?? undefined })
+              emit({ stepIndex: myIdx, stepName: '发布小红书', toolName: 'xhs_publish', status: result.ok ? 'done' : 'error', message: result.error || result.hint })
+              toolCallLog.push({ toolName: 'xhs_publish', args: { imagePaths, title, topics }, result })
+              return result
+            } catch (err) {
+              const msg = (err as Error).message || String(err)
+              emit({ stepIndex: myIdx, stepName: '发布小红书', toolName: 'xhs_publish', status: 'error', message: msg })
+              toolCallLog.push({ toolName: 'xhs_publish', args: { imagePaths, title }, result: { error: msg } })
+              return `[xhs_publish error] ${msg}`
+            }
+          }
+        }),
         image_generate: tool({
           description: 'Generate one or more images from a text prompt. Pass null for n/size to use defaults (1 image at 1024x1024). n is clamped to 1-4. Returns { images: [{ path }] }; each `path` can be passed directly to web_upload.filePaths or video_generate.referenceImagePath. Prefer a rich, detailed prompt (subject, style, composition, lighting) over the user\'s terse wording. The UI renders images inline — do not echo paths or wrap them in markdown.',
           parameters: z.object({
             prompt: z.string().describe('Detailed image generation prompt'),
-            n: z.number().nullable().describe('Number of images, 1-4 (clamped). Pass null for default 1.'),
-            size: z.string().nullable().describe('Image size like 1024x1024. Pass null for default.')
+            n: z.number().nullable().optional().describe('Number of images, 1-4 (clamped). Omit or null for default 1.'),
+            size: z.string().nullable().optional().describe('Image size like 1024x1024. Omit or null for default.')
           }),
           execute: async ({ prompt, n, size }) => {
             const myIdx = stepIndex++
@@ -523,7 +576,7 @@ export async function runAgent(
           description: 'Generate a video from a text prompt or a reference image (image-to-video). Pass null for referenceImagePath for pure text-to-video; you may pass a `path` returned by image_generate to animate that image. Returns { path }. The UI renders the video inline — do not echo the path or wrap it in markdown.',
           parameters: z.object({
             prompt: z.string().describe('Video generation prompt'),
-            referenceImagePath: z.string().nullable().describe('Path to reference image for image-to-video, or null for text-to-video')
+            referenceImagePath: z.string().nullable().optional().describe('Path to reference image for image-to-video; omit or null for text-to-video')
           }),
           execute: async ({ prompt, referenceImagePath }) => {
             const myIdx = stepIndex++
@@ -682,9 +735,9 @@ export async function runAgent(
           question: z.string().describe('The single question to ask'),
           options: z.array(z.object({
             label: z.string().describe('Short button text'),
-            description: z.string().nullable().describe('Optional one-line clarification, or null')
+            description: z.string().nullable().optional().describe('Optional one-line clarification; omit or null')
           })).describe('2-4 mutually-exclusive options'),
-          allowCustom: z.boolean().nullable().describe('Also show a free-text "其他…" input. Pass null = true.')
+          allowCustom: z.boolean().nullable().optional().describe('Also show a free-text "其他…" input. Omit or null = true.')
         }),
         execute: async ({ question, options, allowCustom }) => {
           const myIdx = stepIndex++
@@ -1273,7 +1326,7 @@ function buildSystemPrompt(kbContext: string, mcpTools: McpTool[] = [], skills: 
  *  many spaces are mounted/enabled (each chunk is ~1600 chars). */
 const KB_CONTEXT_MAX_CHARS = 6000
 
-async function buildKbContext(message: string, sessionId: string, _settings: AppSettings, mountedSpaceIds: string[] = []): Promise<string> {
+async function buildKbContext(message: string, sessionId: string, _settings: AppSettings, mountedSpaceIds: string[] = [], signal?: AbortSignal): Promise<string> {
   try {
     const { searchKnowledge } = await import('../services/knowledge')
 
@@ -1294,8 +1347,8 @@ async function buildKbContext(message: string, sessionId: string, _settings: App
     const globalIds = globalRows.map(r => r.id).filter(id => !mountedSpaceIds.includes(id))
 
     const [mounted, global] = await Promise.all([
-      mountedSpaceIds.length ? searchKnowledge(query, mountedSpaceIds) : Promise.resolve([]),
-      globalIds.length ? searchKnowledge(query, globalIds) : Promise.resolve([])
+      mountedSpaceIds.length ? searchKnowledge(query, mountedSpaceIds, 5, signal) : Promise.resolve([]),
+      globalIds.length ? searchKnowledge(query, globalIds, 5, signal) : Promise.resolve([])
     ])
 
     // Merge + rank globally so the best chunks win regardless of space; mounted

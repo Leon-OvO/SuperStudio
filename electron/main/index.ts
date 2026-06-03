@@ -568,6 +568,11 @@ app.on('before-quit', async () => {
     const { closeBrowse } = await import('./services/web-browse')
     closeBrowse()
   } catch { /* best-effort */ }
+  // Close any Playwright publish browsers (真实系统 Chrome/Edge) so they don't linger.
+  try {
+    const { closePublishBrowsers } = await import('./services/web-publish-playwright')
+    await closePublishBrowsers()
+  } catch { /* best-effort */ }
   // Shut down any spawned MCP subprocesses cleanly
   const { mcpManager } = await import('./services/mcp')
   await mcpManager.disconnectAll().catch(() => {})

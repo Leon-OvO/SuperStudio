@@ -2,6 +2,8 @@ import { useChatStore } from '../../stores/chat'
 import { CheckCircle, XCircle, Loader2, ChevronDown, ChevronUp, Film } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import { cn } from '../../lib/utils'
+import { ThinkingConsole } from '../../components/ui/ThinkingConsole'
+import { scrubAddresses } from '../../../../shared/scrub'
 import type { VideoProgressEvent } from '../../../../shared/ipc-types'
 
 export function AgentProgress() {
@@ -11,6 +13,12 @@ export function AgentProgress() {
   const currentSteps = activeSessionId ? (stepsBySession[activeSessionId] ?? []) : []
   const [expanded, setExpanded] = useState(true)
   const [videoProgress, setVideoProgress] = useState<VideoProgressEvent | null>(null)
+  // Run start (per viewed session) — drives the "已用时" clock + resets the
+  // ThinkingConsole buffer when the run (re)starts or the user switches session.
+  const [startedAt, setStartedAt] = useState<number | undefined>(undefined)
+  useEffect(() => {
+    setStartedAt(isRunning ? Date.now() : undefined)
+  }, [isRunning, activeSessionId])
 
   useEffect(() => {
     const unsub = window.api.onVideoProgress((event: unknown) => {
@@ -43,10 +51,20 @@ export function AgentProgress() {
       >
         {isRunning && <Loader2 size={14} className="animate-spin text-primary shrink-0" />}
         <span className="text-xs text-muted-foreground flex-1 truncate">
-          {isRunning && latestStep ? `${latestStep.name}…` : 'Agent 已完成'}
+          {latestStep ? `${scrubAddresses(latestStep.name)}…` : '正在思考…'}
         </span>
         {expanded ? <ChevronDown size={12} /> : <ChevronUp size={12} />}
       </div>
+
+      {/* Always-on "is working" log — keeps the panel alive before the first
+          step arrives (or for pure-text turns with no tool calls). */}
+      <ThinkingConsole
+        active={isRunning}
+        variant="chat"
+        startedAt={startedAt}
+        liveLine={latestStep ? scrubAddresses(latestStep.message || latestStep.name) : undefined}
+        className="mt-2"
+      />
 
       {expanded && (
         <div className="mt-2 space-y-1">
@@ -57,10 +75,10 @@ export function AgentProgress() {
               {step.status === 'error' && <XCircle size={12} className="text-destructive mt-0.5 shrink-0" />}
               <div className="flex-1 min-w-0">
                 <span className={cn('font-medium', step.status === 'done' && 'text-muted-foreground')}>
-                  {step.name}
+                  {scrubAddresses(step.name)}
                 </span>
                 {step.message && (
-                  <span className="ml-1 text-muted-foreground truncate">{step.message}</span>
+                  <span className="ml-1 text-muted-foreground truncate">{scrubAddresses(step.message)}</span>
                 )}
                 {/* Video polling progress */}
                 {step.toolName === 'video_generate' && step.status === 'running' && videoProgress && (

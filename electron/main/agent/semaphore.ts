@@ -13,12 +13,27 @@ export class Semaphore {
 
   constructor(private readonly max: number) {}
 
-  private take(): Promise<void> {
+  private take(signal?: AbortSignal): Promise<void> {
     if (this.active < this.max) {
       this.active++
       return Promise.resolve()
     }
-    return new Promise<void>(resolve => this.queue.push(resolve))
+    if (signal?.aborted) return Promise.reject(new DOMException('Aborted', 'AbortError'))
+    return new Promise<void>((resolve, reject) => {
+      const grant = (): void => {
+        signal?.removeEventListener('abort', onAbort)
+        resolve()
+      }
+      const onAbort = (): void => {
+        // Drop this waiter from the queue so give() never hands it a slot it
+        // can no longer use (which would otherwise leak that slot forever).
+        const i = this.queue.indexOf(grant)
+        if (i >= 0) this.queue.splice(i, 1)
+        reject(new DOMException('Aborted', 'AbortError'))
+      }
+      this.queue.push(grant)
+      signal?.addEventListener('abort', onAbort, { once: true })
+    })
   }
 
   private give(): void {
@@ -36,8 +51,8 @@ export class Semaphore {
    * function — call it (e.g. in a `finally`) to free the slot. Use this when a
    * surrounding try/finally already exists and wrapping in `run` is awkward.
    */
-  async acquire(): Promise<() => void> {
-    await this.take()
+  async acquire(signal?: AbortSignal): Promise<() => void> {
+    await this.take(signal)
     let released = false
     return () => {
       if (released) return

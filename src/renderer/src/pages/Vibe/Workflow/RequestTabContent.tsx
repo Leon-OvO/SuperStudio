@@ -5,6 +5,7 @@ import { TaskRow } from './TaskRow'
 import { MessageBubble } from './MessageBubble'
 import { MessagesMinimap } from './MessagesMinimap'
 import { Select } from '../../../components/ui/Select'
+import { ThinkingConsole } from '../../../components/ui/ThinkingConsole'
 import { formatCostUsd, formatTokens } from '../../../lib/format-cost'
 import type { VibeRequestInfo, VibeTaskInfo, VibeMessageInfo, VibeIntent } from '../../../../../shared/ipc-types'
 import { useEmployeesStore } from '../../../stores/employees'
@@ -38,6 +39,12 @@ export function RequestTabContent({
   const [input, setInput] = useState('')
   // Mode: 'auto' = let the backend classify; a VibeIntent = manual lock.
   const [mode, setMode] = useState<'auto' | VibeIntent>('auto')
+  // Run start — drives the ThinkingConsole "已用时" clock; reset whenever the
+  // run (re)starts (e.g. propose → apply) or the user switches request tabs.
+  const [runStartedAt, setRunStartedAt] = useState<number | undefined>(undefined)
+  useEffect(() => {
+    setRunStartedAt(running ? Date.now() : undefined)
+  }, [running, request?.id])
   const messagesRef = useRef<HTMLDivElement>(null)
   const messagesContentRef = useRef<HTMLDivElement>(null)
   const taRef = useRef<HTMLTextAreaElement>(null)
@@ -221,7 +228,8 @@ export function RequestTabContent({
 
       {/* Running banner */}
       {running && (
-        <div className="px-5 py-2.5 bg-primary/5 border-b border-primary/20 flex items-center gap-2.5 shrink-0">
+        <div className="px-5 py-2.5 bg-primary/5 border-b border-primary/20 shrink-0 space-y-2">
+          <div className="flex items-center gap-2.5">
           {running === 'chat' ? (
             <>
               <MessageSquare size={14} className="text-slate-500 animate-pulse shrink-0" />
@@ -274,6 +282,10 @@ export function RequestTabContent({
           <button onClick={onStop} className="text-xs px-2 py-1 rounded text-destructive hover:bg-destructive/10">
             <Square size={10} className="inline mr-1" />停止
           </button>
+          </div>
+          {/* Rolling activity log — keeps the propose gap (forced single tool
+              call, ~10-30s of no text) from looking frozen. */}
+          <ThinkingConsole active variant={running} startedAt={runStartedAt} />
         </div>
       )}
 
