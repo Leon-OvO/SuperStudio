@@ -1048,14 +1048,19 @@ export function vibeHandlers(): void {
         let accumulated = ''
         let runError: Error | null = null
         let usage: { promptTokens?: number; completionTokens?: number } | null = null
-        // 看门狗：若 STALL_MS 内没有任何新输出（典型「一直加载、不吐字、也不报错」），
+        // 看门狗：若窗口内没有任何新输出（典型「一直加载、不吐字、也不报错」），
         // 主动中断并报错——否则前端会无限期干等，既无内容也无任何错误体现。每来一段
         // 输出就续期；用户主动停止与“卡死”用 stalled 区分。
         let stalled = false
         let stallTimer: ReturnType<typeof setTimeout> | null = null
-        const STALL_MS = 75000
-        const TOOL_STALL_MS = 180000
-        const armStall = (ms = STALL_MS) => {
+        // 两档静默窗口：
+        //  STREAM_GAP_MS  —— 文本正在流式输出、token 间的最长静默（真在吐字却突然卡住才该快停）。
+        //  SILENT_WORK_MS —— 模型「在干活但不吐字」时的最长静默：首 token(TTFT)、思考、工具执行、
+        //                    以及工具结果后的下一轮推理（上下文越滚越大、经代理更慢）。这些阶段本就没有
+        //                    可见输出，给足窗口，否则慢模型/大上下文/缓冲型代理会频繁被误判为「无响应」。
+        const STREAM_GAP_MS = 120000
+        const SILENT_WORK_MS = 240000
+        const armStall = (ms = SILENT_WORK_MS) => {
           if (stallTimer) clearTimeout(stallTimer)
           stallTimer = setTimeout(() => { if (!ctl.signal.aborted) { stalled = true; ctl.abort() } }, ms)
         }
@@ -1079,7 +1084,9 @@ export function vibeHandlers(): void {
           // 工具流误判成「无响应」。任何事件都续期；tool-call 后的工具执行期给更长窗口。
           for await (const part of result.fullStream) {
             if (ctl.signal.aborted) break
-            armStall(part.type === 'tool-call' ? TOOL_STALL_MS : STALL_MS)
+            // 只有「正在吐字时的 token 间隙」用紧窗口；其余（思考/工具调用/工具执行/
+            // 工具结果后的下一轮推理）都属「干活不吐字」，给宽窗口。
+            armStall(part.type === 'text-delta' ? STREAM_GAP_MS : SILENT_WORK_MS)
             if (part.type === 'text-delta' && part.textDelta) {
               accumulated += part.textDelta
               emit({ type: 'text', text: part.textDelta })
@@ -1481,18 +1488,22 @@ export function vibeHandlers(): void {
     let accumulated = ''
     let runError: Error | null = null
     let usage: { promptTokens?: number; completionTokens?: number } | null = null
-    // 看门狗：盯【整条事件流】(文本/思考/工具调用/工具结果/步骤)的活性,STALL_MS 内毫无任何事件
+    // 看门狗：盯【整条事件流】(文本/思考/工具调用/工具结果/步骤)的活性,窗口内毫无任何事件
     // 才算真卡死。只中断【本任务】——绝不动共享的 request signal,否则会误杀并行的其他任务。
     // 没有它,一条挂死的流会永远占着 agentRunSemaphore 槽位,槽位耗尽后对话+工作台全卡。
     // 注意：绝不能只盯文本 token——模型在生成工具调用、思考、或等工具执行时本就没有文本输出,
     // 那样会把正常的多步工具流误判成「无响应」。tool-call 后的工具执行期给更长容忍窗口。
     let stalled = false
     let stallTimer: ReturnType<typeof setTimeout> | null = null
-    const STALL_MS = 75000
-    const TOOL_STALL_MS = 180000
+    // 两档静默窗口（语义同 runStreamMode）：STREAM_GAP_MS 只用于「文本已在流式输出却突然
+    // 静默」；SILENT_WORK_MS 覆盖「模型在干活但不吐字」的所有阶段——首 token、思考、工具执行、
+    // 以及工具结果后的下一轮推理。apply 多步任务上下文越滚越大，工具结果后那轮推理最易超时，
+    // 之前只给 75s 是「经常误判无响应」的主因。
+    const STREAM_GAP_MS = 120000
+    const SILENT_WORK_MS = 240000
     const taskCtl = new AbortController()
     const taskSignal = AbortSignal.any([signal, taskCtl.signal])
-    const armStall = (ms: number = STALL_MS): void => {
+    const armStall = (ms: number = SILENT_WORK_MS): void => {
       if (stallTimer) clearTimeout(stallTimer)
       stallTimer = setTimeout(() => { if (!taskSignal.aborted) { stalled = true; taskCtl.abort() } }, ms)
     }
@@ -1511,8 +1522,9 @@ export function vibeHandlers(): void {
       armStall()
       for await (const part of result.fullStream) {
         if (taskSignal.aborted) break
-        // 任何事件都算「活着」并续期；工具执行(tool-call→tool-result)给更长窗口。
-        armStall(part.type === 'tool-call' ? TOOL_STALL_MS : STALL_MS)
+        // 只有「正在吐字时的 token 间隙」用紧窗口；思考/工具调用/工具执行/工具结果后的
+        // 下一轮推理都属「干活不吐字」，给宽窗口（否则大上下文重推理会被误判）。
+        armStall(part.type === 'text-delta' ? STREAM_GAP_MS : SILENT_WORK_MS)
         if (part.type === 'text-delta' && part.textDelta) {
           accumulated += part.textDelta
           emit({ type: 'text', text: part.textDelta, taskId: task.id })
