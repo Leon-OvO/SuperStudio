@@ -306,6 +306,20 @@ function ensureWindow(visible: boolean): BrowserWindow {
   // login flows (incl. bilibili h5) happen in-page or via full redirect, so
   // this doesn't block the common case.
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  // Block page-initiated navigations to non-web schemes. Pages often deep-link to
+  // native apps via custom protocols (bitbrowser://, weixin://, tg://, mailto:…);
+  // Chromium hands an unknown scheme to the OS, which on Win11 pops a "选择要打开
+  // 此链接的应用" dialog mid-automation. This surface only ever wants the web, so
+  // we drop anything outside http/https/about/data/blob. Our own programmatic
+  // loadURL() does NOT emit will-navigate, so normal browsing is unaffected.
+  const blockNonWebNav = (e: Electron.Event, url: string): void => {
+    if (!/^(https?|about|data|blob):/i.test(url)) {
+      e.preventDefault()
+      console.warn('[web-browse] blocked non-web navigation:', url.slice(0, 80))
+    }
+  }
+  win.webContents.on('will-navigate', blockNonWebNav)
+  win.webContents.on('will-redirect', blockNonWebNav)
   // Re-inject the SuperStudio chrome bar after every navigation (dom-ready wipes
   // the previous page's DOM). Best-effort: a failed inject must never block load.
   win.webContents.on('dom-ready', () => {

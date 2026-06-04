@@ -409,9 +409,16 @@ function MessageBubble({
             ) : (
               <AssistantAnswer content={answer} duplicatePaths={[...imageArtifacts, ...videoArtifacts]} />
             )
-          ) : !reasoning && (
-            <p className="whitespace-pre-wrap break-words">{message.content}</p>
-          )}
+          ) : !reasoning ? (
+            // No answer and no reasoning yet. If this is the live run still waiting
+            // on its first token (e.g. Opus 4.8 thinking before it streams), show an
+            // immediate "思考中…" affordance instead of a blank bubble.
+            (!isUser && isRunning && isLastMsg && !message.content.trim()) ? (
+              <ThinkingIndicator />
+            ) : (
+              <p className="whitespace-pre-wrap break-words">{message.content}</p>
+            )
+          ) : null}
 
           {/* Retry button for transient errors */}
           {onRetry && (
@@ -882,6 +889,24 @@ function AssistantAnswer({ content, duplicatePaths = [] }: { content: string; du
           {copied ? '已复制' : '复制'}
         </button>
       </div>
+    </div>
+  )
+}
+
+/**
+ * Immediate "正在思考" affordance shown the moment a run starts, before the model
+ * has streamed its first token. Without this, a model that thinks before answering
+ * (Opus 4.8) leaves the bubble blank for what can be minutes — looks frozen.
+ */
+function ThinkingIndicator() {
+  return (
+    <div className="flex items-center gap-2 text-muted-foreground py-0.5">
+      <span className="flex gap-1">
+        <span className="w-1.5 h-1.5 rounded-full bg-current animate-bounce [animation-delay:-0.3s]" />
+        <span className="w-1.5 h-1.5 rounded-full bg-current animate-bounce [animation-delay:-0.15s]" />
+        <span className="w-1.5 h-1.5 rounded-full bg-current animate-bounce" />
+      </span>
+      <span className="text-[13px]">思考中…</span>
     </div>
   )
 }

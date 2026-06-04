@@ -207,6 +207,22 @@ export function ChatPage() {
     }
   }
 
+  /** Return the active session id, lazily creating + activating a fresh one if
+   *  there is none yet (first launch, or after deleting all conversations). Lets
+   *  the user just start typing in an empty app — a session is persisted only when
+   *  they actually send, so we never leave behind phantom empty conversations. */
+  async function ensureSession(): Promise<string> {
+    if (activeSessionId) return activeSessionId
+    const session = await window.api.createSession()
+    addSession(session)
+    setActiveSession(session.id)
+    setMessages(session.id, [])
+    if (defaultModelRef.current) {
+      setSessionModel(session.id, defaultModelRef.current.providerId, defaultModelRef.current.model)
+    }
+    return session.id
+  }
+
   async function handleSelectSession(id: string) {
     // Navigation is always allowed — even while a run is in flight. The running
     // agent keeps streaming into its own session (events are keyed by sessionId),
@@ -251,8 +267,10 @@ export function ChatPage() {
   }
 
   async function handleSend(text: string, attachments?: Array<{ name: string; path: string; mimeType: string }>) {
-    if (!activeSessionId || isRunning) return
-    const sessionId = activeSessionId
+    if (isRunning) return
+    // No active session yet (first use)? Create one on the fly so the user can
+    // type+send straight away without first clicking 「新建对话」.
+    const sessionId = await ensureSession()
     lastSentRef.current[sessionId] = { text, attachments }
 
     // Auto-model routing: resolve before adding user message to avoid UI flicker
@@ -262,7 +280,7 @@ export function ChatPage() {
         window.api.listProviders()
       ])
       if (settings.autoModelEnabled) {
-        const route = await resolveModel(text, attachments ?? [], settings, providers)
+        const route = await resolveModel(text, attachments?.map(a => ({ ...a, type: 'file' as const })) ?? [], settings, providers)
         if (route) {
           setSessionModel(sessionId, route.providerId, route.model)
           pendingAutoRouteRef.current[sessionId] = { intent: route.intent }
@@ -442,7 +460,9 @@ export function ChatPage() {
           onSend={handleSend}
           onStop={handleStop}
           isRunning={isRunning}
-          disabled={!activeSessionId}
+          // Always typeable — first-use has no session yet; handleSend lazily
+          // creates one on the first send. Only `isRunning` gates input (inside ChatInput).
+          disabled={false}
           mountedSpaceIds={mountedSpaceIds}
           onMountedSpacesChange={setMountedSpaces}
           attachments={attachments}

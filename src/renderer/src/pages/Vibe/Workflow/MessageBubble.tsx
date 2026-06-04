@@ -1,10 +1,55 @@
-import { Wrench, Check, AlertCircle, User, Bot, Info, Coins } from 'lucide-react'
+import { useState } from 'react'
+import { Wrench, Check, AlertCircle, User, Bot, Info, Coins, Brain, ChevronRight } from 'lucide-react'
 import { cn } from '../../../lib/utils'
 import { Markdown } from '../../../lib/markdown'
 import { formatUsageLine } from '../../../lib/format-cost'
 import type { VibeMessageInfo } from '../../../../../shared/ipc-types'
 
 interface Props { msg: VibeMessageInfo }
+
+// Split <think>/<thinking>/<reasoning> blocks off the answer. Mirrors the main
+// chat's splitThinking (MessageList.tsx); kept local to avoid coupling. Tolerates
+// a half-open trailing block while the reasoning is still streaming.
+function splitThinking(content: string): { reasoning: string; answer: string; streaming: boolean } {
+  const blocks: string[] = []
+  let answer = content.replace(/<(think|thinking|reasoning)>([\s\S]*?)<\/\1>/g, (_m, _tag, body) => {
+    blocks.push(String(body).trim())
+    return ''
+  })
+  let streaming = false
+  const halfOpen = answer.match(/<(think|thinking|reasoning)>([\s\S]*)$/)
+  if (halfOpen) {
+    blocks.push(halfOpen[2].trim())
+    answer = answer.slice(0, halfOpen.index)
+    streaming = true
+  }
+  return { reasoning: blocks.filter(Boolean).join('\n\n').trim(), answer: answer.trim(), streaming }
+}
+
+// Compact collapsible "思考过程" — auto-open while the model is still thinking so
+// the user sees live progress instead of a frozen "AI 正在回复…", collapses once
+// the answer starts.
+function ThinkBlock({ content, streaming }: { content: string; streaming: boolean }) {
+  const [open, setOpen] = useState(streaming)
+  return (
+    <div className="mb-1.5 rounded-md border border-border/50 bg-muted/30 text-[11px]">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center gap-1 px-2 py-1 text-muted-foreground hover:text-foreground transition-colors"
+      >
+        <Brain size={10} className="shrink-0 text-primary/70" />
+        <span className="font-medium">思考过程</span>
+        {streaming && <span className="text-[10px] text-primary/80 animate-pulse">思考中…</span>}
+        <ChevronRight size={10} className={cn('ml-auto transition-transform', open && 'rotate-90')} />
+      </button>
+      {open && (
+        <div className="px-2.5 pb-1.5 pt-0.5 border-t border-border/40 text-muted-foreground/85 leading-relaxed whitespace-pre-wrap break-words italic max-h-[220px] overflow-auto">
+          {content}
+        </div>
+      )}
+    </div>
+  )
+}
 
 export function MessageBubble({ msg }: Props) {
   if (msg.role === 'user') {
@@ -21,11 +66,13 @@ export function MessageBubble({ msg }: Props) {
       outputTokens: msg.outputTokens,
       costUsd: msg.costUsd
     })
+    const { reasoning, answer, streaming } = splitThinking(msg.content)
     return (
       <div className="flex items-start gap-2 py-1">
         <Bot size={12} className="text-primary mt-1 shrink-0" />
         <div className="flex-1 min-w-0 text-xs text-foreground/90 leading-relaxed">
-          <Markdown content={msg.content} compact />
+          {reasoning && <ThinkBlock content={reasoning} streaming={streaming} />}
+          {answer && <Markdown content={answer} compact />}
           {usage && (
             <div className="mt-1 flex items-center gap-1 text-[10px] text-muted-foreground/80 tabular-nums">
               <Coins size={9} className="opacity-70" />

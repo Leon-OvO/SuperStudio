@@ -2,7 +2,8 @@ import { streamText, tool, jsonSchema, type Tool } from 'ai'
 import { z } from 'zod'
 import { BrowserWindow } from 'electron'
 import { IPC, AgentProgressEvent } from '../../../src/shared/ipc-types'
-import { createLLMClient } from '../services/llm'
+import { repairUnescapedQuotes } from '../../../src/shared/json-repair'
+import { createLLMClient, thinkingStreamOpts, effectiveProtocol } from '../services/llm'
 import { getSettings, getProviders } from '../services/store'
 import { generateImage } from '../services/image'
 import { generateVideo } from '../services/video'
@@ -677,7 +678,14 @@ export async function runAgent(
             emit({ stepIndex: myIdx, stepName: 'File Write', toolName: 'file_write', status: 'running', message: path.basename(filePath) })
             let operations: Array<{ sheet: string; action: string; params: Record<string, unknown> }>
             try {
-              operations = JSON.parse(operationsJson)
+              try {
+                operations = JSON.parse(operationsJson)
+              } catch {
+                // Most common LLM failure: unescaped " inside Chinese values
+                // (e.g. 进口美妆"代理商"). Repair stray content-quotes and retry
+                // before surfacing an error, so the model rarely needs a re-do.
+                operations = JSON.parse(repairUnescapedQuotes(operationsJson))
+              }
               if (!Array.isArray(operations)) throw new Error('operationsJson must be a JSON array')
             } catch (parseErr) {
               // Recoverable: return the error as a tool result (don't throw) so the
@@ -687,7 +695,24 @@ export async function runAgent(
               toolCallLog.push({ toolName: 'file_write', args: { filePath }, result: { error: errMsg } })
               return `[file_write error] ${errMsg}`
             }
-            const result = await writeFile({ filePath, operations: operations as Parameters<typeof writeFile>[0]['operations'] })
+            let result: Awaited<ReturnType<typeof writeFile>>
+            try {
+              result = await writeFile({ filePath, operations: operations as Parameters<typeof writeFile>[0]['operations'] })
+            } catch (writeErr) {
+              // Recoverable: return the error as a tool result (don't throw) so a
+              // single failed write doesn't abort the whole turn mid-task — the
+              // model can adapt (close/retry, rename, or write elsewhere). EPERM/
+              // EBUSY/EACCES almost always means the .xlsx is open in Excel or a
+              // WeChat/preview window holding a file lock.
+              const raw = (writeErr as Error)?.message || String(writeErr)
+              const hint = /EPERM|EBUSY|EACCES/i.test(raw)
+                ? '（该文件可能正被 Excel / 微信 等程序打开占用，请关闭该文件后重试，或改用其他文件名/路径）'
+                : ''
+              const errMsg = `file_write 写入失败：${raw}${hint}`
+              emit({ stepIndex: myIdx, stepName: 'File Write', toolName: 'file_write', status: 'error', message: errMsg })
+              toolCallLog.push({ toolName: 'file_write', args: { filePath }, result: { error: errMsg } })
+              return `[file_write error] ${errMsg}`
+            }
             // Register the written file so a subsequent file_read of it passes the sandbox.
             registerApproved(filePath)
             invalidateDbCache()
@@ -806,7 +831,10 @@ export async function runAgent(
     }
 
     const history = await buildMessageHistory(sessionId, message, attachments, effectiveModel)
-    const providerType = allProviders.find(p => p.id === effectiveProviderId)?.type
+    // Effective protocol (not raw provider.type) — so an auto-routed Claude model
+    // on a SuperCode 'custom' provider still gets Anthropic prompt-caching + thinking.
+    const providerConfig = allProviders.find(p => p.id === effectiveProviderId)
+    const providerType = providerConfig ? effectiveProtocol(providerConfig, effectiveModel) : undefined
 
     // Anthropic prompt caching: a `system:` string can't carry a cache
     // breakpoint, so for Anthropic we move the system prompt into a leading
@@ -815,28 +843,53 @@ export async function runAgent(
     // so it never busts the cache. Other providers keep the plain `system:` field
     // (their caching, if any, is server-side and automatic).
     const useAnthropicCache = providerType === 'anthropic' && systemPrompt.stable.length > 0
+
+    // Stall watchdog: 一条挂死的流(模型/网络/代理异常)若无人打断，会一直占着并发槽、
+    // 界面永远「加载中」。用独立的 stallCtl —— 绝不动共享的 abort，否则会被 isStaleRun
+    // 误判为「本轮已被取代」从而【静默丢弃】，用户看不到任何错误。stall 触发后流会因
+    // combinedSignal 中止，循环结束后我们把它当作一个可见错误抛出。
+    // 两档静默窗口：吐字时的 token 间隙用紧窗口；思考/工具调用/工具执行/下一轮推理等
+    // 「干活不吐字」阶段给宽窗口（否则会把正常的扩展思考误判成无响应）。
+    const STREAM_GAP_MS = 120000
+    const SILENT_WORK_MS = 240000
+    const stallCtl = new AbortController()
+    const combinedSignal = AbortSignal.any([abort.signal, stallCtl.signal])
+    let stalled = false
+    let stallTimer: ReturnType<typeof setTimeout> | null = null
+    const armStall = (ms: number = SILENT_WORK_MS): void => {
+      if (stallTimer) clearTimeout(stallTimer)
+      stallTimer = setTimeout(() => { if (!combinedSignal.aborted) { stalled = true; stallCtl.abort() } }, ms)
+    }
+
+    // 扩展思考策略(B)：按设置把 Anthropic 的 thinking providerOptions 注入。auto=不动。
+    const thinkOpts = thinkingStreamOpts(providerType, settings.chatThinkingMode)
+
     const baseOpts = {
       model,
-      abortSignal: abort.signal,
+      abortSignal: combinedSignal,
       maxSteps: 30,
       maxRetries: 5,
       onError: ({ error }: { error: unknown }) => {
         console.error('[Agent] streamText onError', error)
         streamErr = error as Error
       },
-      tools: guardedTools
+      tools: guardedTools,
+      ...thinkOpts
     }
     const result = useAnthropicCache
       ? streamText({
           ...baseOpts,
+          // Anthropic prompt caching. A CoreSystemMessage's content MUST be a
+          // string (array content is invalid and trips the AI SDK validator —
+          // "message must be a CoreMessage"), and cacheControl rides at the
+          // MESSAGE level via providerOptions. We emit two leading system
+          // messages: the stable prefix (cached) + the volatile suffix (current
+          // time / per-turn KB, NOT cached so it never busts the cache). The
+          // Anthropic provider merges consecutive leading system messages into
+          // one system block with a cache breakpoint after the stable part.
           messages: [
-            {
-              role: 'system' as const,
-              content: [
-                { type: 'text' as const, text: systemPrompt.stable, providerOptions: { anthropic: { cacheControl: { type: 'ephemeral' as const } } } },
-                ...(systemPrompt.volatile ? [{ type: 'text' as const, text: systemPrompt.volatile }] : [])
-              ]
-            },
+            { role: 'system' as const, content: systemPrompt.stable, providerOptions: { anthropic: { cacheControl: { type: 'ephemeral' as const } } } },
+            ...(systemPrompt.volatile ? [{ role: 'system' as const, content: systemPrompt.volatile }] : []),
             ...history
           ]
         } as Parameters<typeof streamText>[0])
@@ -854,19 +907,50 @@ export async function runAgent(
     let chunkCount = 0
     let usage: { promptTokens?: number; completionTokens?: number } | null = null
     console.log('[Agent] streaming started')
+    // Stream reasoning (思考) live, not just the answer. Pre-fix the loop only
+    // consumed result.textStream, which per the AI SDK carries ONLY visible
+    // answer text — so a model that thinks first (Opus 4.8) produced ZERO output
+    // for minutes, looking frozen. We now consume result.fullStream and forward
+    // reasoning deltas too, wrapped in <think>…</think> so the existing
+    // ReasoningBlock renders them live. Reasoning is NOT added to fullText, so the
+    // persisted message + history stay answer-only (no replayed thinking).
+    let inReasoning = false
+    const sendDelta = (delta: string): void => {
+      if (!isStaleRun()) win.webContents.send(IPC.AGENT_DELTA, { sessionId, messageId: asstMsgId, delta })
+    }
+    const closeThink = (): void => {
+      if (inReasoning) { inReasoning = false; sendDelta('</think>\n\n') }
+    }
     try {
-      for await (const chunk of result.textStream) {
-        fullText += chunk
-        chunkCount++
-        if (abort.signal.aborted) break
-        // Stream the chunk to the renderer unless this run was superseded.
-        if (!isStaleRun()) {
-          win.webContents.send(IPC.AGENT_DELTA, { sessionId, messageId: asstMsgId, delta: chunk })
+      armStall()
+      for await (const part of result.fullStream) {
+        if (combinedSignal.aborted) break
+        // 吐字间隙用紧窗口，其余「干活不吐字」阶段(思考/工具)给宽窗口。
+        armStall(part.type === 'text-delta' ? STREAM_GAP_MS : SILENT_WORK_MS)
+        if (part.type === 'reasoning' && part.textDelta) {
+          if (!inReasoning) { inReasoning = true; sendDelta('<think>') }
+          sendDelta(part.textDelta)
+        } else if (part.type === 'text-delta' && part.textDelta) {
+          closeThink()
+          fullText += part.textDelta
+          chunkCount++
+          sendDelta(part.textDelta)
+        } else if (part.type === 'tool-call') {
+          closeThink()
+        } else if (part.type === 'error') {
+          streamErr = part.error as Error
         }
       }
+      closeThink()
     } catch (iterErr) {
-      console.error('[Agent] textStream iteration threw', iterErr)
+      console.error('[Agent] fullStream iteration threw', iterErr)
       streamErr = iterErr as Error
+    } finally {
+      if (stallTimer) clearTimeout(stallTimer)
+    }
+    // Watchdog tripped → surface a clear error instead of a silent empty bubble.
+    if (stalled && !streamErr) {
+      streamErr = new Error('AI 长时间无响应（可能是模型、网络或代理异常），已自动停止。请重试，或到「设置 → 模型 / 网络代理」检查配置。')
     }
     try { usage = await result.usage } catch (e) { console.warn('[Agent] usage await threw:', (e as Error).message) }
     let finishReasonForLog: string | undefined

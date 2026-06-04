@@ -6,11 +6,26 @@ import { ThinkingConsole } from '../../components/ui/ThinkingConsole'
 import { scrubAddresses } from '../../../../shared/scrub'
 import type { VideoProgressEvent } from '../../../../shared/ipc-types'
 
+/** Real phase of the in-flight assistant turn, derived from its streamed content:
+ *  - empty / open <think> block        → still thinking
+ *  - visible text after any think block → already streaming the answer
+ *  Lets the status say "正在输出回复…" instead of a wrong "正在思考…" during output. */
+function isAnswering(content: string): boolean {
+  if (!content) return false
+  const withoutClosed = content.replace(/<(think|thinking|reasoning)>[\s\S]*?<\/\1>/g, '')
+  if (/<(think|thinking|reasoning)>[\s\S]*$/.test(withoutClosed)) return false  // open think → still reasoning
+  return withoutClosed.trim().length > 0
+}
+
 export function AgentProgress() {
-  const { runningSessionIds, stepsBySession, activeSessionId } = useChatStore()
+  const { runningSessionIds, stepsBySession, activeSessionId, messages } = useChatStore()
   // Only reflect a run that belongs to the session currently on screen.
   const isRunning = activeSessionId !== null && runningSessionIds.includes(activeSessionId)
   const currentSteps = activeSessionId ? (stepsBySession[activeSessionId] ?? []) : []
+  // Latest streamed assistant content → thinking vs answering.
+  const sessionMsgs = activeSessionId ? (messages[activeSessionId] ?? []) : []
+  const lastMsg = sessionMsgs[sessionMsgs.length - 1]
+  const answering = lastMsg?.role === 'assistant' && isAnswering(lastMsg.content || '')
   const [expanded, setExpanded] = useState(true)
   const [videoProgress, setVideoProgress] = useState<VideoProgressEvent | null>(null)
   // Run start (per viewed session) — drives the "已用时" clock + resets the
@@ -45,26 +60,26 @@ export function AgentProgress() {
 
   return (
     <div className="border-t border-border bg-card/50 px-4 py-2">
-      <div
-        className="flex items-center gap-2 cursor-pointer"
-        onClick={() => setExpanded(e => !e)}
-      >
-        {isRunning && <Loader2 size={14} className="animate-spin text-primary shrink-0" />}
-        <span className="text-xs text-muted-foreground flex-1 truncate">
-          {latestStep ? `${scrubAddresses(latestStep.name)}…` : '正在思考…'}
-        </span>
-        {expanded ? <ChevronDown size={12} /> : <ChevronUp size={12} />}
-      </div>
-
-      {/* Always-on "is working" log — keeps the panel alive before the first
-          step arrives (or for pure-text turns with no tool calls). */}
+      {/* Single "is working" indicator — spinner + real elapsed + the latest real
+          tool/step line (or an honest "正在思考…" before anything concrete). */}
       <ThinkingConsole
         active={isRunning}
         variant="chat"
         startedAt={startedAt}
         liveLine={latestStep ? scrubAddresses(latestStep.message || latestStep.name) : undefined}
-        className="mt-2"
+        idleLabel={answering ? '正在输出回复…' : '正在思考…'}
       />
+
+      {/* Expand toggle — only when there's real detail to show. */}
+      {currentSteps.length > 0 && (
+        <button
+          onClick={() => setExpanded(e => !e)}
+          className="mt-1.5 flex items-center gap-1 text-[11px] text-muted-foreground/70 hover:text-foreground transition-colors"
+        >
+          {expanded ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
+          {expanded ? '收起执行详情' : `执行详情（${currentSteps.length} 步）`}
+        </button>
+      )}
 
       {expanded && (
         <div className="mt-2 space-y-1">

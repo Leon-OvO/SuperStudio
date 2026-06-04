@@ -117,6 +117,50 @@ export function ChatInput({
     }))])
   }
 
+  // Drag-and-drop file upload. Dropped File objects no longer carry .path on
+  // Electron 32+, so resolve via webUtils (window.api.getPathForFile); if a file
+  // has no disk backing, fall back to writing a temp file (same as paste).
+  const [dragOver, setDragOver] = useState(false)
+
+  const addDroppedFiles = useCallback(async (files: File[]) => {
+    for (const file of files) {
+      try {
+        const realPath = window.api.getPathForFile(file)
+        if (realPath) {
+          setAttachments(prev => [...prev, { name: file.name, path: realPath, mimeType: file.type || getMimeType(realPath) }])
+        } else {
+          const base64 = await blobToBase64(file)
+          const ext = (file.name.split('.').pop() || 'bin').toLowerCase()
+          const rand = Math.random().toString(36).slice(2, 8)
+          const result = await window.api.writeTempFile({ name: `drop-${Date.now()}-${rand}.${ext}`, data: base64 })
+          setAttachments(prev => [...prev, { name: file.name, path: result.path, mimeType: file.type || getMimeType(file.name) }])
+        }
+      } catch (err) {
+        console.error('[drop]', err)
+        toast.error(`添加「${file.name}」失败：` + (err as Error).message)
+      }
+    }
+  }, [setAttachments])
+
+  const handleDragOver = (e: React.DragEvent) => {
+    if (isRunning || disabled) return
+    if (!Array.from(e.dataTransfer.types).includes('Files')) return
+    e.preventDefault()
+    setDragOver(true)
+  }
+  const handleDragLeave = (e: React.DragEvent) => {
+    // Ignore leave events caused by moving over a child element.
+    if (e.currentTarget.contains(e.relatedTarget as Node | null)) return
+    setDragOver(false)
+  }
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault()
+    setDragOver(false)
+    if (isRunning || disabled) return
+    const files = Array.from(e.dataTransfer.files)
+    if (files.length) addDroppedFiles(files)
+  }
+
   const placeholder = isRunning
     ? '⏳ Agent 正在执行中，可点击「停止」中断…'
     : imageMode
@@ -163,11 +207,25 @@ export function ChatInput({
       )}
 
       {/* Main input container */}
-      <div className={cn(
-        'rounded-2xl border bg-card transition-all duration-200',
-        'focus-within:ring-1 focus-within:ring-ring focus-within:border-ring/60',
-        disabled ? 'opacity-60 cursor-not-allowed' : 'shadow-sm hover:shadow-md hover:border-border/80'
-      )}>
+      <div
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+        className={cn(
+          'relative rounded-2xl border bg-card transition-all duration-200',
+          'focus-within:ring-1 focus-within:ring-ring focus-within:border-ring/60',
+          dragOver && 'ring-2 ring-primary/70 border-primary/60',
+          disabled ? 'opacity-60 cursor-not-allowed' : 'shadow-sm hover:shadow-md hover:border-border/80'
+        )}
+      >
+        {/* Drag-over overlay */}
+        {dragOver && (
+          <div className="absolute inset-0 z-10 flex items-center justify-center rounded-2xl bg-primary/[0.06] border-2 border-dashed border-primary/50 pointer-events-none">
+            <span className="flex items-center gap-2 text-sm font-medium text-primary">
+              <Paperclip size={15} /> 松手添加为附件
+            </span>
+          </div>
+        )}
 
         {/* Textarea */}
         <textarea

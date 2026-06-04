@@ -55,6 +55,8 @@ export interface VibeTaskRow {
   finished_at: number | null
   /** 子任务级承接员工；null = 回退 request.assignee 或默认模型。 */
   assignee_employee_id?: string | null
+  /** 前置任务 id 数组（JSON 字符串）；null/空 = 无依赖，可并行。 */
+  deps?: string | null
 }
 
 export type MessageRole = 'user' | 'assistant' | 'tool' | 'system'
@@ -217,7 +219,7 @@ export function createTask(args: {
     id, request_id: args.requestId, ord: args.ord, title: args.title,
     description: args.description, status: 'pending',
     assignee_employee_id: args.assigneeEmployeeId ?? null,
-    error_text: null, started_at: null, finished_at: null
+    error_text: null, started_at: null, finished_at: null, deps: null
   }
 }
 
@@ -227,6 +229,28 @@ export function getTask(taskId: string): VibeTaskRow | null {
 
 export function setTaskAssignee(taskId: string, employeeId: string | null): void {
   dbRun(`UPDATE vibe_tasks SET assignee_employee_id = ? WHERE id = ?`, [employeeId, taskId])
+}
+
+/** Parse the raw `deps` JSON column into a list of prerequisite task ids. */
+export function parseTaskDeps(raw: string | null | undefined): string[] {
+  if (!raw) return []
+  try {
+    const a = JSON.parse(raw)
+    return Array.isArray(a) ? a.filter((x): x is string => typeof x === 'string') : []
+  } catch { return [] }
+}
+
+/** Set a task's prerequisite list (ids of tasks that must finish before it). */
+export function setTaskDeps(taskId: string, depIds: string[]): void {
+  dbRun(`UPDATE vibe_tasks SET deps = ? WHERE id = ?`, [JSON.stringify(depIds ?? []), taskId])
+}
+
+/** Mark a task auto-skipped because a prerequisite didn't complete cleanly.
+ *  Unlike a user 'skipped' toggle we KEEP a reason in error_text, so re-apply can
+ *  tell auto-skips (retry them) apart from manual skips (leave them). */
+export function markTaskBlocked(taskId: string, reason: string): void {
+  const now = Date.now()
+  dbRun(`UPDATE vibe_tasks SET status = 'skipped', finished_at = ?, error_text = ? WHERE id = ?`, [now, reason, taskId])
 }
 
 export function listTasks(requestId: string): VibeTaskRow[] {

@@ -184,6 +184,7 @@ export const IPC = {
   VIBE_REQUEST_DELETE: 'vibe:request-delete',
   VIBE_REQUEST_SET_ASSIGNEE: 'vibe:request-set-assignee',  // 指派 AI 员工承接
   VIBE_TASK_SET_ASSIGNEE: 'vibe:task-set-assignee',        // 子任务级手动重派
+  VIBE_TASK_SET_DEPS: 'vibe:task-set-deps',                // 子任务依赖（开工前手动增删）
   VIBE_TASK_LIST: 'vibe:task-list',
   VIBE_TASK_TOGGLE: 'vibe:task-toggle',
   VIBE_MESSAGE_LIST: 'vibe:message-list',
@@ -444,6 +445,13 @@ export interface AppSettings {
    *  stay local and are never sent to the renderer. */
   debugTrace?: boolean
 
+  /** 对话/工作台里 Anthropic 模型的扩展思考(extended thinking)策略：
+   *  - 'auto'  沿用模型/网关默认（默认值，行为不变）
+   *  - 'fast'  关闭扩展思考，让 Opus 这类模型直接出答案（最快，简单任务推荐）
+   *  - 'deep'  给足思考预算换更强推理（更慢）
+   *  仅对原生 anthropic provider 生效。 */
+  chatThinkingMode?: 'auto' | 'fast' | 'deep'
+
   /** Internal bookkeeping for the remote model.conf "managed default" mechanism.
    *  Snapshot of the default model NAMES last pushed by model.conf. A field is
    *  only re-applied from a newer model.conf when the current value still equals
@@ -543,6 +551,8 @@ export interface VibeTaskInfo {
   finishedAt: number | null
   /** 子任务级承接员工；null = 用 request 级默认承接人或默认模型。 */
   assigneeEmployeeId: string | null
+  /** 前置任务 id 列表（必须先完成）；空 = 无依赖，可并行。 */
+  deps: string[]
 }
 
 export interface VibeMessageInfo {

@@ -315,6 +315,10 @@ function applyMigrations(): void {
   // v10: 子任务级派活 —— 每个 vibe_task 可由不同员工承接（一需求多员工并行）。
   // null = 回退到 request.assignee_employee_id 或默认模型。
   try { db.run(`ALTER TABLE vibe_tasks ADD COLUMN assignee_employee_id TEXT`) } catch { /* already exists */ }
+  // v11: 子任务依赖 DAG —— deps 存「必须先完成」的前置任务 id 数组（JSON）。
+  // 空 / NULL = 无依赖，可与同批任务并行。apply 阶段据此用 topologicalLevels 分层
+  // 执行（层内并行、层间串行），取代「无脑全并发」，让有先后顺序的任务正确排队。
+  try { db.run(`ALTER TABLE vibe_tasks ADD COLUMN deps TEXT`) } catch { /* already exists */ }
 }
 
 // Helper: run a query and save

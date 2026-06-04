@@ -17,6 +17,7 @@ import path from 'path'
 import { streamText, generateText, tool, type Tool } from 'ai'
 import { z } from 'zod'
 import { IPC } from '../../../src/shared/ipc-types'
+import { repairUnescapedQuotes } from '../../../src/shared/json-repair'
 import type {
   FileTreeNode,
   VibeProgressEvent,
@@ -28,7 +29,7 @@ import type {
 } from '../../../src/shared/ipc-types'
 import { getMainWindow } from '../index'
 import { getProviders, getSettings } from '../services/store'
-import { createLLMClient } from '../services/llm'
+import { createLLMClient, thinkingStreamOpts, effectiveProtocol } from '../services/llm'
 import {
   getVibeProjectsRoot,
   addRecentProject,
@@ -42,6 +43,7 @@ import {
   createRequest, listRequests, listAllRequests, taskRollupByRequest, getRequest, updateRequestStatus, updateRequestSummary,
   deleteRequest, deleteTasksForRequest, slugify, setRequestAssignee,
   createTask, listTasks, updateTaskStatus, setTaskAssignee, getTask,
+  setTaskDeps, markTaskBlocked, parseTaskDeps,
   appendMessage, listMessages,
   type VibeRequestRow, type VibeTaskRow, type VibeMessageRow, type VibeProjectRow
 } from '../services/vibe-db'
@@ -54,6 +56,7 @@ import { getActiveSkillsForScenario, type InstalledSkill } from '../services/ski
 import { buildSkillTools } from '../agent/skill-tools'
 import { classifyVibeIntent } from '../agent/classify'
 import { agentRunSemaphore } from '../agent/semaphore'
+import { topologicalLevels } from '../agent/pure'
 import { runShell } from '../services/shell'
 import { computeCost } from '../services/model-pricing'
 
@@ -501,7 +504,8 @@ function toTaskInfo(t: VibeTaskRow): VibeTaskInfo {
     id: t.id, requestId: t.request_id, ord: t.ord, title: t.title,
     description: t.description, status: t.status, errorText: t.error_text,
     startedAt: t.started_at, finishedAt: t.finished_at,
-    assigneeEmployeeId: t.assignee_employee_id ?? null
+    assigneeEmployeeId: t.assignee_employee_id ?? null,
+    deps: parseTaskDeps(t.deps)
   }
 }
 
@@ -625,13 +629,22 @@ Your job: produce a JSON object matching the schema you are asked for. The schem
 - title: short Chinese title preserving the user's intent
 - summary: 1-2 sentences in Chinese on what will change and why
 - tasks: an ordered array of 1–10 actionable implementation tasks. Each task must have:
+   - key: 该任务的短 id（t1, t2, t3 …），供其它任务在 deps 里引用
    - title: imperative phrase in Chinese, like "添加登录表单组件" (NOT abstract/vague)
    - description: 1–3 sentences in Chinese on what specifically to do
    - dept: 该任务最合适的部门，从 engineering/design/product/marketing/qa/data/game 中选一个（写代码=engineering，UI/视觉=design，需求规划=product，文案营销=marketing，测试=qa，数据/AI=data，游戏=game）
+   - deps: 必须【先完成】才能开始本任务的前置任务 key 数组（因为本任务依赖它们的产出）
+
+依赖（deps）原则 —— 决定哪些任务并行、哪些排队，非常重要：
+- **默认并行**：deps 默认留空。多个任务会被并发执行，所以只有当任务 B 真正需要任务 A 的产出/结果才能开始时，才在 B.deps 里写上 A 的 key。
+- **不要把无关任务强行串成一条线**：营销文案和后端接口通常互不依赖，就不要让它们互相 deps（否则白白丧失并行、拖慢交付）。
+- 典型真实依赖：数据模型/接口契约 → 用其的前端；设计稿/组件 → 引用它的页面；功能实现 → 针对它的自测/验收。
+- 最后的自测/验收任务（dept: qa）通常 deps 上前面所有实现类任务。
+- 严禁循环依赖（A 依赖 B、B 又依赖 A）。
 
 Guidelines:
 - Tasks should be small and verifiable (one tool-able outcome each)
-- Order tasks by execution: dependencies first
+- 用 deps 表达先后顺序，而不是靠数组排列顺序
 - 贴近真实研发流程：拆解 → 实现 → 自测/验收。除非是纯咨询/不涉及代码改动的请求，**最后一步必须是一个自测/验收任务**（dept: qa）——运行或检查本次改动是否符合预期、是否破坏现有功能，description 写清具体怎么验证（跑哪个命令 / 手测哪条路径）。
 - 不要额外加「文档」任务，除非用户明确要求
 - Keep the scope minimal — do exactly what was asked (实现层面不膨胀)，但保留上面要求的自测/验收收尾步骤
@@ -684,45 +697,6 @@ Do NOT:
 // Schema
 // ---------------------------------------------------------------------------
 
-// Walk a JSON-ish string and escape any double-quote that sits INSIDE a string
-// value but isn't the structural closing quote. A real closing quote is followed
-// (after whitespace) by one of : , } ] or end-of-input; anything else means the
-// quote is stray content — common when Chinese text uses ASCII " as 引号, e.g.
-// 阅读项目"材料"目录 — and must be escaped. Best-effort: only invoked after a
-// strict parse already failed, so it can only help (a still-broken result is
-// rejected exactly as before).
-function repairUnescapedQuotes(s: string): string {
-  let out = ''
-  let inStr = false
-  for (let i = 0; i < s.length; i++) {
-    const c = s[i]
-    if (!inStr) {
-      out += c
-      if (c === '"') inStr = true
-      continue
-    }
-    if (c === '\\') {            // keep existing escape sequences verbatim
-      out += c + (s[i + 1] ?? '')
-      i++
-      continue
-    }
-    if (c === '"') {
-      let j = i + 1
-      while (j < s.length && /\s/.test(s[j])) j++
-      const next = s[j]
-      if (next === undefined || next === ':' || next === ',' || next === '}' || next === ']') {
-        out += c               // structural closing quote
-        inStr = false
-      } else {
-        out += '\\"'           // stray content quote → escape it
-      }
-      continue
-    }
-    out += c
-  }
-  return out
-}
-
 // Some models (Claude via OpenAI-compat proxies in particular) return nested
 // arrays as JSON-encoded strings instead of actual arrays. Worse, when they
 // stringify they often escape quotes for only ONE level of nesting, so inner
@@ -746,10 +720,14 @@ const ProposalSchema = z.object({
   tasks: z.preprocess(
     decodeIfStringArray,
     z.array(z.object({
+      key: z.string().max(12).optional()
+        .describe('该任务的短 id，如 t1/t2/t3，供其它任务在 deps 里引用'),
       title: z.string().min(2).max(100).describe('Imperative title like "添加登录表单组件"'),
       description: z.string().min(2).max(500).describe('Specific implementation guidance in 1-3 sentences'),
       dept: z.enum(['engineering', 'design', 'product', 'marketing', 'qa', 'data', 'game']).nullable().optional()
-        .describe('该任务最合适的部门：写代码/接口/架构=engineering，UI/视觉/品牌=design，需求/规划=product，文案/营销/增长=marketing，测试/质量=qa，数据/AI/算法=data，游戏逻辑/数值=game')
+        .describe('该任务最合适的部门：写代码/接口/架构=engineering，UI/视觉/品牌=design，需求/规划=product，文案/营销/增长=marketing，测试/质量=qa，数据/AI/算法=data，游戏逻辑/数值=game'),
+      deps: z.preprocess(decodeIfStringArray, z.array(z.string()).optional())
+        .describe('必须先完成才能开始本任务的前置任务 key 列表（因为本任务要用到它们的产出）。能并行就【留空】；默认不填，只有真有先后依赖才填。')
     })).min(1).max(10)
   )
 })
@@ -905,6 +883,17 @@ export function vibeHandlers(): void {
     // Only +1 when it's a NEW assignment (not re-confirming the same employee).
     if (args.employeeId && before?.assignee_employee_id !== args.employeeId) bumpEmployeeStats(args.employeeId, { assigned: 1 })
     return { ok: true }
+  })
+
+  // 子任务依赖编辑（开工前在看板手动增删）：deps = 必须先完成的前置任务 id 列表。
+  // 自引用与不同需求的 id 会被过滤掉；环留到 apply 阶段兜底（回退全并行）。
+  ipcMain.handle(IPC.VIBE_TASK_SET_DEPS, async (_e, args: { taskId: string; deps: string[] }) => {
+    const task = getTask(args.taskId)
+    if (!task) return { error: 'Task not found' }
+    const siblingIds = new Set(listTasks(task.request_id).map(t => t.id))
+    const clean = [...new Set((args.deps ?? []).filter(d => d !== args.taskId && siblingIds.has(d)))]
+    setTaskDeps(args.taskId, clean)
+    return { ok: true, deps: clean }
   })
 
   ipcMain.handle(IPC.VIBE_REQUEST_DELETE, async (_e, id: string) => {
@@ -1082,18 +1071,33 @@ export function vibeHandlers(): void {
           // 看门狗盯【整条事件流】(文本/思考/工具调用/工具结果/步骤),而非只盯可见文本——
           // 模型在生成工具调用、思考、等工具执行时本就没有文本输出,只盯文本会把正常的多步
           // 工具流误判成「无响应」。任何事件都续期；tool-call 后的工具执行期给更长窗口。
+          // 实时展示 reasoning(思考)：推理模型会把一长串思维链作为 `reasoning`
+          // 事件流出、却没有任何可见文本，导致工作台只剩「AI 正在回复…」卡好几分钟。
+          // 把连续的 reasoning 包进 <think>…</think>(渲染层会折叠成「思考过程」)。
+          // 仅实时 emit、不计入 accumulated —— 落库的消息保持只有最终答案，避免存巨量思考。
+          let inReasoning = false
+          const closeThink = (): void => {
+            if (inReasoning) { inReasoning = false; emit({ type: 'text', text: '</think>\n\n' }) }
+          }
           for await (const part of result.fullStream) {
             if (ctl.signal.aborted) break
             // 只有「正在吐字时的 token 间隙」用紧窗口；其余（思考/工具调用/工具执行/
             // 工具结果后的下一轮推理）都属「干活不吐字」，给宽窗口。
             armStall(part.type === 'text-delta' ? STREAM_GAP_MS : SILENT_WORK_MS)
-            if (part.type === 'text-delta' && part.textDelta) {
+            if (part.type === 'reasoning' && part.textDelta) {
+              if (!inReasoning) { inReasoning = true; emit({ type: 'text', text: '<think>' }) }
+              emit({ type: 'text', text: part.textDelta })
+            } else if (part.type === 'text-delta' && part.textDelta) {
+              closeThink()
               accumulated += part.textDelta
               emit({ type: 'text', text: part.textDelta })
+            } else if (part.type === 'tool-call') {
+              closeThink()
             } else if (part.type === 'error') {
               runError = part.error as Error
             }
           }
+          closeThink()
           await result.finishReason.catch(() => null)
           usage = await result.usage.catch(() => null)
         } catch (err) {
@@ -1333,6 +1337,24 @@ export function vibeHandlers(): void {
           if (empId) bumpEmployeeStats(empId, { assigned: 1 })
         })
 
+        // Resolve declared deps (key references) → real task ids, now that every
+        // row exists. We accept the model's own key plus index-style fallbacks
+        // (t2 / 2) so a slightly-off key still maps. Self-refs and unknowns drop;
+        // cycles are caught later at apply time (fallback to flat parallel).
+        const keyToId = new Map<string, string>()
+        object.tasks.forEach((t, i) => {
+          if (t.key) keyToId.set(String(t.key), taskRows[i].id)
+          keyToId.set(`t${i + 1}`, taskRows[i].id)
+          keyToId.set(String(i + 1), taskRows[i].id)
+        })
+        object.tasks.forEach((t, i) => {
+          const depIds = (t.deps ?? [])
+            .map(k => keyToId.get(String(k)))
+            .filter((x): x is string => !!x && x !== taskRows[i].id)
+          const uniq = [...new Set(depIds)]
+          if (uniq.length) setTaskDeps(taskRows[i].id, uniq)
+        })
+
         writeProposalMd({ projectPath, slug: targetRequest.slug, title: object.title, summary: object.summary })
         writeTasksMd({ projectPath, slug: targetRequest.slug, tasks: taskRows })
 
@@ -1449,9 +1471,10 @@ export function vibeHandlers(): void {
     projectPath: string,
     snapshot: VibeTaskRow[],
     signal: AbortSignal,
-    emit: (e: Omit<VibeProgressEvent, 'projectPath'>) => void
-  ): Promise<'done' | 'error' | 'cancelled'> {
-    if (signal.aborted) return 'cancelled'
+    emit: (e: Omit<VibeProgressEvent, 'projectPath'>) => void,
+    upstreamContext = ''
+  ): Promise<{ status: 'done' | 'error' | 'cancelled'; summary: string }> {
+    if (signal.aborted) return { status: 'cancelled', summary: '' }
 
     // Resolve this task's employee → model + soul (fallback chain:
     // task.assignee → request.assignee → project default).
@@ -1507,17 +1530,28 @@ export function vibeHandlers(): void {
       if (stallTimer) clearTimeout(stallTimer)
       stallTimer = setTimeout(() => { if (!taskSignal.aborted) { stalled = true; taskCtl.abort() } }, ms)
     }
+    // 扩展思考策略(B)：按全局设置注入 Anthropic thinking providerOptions（auto=不动）。
+    // 用「有效协议」而非原始 type —— supercode 上自动改走原生协议的 claude 也能吃到。
+    const provCfg = getProviders().find(p => p.id === modelInfo.providerId)
+    const provType = provCfg ? effectiveProtocol(provCfg, modelInfo.modelId) : undefined
+    const thinkOpts = thinkingStreamOpts(provType, getSettings().chatThinkingMode)
+    let inReasoning = false
+    const closeThink = (): void => {
+      if (inReasoning) { inReasoning = false; emit({ type: 'text', text: '</think>\n\n', taskId: task.id }) }
+    }
     try {
       const model = createLLMClient(modelInfo.providerId, modelInfo.modelId)
       const result = streamText({
         model,
-        system: (soulPrompt ? soulPrompt + '\n\n---\n\n' : '') + buildApplySystem(request, task, otherTasks) + applySkillsSection,
+        system: (soulPrompt ? soulPrompt + '\n\n---\n\n' : '') + buildApplySystem(request, task, otherTasks)
+          + (upstreamContext ? '\n\n---\n\n' + upstreamContext : '') + applySkillsSection,
         messages: [{ role: 'user', content: task.description || task.title }],
         tools,
         maxSteps: 25,
         maxRetries: 2,
         abortSignal: taskSignal,
-        onError: ({ error }) => { console.error('[vibe] task streamText error:', error); runError = error as Error }
+        onError: ({ error }) => { console.error('[vibe] task streamText error:', error); runError = error as Error },
+        ...thinkOpts
       })
       armStall()
       for await (const part of result.fullStream) {
@@ -1525,13 +1559,22 @@ export function vibeHandlers(): void {
         // 只有「正在吐字时的 token 间隙」用紧窗口；思考/工具调用/工具执行/工具结果后的
         // 下一轮推理都属「干活不吐字」，给宽窗口（否则大上下文重推理会被误判）。
         armStall(part.type === 'text-delta' ? STREAM_GAP_MS : SILENT_WORK_MS)
-        if (part.type === 'text-delta' && part.textDelta) {
+        if (part.type === 'reasoning' && part.textDelta) {
+          // 实时显示思考：把连续 reasoning 包进 <think>…</think>（渲染层折叠成「思考过程」）。
+          // 仅 emit、不计入 accumulated —— 落库消息与下游上下文摘要保持只有最终答案。
+          if (!inReasoning) { inReasoning = true; emit({ type: 'text', text: '<think>', taskId: task.id }) }
+          emit({ type: 'text', text: part.textDelta, taskId: task.id })
+        } else if (part.type === 'text-delta' && part.textDelta) {
+          closeThink()
           accumulated += part.textDelta
           emit({ type: 'text', text: part.textDelta, taskId: task.id })
+        } else if (part.type === 'tool-call') {
+          closeThink()
         } else if (part.type === 'error') {
           runError = part.error as Error
         }
       }
+      closeThink()
       await result.finishReason.catch(() => null)
       usage = await result.usage.catch(() => null)
     } catch (err) {
@@ -1552,13 +1595,13 @@ export function vibeHandlers(): void {
       emit({ type: 'task_status', taskId: task.id, taskStatus: 'error', text: msg })
       appendMessage({ requestId: request.id, role: 'system', taskId: task.id, content: `任务失败：${msg}`, isError: true })
       releaseEmp()
-      return 'error'
+      return { status: 'error', summary: '' }
     }
     if (signal.aborted) {
       updateTaskStatus(task.id, 'pending')
       await withFileLock('tasksmd:' + request.id, () => writeTasksMd({ projectPath, slug: request.slug, tasks: listTasks(request.id) }))
       releaseEmp()
-      return 'cancelled'
+      return { status: 'cancelled', summary: '' }
     }
     if (runError) {
       updateTaskStatus(task.id, 'error', (runError as Error).message)
@@ -1566,7 +1609,7 @@ export function vibeHandlers(): void {
       emit({ type: 'task_status', taskId: task.id, taskStatus: 'error', text: (runError as Error).message })
       appendMessage({ requestId: request.id, role: 'system', taskId: task.id, content: `任务失败：${(runError as Error).message}`, isError: true })
       releaseEmp()
-      return 'error'  // 不牵连其他任务 —— 其余照跑
+      return { status: 'error', summary: '' }  // 不牵连其他任务 —— 其余照跑
     }
 
     updateTaskStatus(task.id, 'done')
@@ -1580,7 +1623,9 @@ export function vibeHandlers(): void {
       appendMessage({ requestId: request.id, role: 'assistant', taskId: task.id, content: accumulated.trim(), inputTokens: inTok, outputTokens: outTok, costUsd: cost, model: modelInfo.modelId })
     }
     releaseEmp()
-    return 'done'
+    // Return a short summary of what this task produced so dependent tasks can
+    // be given it as context (so a dep gates ordering AND passes information).
+    return { status: 'done', summary: accumulated.trim().slice(0, 600) }
   }
 
   function runApplyLoop(request: VibeRequestRow): { started: boolean } {
@@ -1611,15 +1656,90 @@ export function vibeHandlers(): void {
     ;(async () => {
       try {
         updateRequestStatus(request.id, 'applying')
-        emit({ type: 'system', text: '开始执行（多员工并行）' })
 
-        // Fan out all pending tasks; agentRunSemaphore (max 3) bounds total LLM
-        // load, withFileLock keeps same-file writes serial. No false ord deps.
+        // Re-apply semantics: retry the whole unfinished branch as a unit. Reset
+        // both errored tasks AND auto-skipped ones (blocked by a failed prereq) to
+        // pending, so a re-run waits for its prerequisite again via the DAG instead
+        // of charging ahead without it. Auto-skips carry a reason in error_text;
+        // user-manual skips (error_text null) and done tasks are left untouched.
+        for (const t of listTasks(request.id)) {
+          if (t.status === 'error' || (t.status === 'skipped' && t.error_text)) updateTaskStatus(t.id, 'pending')
+        }
+
         const snapshot = listTasks(request.id)
         const pending = snapshot.filter(t => t.status === 'pending')
-        await Promise.allSettled(
-          pending.map(task => agentRunSemaphore.run(() => runOneTask(request, task, projectPath, snapshot, ctl.signal, emit)))
-        )
+        const pendingIds = new Set(pending.map(t => t.id))
+        const byId = new Map(pending.map(t => [t.id, t]))
+
+        // Build the dependency DAG. Only edges BETWEEN still-pending tasks gate
+        // execution (a prereq that's already done is satisfied). No edges anywhere
+        // → every task lands in level 0 = the old full-parallel fan-out, so this is
+        // strictly backward compatible.
+        const edges: { source: string; target: string }[] = []
+        for (const t of pending) {
+          for (const dep of parseTaskDeps(t.deps)) {
+            if (pendingIds.has(dep) && dep !== t.id) edges.push({ source: dep, target: t.id })
+          }
+        }
+        const levels = topologicalLevels(pending, edges)
+        // Kahn drops nodes trapped in a cycle → flat.length < pending.length means
+        // a cycle. Rather than deadlock, fall back to flat parallel with a warning.
+        const hasCycle = levels.flat().length !== pending.length
+        const useLevels = !hasCycle && edges.length > 0
+
+        // Track each task's final status + a short summary of its output, so we can
+        // (a) skip a task whose prerequisite didn't finish cleanly, and (b) feed a
+        // dependent task its prerequisites' results as context.
+        const statusById = new Map<string, 'done' | 'error' | 'cancelled' | 'skipped'>()
+        const outputById = new Map<string, string>()
+
+        const upstreamContextFor = (task: VibeTaskRow): string => {
+          const deps = parseTaskDeps(task.deps).filter(d => pendingIds.has(d))
+          const parts = deps.map(d => {
+            const dt = byId.get(d); if (!dt) return null
+            const out = outputById.get(d)
+            return `• 前置任务「${dt.title}」${out ? '：' + out : '（已完成）'}`
+          }).filter(Boolean)
+          return parts.length
+            ? `已完成的前置任务及其产出（供你参考，在此基础上继续，不要重复实现）：\n${parts.join('\n')}`
+            : ''
+        }
+
+        const runTask = (task: VibeTaskRow, ctx: string) => agentRunSemaphore.run(async () => {
+          const r = await runOneTask(request, task, projectPath, snapshot, ctl.signal, emit, ctx)
+          statusById.set(task.id, r.status)
+          if (r.summary) outputById.set(task.id, r.summary)
+        })
+
+        if (!useLevels) {
+          if (hasCycle) emit({ type: 'system', text: '⚠️ 任务依赖存在循环，已回退为全并行执行' })
+          emit({ type: 'system', text: '开始执行（多员工并行）' })
+          await Promise.allSettled(pending.map(task => runTask(task, '')))
+        } else {
+          emit({ type: 'system', text: `开始执行（按依赖分 ${levels.length} 批，批内并行）` })
+          for (const level of levels) {
+            if (ctl.signal.aborted) break
+            const levelTasks = level.map(id => byId.get(id)).filter(Boolean) as VibeTaskRow[]
+            await Promise.allSettled(levelTasks.map(task => {
+              // Block this task if any prerequisite didn't complete cleanly — running
+              // it on a broken/half-done foundation would produce garbage.
+              const deps = parseTaskDeps(task.deps).filter(d => pendingIds.has(d))
+              const blocker = deps.find(d => { const s = statusById.get(d); return s && s !== 'done' })
+              if (blocker) {
+                const reason = `前置任务「${byId.get(blocker)?.title ?? blocker}」未完成，已跳过`
+                markTaskBlocked(task.id, reason)
+                statusById.set(task.id, 'skipped')
+                emit({ type: 'task_status', taskId: task.id, taskStatus: 'skipped', text: reason })
+                appendMessage({ requestId: request.id, role: 'system', taskId: task.id, content: reason, isError: true })
+                return Promise.resolve()
+              }
+              return runTask(task, upstreamContextFor(task))
+            }))
+            // Keep tasks.md in sync after each batch (covers blocked/skipped rows
+            // that runOneTask never touched).
+            await withFileLock('tasksmd:' + request.id, () => writeTasksMd({ projectPath, slug: request.slug, tasks: listTasks(request.id) }))
+          }
+        }
 
         const finalTasks = listTasks(request.id)
         const stillPending = finalTasks.some(t => t.status === 'pending' || t.status === 'error')

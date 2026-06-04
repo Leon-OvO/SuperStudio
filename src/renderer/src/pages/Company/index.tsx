@@ -508,18 +508,105 @@ function FlowNode({ task, emp }: { task: VibeTaskInfo; emp?: EmployeeInfo }) {
   )
 }
 
-// 横向流程图：子任务按 ord 顺序用 → 连接，溢出自动换行
-function RequestFlow({ tasks, employees }: { tasks?: VibeTaskInfo[]; employees: EmployeeInfo[] }) {
-  if (!tasks) return <div className="text-[11px] text-muted-foreground/50 py-2">加载子任务…</div>
-  if (!tasks.length) return <div className="text-[11px] text-muted-foreground/50 py-2">尚未拆解子任务</div>
+// 依赖 DAG 分层（客户端镜像后端 topologicalLevels）：同一层的任务相互无依赖、可并行；
+// 层与层之间有先后。只认指向「本需求内其它任务」的依赖；检测到环则回退为单层（全并行）。
+function levelsOf(tasks: VibeTaskInfo[]): VibeTaskInfo[][] {
+  const ids = new Set(tasks.map(t => t.id))
+  const indeg = new Map<string, number>()
+  const adj = new Map<string, string[]>()
+  for (const t of tasks) { indeg.set(t.id, 0); adj.set(t.id, []) }
+  for (const t of tasks) {
+    for (const d of t.deps) {
+      if (ids.has(d) && d !== t.id) { adj.get(d)!.push(t.id); indeg.set(t.id, (indeg.get(t.id) || 0) + 1) }
+    }
+  }
+  const byId = new Map(tasks.map(t => [t.id, t]))
+  let frontier = tasks.filter(t => (indeg.get(t.id) || 0) === 0).map(t => t.id)
+  const levels: VibeTaskInfo[][] = []
+  let seen = 0
+  while (frontier.length) {
+    levels.push(frontier.map(id => byId.get(id)!))
+    seen += frontier.length
+    const next: string[] = []
+    for (const id of frontier) for (const c of adj.get(id)!) {
+      indeg.set(c, (indeg.get(c) || 0) - 1)
+      if ((indeg.get(c) || 0) === 0) next.push(c)
+    }
+    frontier = next
+  }
+  return seen === tasks.length ? levels : [tasks]  // 有环 → 回退单层
+}
+
+// 给 task 新增「依赖 newDep」（newDep 须先完成）是否会成环：即 newDep 是否已（间接）依赖 task。
+function wouldCycle(tasks: VibeTaskInfo[], taskId: string, newDepId: string): boolean {
+  if (taskId === newDepId) return true
+  const byId = new Map(tasks.map(t => [t.id, t]))
+  const stack = [newDepId]; const seen = new Set<string>()
+  while (stack.length) {
+    const cur = stack.pop()!
+    if (cur === taskId) return true
+    if (seen.has(cur)) continue
+    seen.add(cur)
+    for (const d of byId.get(cur)?.deps ?? []) stack.push(d)
+  }
+  return false
+}
+
+// 开工前的依赖编辑：每个任务一行，点其它任务的 #序号 即把它设/取消为前置（必须先完成）。
+function TaskDepsEditor({ tasks, onSetDeps }: { tasks: VibeTaskInfo[]; onSetDeps: (taskId: string, deps: string[]) => void }) {
+  const toggle = (task: VibeTaskInfo, depId: string) => {
+    const has = task.deps.includes(depId)
+    if (!has && wouldCycle(tasks, task.id, depId)) { toast.error('不能这样设：会与已有依赖形成循环'); return }
+    onSetDeps(task.id, has ? task.deps.filter(d => d !== depId) : [...task.deps, depId])
+  }
   return (
-    <div className="flex flex-wrap items-start gap-y-3">
-      {tasks.map((t, i) => (
-        <div key={t.id} className="flex items-start">
-          <FlowNode task={t} emp={employees.find(e => e.id === t.assigneeEmployeeId)} />
-          {i < tasks.length - 1 && <span className="mx-1 text-muted-foreground/40 text-sm mt-2.5">→</span>}
+    <div className="rounded-lg border border-dashed border-border bg-muted/20 p-2 space-y-1.5">
+      <div className="text-[10px] text-muted-foreground/70">依赖编辑：点 # 号把某任务设为前置（须先完成），留空＝可并行</div>
+      {tasks.map(t => (
+        <div key={t.id} className="flex items-center gap-1.5 flex-wrap">
+          <span className="text-[10.5px] text-foreground/80 w-[120px] shrink-0 truncate" title={t.title}>#{t.ord} {t.title}</span>
+          <span className="text-[10px] text-muted-foreground/50">依赖</span>
+          {tasks.filter(o => o.id !== t.id).map(o => {
+            const on = t.deps.includes(o.id)
+            return (
+              <button key={o.id} onClick={() => toggle(t, o.id)}
+                className={cn('text-[10px] px-1.5 py-0.5 rounded border transition-colors',
+                  on ? 'bg-primary/15 border-primary/50 text-primary' : 'bg-muted/40 border-border text-muted-foreground/55 hover:text-foreground')}
+                title={o.title}>#{o.ord}</button>
+            )
+          })}
+          {t.deps.length === 0 && <span className="text-[10px] text-muted-foreground/40">无（可并行）</span>}
         </div>
       ))}
+    </div>
+  )
+}
+
+// 横向流程图：子任务按依赖分层渲染——同一列并行，列与列之间用 → 表示先后；可选开工前依赖编辑。
+function RequestFlow({ tasks, employees, editable, onSetDeps }: {
+  tasks?: VibeTaskInfo[]; employees: EmployeeInfo[]
+  editable?: boolean; onSetDeps?: (taskId: string, deps: string[]) => void
+}) {
+  if (!tasks) return <div className="text-[11px] text-muted-foreground/50 py-2">加载子任务…</div>
+  if (!tasks.length) return <div className="text-[11px] text-muted-foreground/50 py-2">尚未拆解子任务</div>
+  const levels = levelsOf(tasks)
+  const hasDeps = tasks.some(t => t.deps.length > 0)
+  return (
+    <div className="space-y-2">
+      <div className="flex items-start gap-1 overflow-x-auto pb-1">
+        {levels.map((lv, li) => (
+          <div key={li} className="flex items-stretch shrink-0">
+            <div className="flex flex-col gap-2">
+              {lv.map(t => <FlowNode key={t.id} task={t} emp={employees.find(e => e.id === t.assigneeEmployeeId)} />)}
+            </div>
+            {li < levels.length - 1 && <div className="flex items-center px-1 text-muted-foreground/40 text-sm">→</div>}
+          </div>
+        ))}
+      </div>
+      {hasDeps && levels.length > 1 && (
+        <div className="text-[10px] text-muted-foreground/60">分 {levels.length} 批执行：同一列的任务并行，箭头表示先后顺序</div>
+      )}
+      {editable && onSetDeps && <TaskDepsEditor tasks={tasks} onSetDeps={onSetDeps} />}
     </div>
   )
 }
@@ -840,6 +927,12 @@ export function Board({ employees, onChange, goMarket, goWorkbench }: { employee
     window.api.vibeTaskList(reqId).then((t: VibeTaskInfo[]) => setTasksByReq(prev => ({ ...prev, [reqId]: t }))).catch(() => {})
   }, [])
 
+  // 开工前手动改子任务依赖：乐观更新本地，再落库回刷。
+  const setTaskDeps = useCallback((reqId: string, taskId: string, deps: string[]) => {
+    setTasksByReq(prev => ({ ...prev, [reqId]: (prev[reqId] ?? []).map(t => t.id === taskId ? { ...t, deps } : t) }))
+    window.api.vibeTaskSetDeps(taskId, deps).then(() => loadTasks(reqId)).catch(() => loadTasks(reqId))
+  }, [loadTasks])
+
   const refresh = useCallback(() => {
     window.api.vibeRequestListAll()
       .then((r: VibeRequestInfo[]) => {
@@ -1078,7 +1171,11 @@ export function Board({ employees, onChange, goMarket, goWorkbench }: { employee
 
                         {flowOpen && (
                           <div className="mt-2.5 overflow-x-auto pb-1">
-                            <RequestFlow tasks={subsOf(r.id)} employees={employees} />
+                            <RequestFlow
+                              tasks={subsOf(r.id)} employees={employees}
+                              editable={g.key === 'proposed' && applying !== r.id}
+                              onSetDeps={(taskId, deps) => setTaskDeps(r.id, taskId, deps)}
+                            />
                           </div>
                         )}
 

@@ -70,6 +70,25 @@ export function GlobalSettings({ tab, settings, providers, onSave, onProvidersRe
           onChange={(p, m) => updatePair('defaultChatProviderId', p, 'defaultChatModel', m)}
           onRefresh={handleRefreshModels}
         />
+
+        <div className="space-y-1.5">
+          <label className="text-sm font-medium block">思考模式（Claude / Anthropic 模型）</label>
+          <Select<'auto' | 'fast' | 'deep'>
+            value={draft.chatThinkingMode ?? 'auto'}
+            onChange={v => update('chatThinkingMode', v)}
+            options={[
+              { value: 'auto', label: '自动（跟随模型默认）' },
+              { value: 'fast', label: '快速 — 关闭扩展思考，直接出答案' },
+              { value: 'deep', label: '深度 — 给足思考预算，换更强推理（更慢）' }
+            ]}
+            size="md"
+            className="w-full [&>span]:w-full"
+          />
+          <p className="text-[11px] text-muted-foreground">
+            Opus 4.8 这类模型会在出答案前先「思考」一大段，期间界面会实时显示思考过程。若只想要快答案、不想等思考，选「快速」让它直接作答；需要更强推理时选「深度」。仅对 Anthropic 原生模型生效，对话与公司工作台都适用。
+          </p>
+        </div>
+
         <ModelPicker
           label="图片生成"
           providers={providers}

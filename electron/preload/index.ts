@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import { IPC, type ScheduledTask, type ScheduledTaskRun, type ScheduledTaskInput, type ScheduledRunCompletedEvent, type VideoGenerateRequest, type VideoGenerateResult, type VideoProgressEvent } from '../../src/shared/ipc-types'
 
 // Expose type-safe IPC bridge to renderer
@@ -60,6 +60,7 @@ const api = {
   vibeRequestDelete: (id: string) => ipcRenderer.invoke(IPC.VIBE_REQUEST_DELETE, id),
   vibeRequestSetAssignee: (requestId: string, employeeId: string | null) => ipcRenderer.invoke(IPC.VIBE_REQUEST_SET_ASSIGNEE, { requestId, employeeId }),
   vibeTaskSetAssignee: (taskId: string, employeeId: string | null) => ipcRenderer.invoke(IPC.VIBE_TASK_SET_ASSIGNEE, { taskId, employeeId }),
+  vibeTaskSetDeps: (taskId: string, deps: string[]) => ipcRenderer.invoke(IPC.VIBE_TASK_SET_DEPS, { taskId, deps }),
   vibeTaskList: (requestId: string) => ipcRenderer.invoke(IPC.VIBE_TASK_LIST, requestId),
   vibeTaskToggle: (args: { taskId: string; status: 'pending' | 'done' | 'skipped' }) =>
     ipcRenderer.invoke(IPC.VIBE_TASK_TOGGLE, args),
@@ -170,6 +171,10 @@ const api = {
     ipcRenderer.invoke(IPC.FILE_REVERT_BACKUP, backupPath, targetPath),
   openFileDialog: (options?: unknown) => ipcRenderer.invoke(IPC.FILE_OPEN_DIALOG, options),
   writeTempFile: (params: { name: string; data: string }) => ipcRenderer.invoke(IPC.FILE_WRITE_TEMP, params),
+  // Resolve a drag-dropped File's real absolute path. Electron 32+ removed
+  // File.path; webUtils.getPathForFile is the supported replacement. Returns ''
+  // for in-memory File objects (no disk backing) — callers fall back to writeTempFile.
+  getPathForFile: (file: File): string => { try { return webUtils.getPathForFile(file) } catch { return '' } },
   saveFileAs: (sourcePath: string, suggestedName?: string) =>
     ipcRenderer.invoke(IPC.FILE_SAVE_AS, sourcePath, suggestedName),
   saveTextAs: (params: { defaultName: string; content: string; filters?: Array<{ name: string; extensions: string[] }> }) =>

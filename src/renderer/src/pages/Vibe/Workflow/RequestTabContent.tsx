@@ -45,6 +45,18 @@ export function RequestTabContent({
   useEffect(() => {
     setRunStartedAt(running ? Date.now() : undefined)
   }, [running, request?.id])
+
+  // Real activity line for the ThinkingConsole — the latest tool call / status
+  // message, so the workbench shows what's ACTUALLY happening (not canned text).
+  const liveLine = useMemo(() => {
+    if (!running) return undefined
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i]
+      if (m.role === 'tool' && m.toolName) return `调用 ${m.toolName}…`
+      if (m.role === 'system' && m.content) return m.content
+    }
+    return undefined
+  }, [messages, running])
   const messagesRef = useRef<HTMLDivElement>(null)
   const messagesContentRef = useRef<HTMLDivElement>(null)
   const taRef = useRef<HTMLTextAreaElement>(null)
@@ -283,9 +295,10 @@ export function RequestTabContent({
             <Square size={10} className="inline mr-1" />停止
           </button>
           </div>
-          {/* Rolling activity log — keeps the propose gap (forced single tool
-              call, ~10-30s of no text) from looking frozen. */}
-          <ThinkingConsole active variant={running} startedAt={runStartedAt} />
+          {/* Real activity log — elapsed clock + the latest actual tool/status
+              line. idleLabel=null: the banner above already states the phase, so
+              don't repeat it here (avoids a duplicate "思考中"). */}
+          <ThinkingConsole active variant={running} startedAt={runStartedAt} liveLine={liveLine} idleLabel={null} />
         </div>
       )}
 

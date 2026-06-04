@@ -140,11 +140,21 @@ export async function writeFile(params: { filePath: string; operations: WriteOpe
     workbook = XLSX.readFile(filePath)
   } else {
     workbook = XLSX.utils.book_new()
-    // Ensure every operation's target sheet exists; if the model only references
-    // one or two sheet names, we lazily create them with an empty grid.
-    const referenced = Array.from(new Set(operations.map(o => o.sheet).filter(Boolean)))
-    const sheets = referenced.length ? referenced : ['Sheet1']
-    for (const name of sheets) {
+  }
+
+  // Ensure every operation's target sheet exists, lazily creating any missing one
+  // with an empty grid. This must run for BOTH a brand-new file AND incremental
+  // writes into an EXISTING file: the agent commonly writes keyword-per-sheet
+  // across several file_write calls, so a later op targets a sheet (e.g.
+  // KW8_…) the already-saved workbook doesn't have yet. Previously only the
+  // new-FILE branch pre-created sheets, so writing a new sheet into an existing
+  // workbook threw "Sheet not found" and aborted the whole turn mid-task. Fall
+  // back to a single 'Sheet1' only for a brand-new file that references no sheet,
+  // so XLSX never serializes a zero-sheet workbook.
+  const referenced = Array.from(new Set(operations.map(o => o.sheet).filter(Boolean)))
+  const ensureSheets = referenced.length ? referenced : (existed ? [] : ['Sheet1'])
+  for (const name of ensureSheets) {
+    if (!workbook.Sheets[name]) {
       XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([[]]), name)
     }
   }
