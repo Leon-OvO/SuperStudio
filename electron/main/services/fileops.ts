@@ -79,12 +79,16 @@ function readPptx(filePath: string, signal?: AbortSignal): { content: string; ty
 async function readPdf(filePath: string, signal?: AbortSignal): Promise<{ content: string; type: string }> {
   const { getDocument, GlobalWorkerOptions } = await import('pdfjs-dist')
   GlobalWorkerOptions.workerSrc = ''
-  const buffer = fs.readFileSync(filePath)
+  // pdfjs-dist 4.x hard-rejects a Node Buffer (`getDataProp` throws
+  // "Please provide binary data as `Uint8Array`, rather than `Buffer`."),
+  // and fs.readFileSync returns a Buffer. Copy into a plain Uint8Array so
+  // pdfjs accepts it directly (fresh backing buffer ⇒ byteLength matches).
+  const data = new Uint8Array(fs.readFileSync(filePath))
   // PDFs are the slowest parse path — check the abort signal between every
   // page so a 500-page PDF doesn't hold the agent loop hostage when the
   // user clicks Stop. pdfjs's loadingTask.destroy() also lets us cancel
   // the in-flight Page reads cleanly.
-  const loadingTask = getDocument({ data: buffer, useSystemFonts: true })
+  const loadingTask = getDocument({ data, useSystemFonts: true })
   let cancelled = false
   const onAbort = () => {
     cancelled = true
