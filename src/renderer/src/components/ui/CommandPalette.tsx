@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Search, MessageSquare, Plus, Zap, Image as ImageIcon, BookOpen, Settings, X, ArrowRight, Loader2 } from 'lucide-react'
+import { Search, MessageSquare, Plus, Zap, Image as ImageIcon, Brain, Settings, X, ArrowRight, Loader2 } from 'lucide-react'
 import type { Session } from '../../../../shared/ipc-types'
 import { cn } from '../../lib/utils'
 
@@ -64,7 +64,7 @@ export function CommandPalette({ open, onClose }: Props) {
     { kind: 'nav', id: 'chat',      label: '对话',      hint: 'Ctrl+1', icon: <MessageSquare size={14} />, run: () => { navigateTo('chat'); onClose() } },
     { kind: 'nav', id: 'workflow',  label: '工作流',    hint: 'Ctrl+2', icon: <Zap size={14} />,           run: () => { navigateTo('workflow'); onClose() } },
     { kind: 'nav', id: 'gallery',   label: '素材库',    hint: 'Ctrl+3', icon: <ImageIcon size={14} />,     run: () => { navigateTo('gallery'); onClose() } },
-    { kind: 'nav', id: 'knowledge', label: '知识库',    hint: 'Ctrl+4', icon: <BookOpen size={14} />,      run: () => { navigateTo('knowledge'); onClose() } },
+    { kind: 'nav', id: 'memory',    label: '记忆',      hint: 'Ctrl+4', icon: <Brain size={14} />,         run: () => { navigateTo('memory'); onClose() } },
     { kind: 'nav', id: 'settings',  label: '设置',      hint: 'Ctrl+,', icon: <Settings size={14} />,      run: () => { navigateTo('settings'); onClose() } }
   ], [onClose])
 

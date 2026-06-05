@@ -4,6 +4,36 @@ import { IPC } from '../../../src/shared/ipc-types'
 import { dbRun, dbAll, dbGet } from '../db/sqlite'
 import { randomUUID } from 'crypto'
 
+/** Best-effort: distill long-term memories from a session's transcript in the
+ *  background. Honors the auto-capture setting; never throws into callers. */
+async function captureSessionMemoryInBackground(sessionId: string): Promise<void> {
+  try {
+    const { getSettings } = await import('../services/store')
+    if (getSettings().memoryAutoCapture === false) return
+    const { captureFromTranscript } = await import('../services/memory')
+    const rows = dbAll<{ role: string; content: string }>(
+      `SELECT role, content FROM messages WHERE session_id = ? ORDER BY created_at ASC`,
+      [sessionId]
+    )
+    const transcript = rows
+      .filter(r => r.content && r.content.trim())
+      .map(r => `${r.role === 'user' ? '用户' : 'AI'}: ${r.content}`)
+      .join('\n\n')
+    const inserted = await captureFromTranscript({
+      transcript,
+      source: `session:${sessionId}`,
+      allowedKinds: ['profile', 'episode', 'skill'],
+      scopeKey: sessionId,
+    })
+    if (inserted.length) {
+      const { getMainWindow } = await import('../index')
+      getMainWindow()?.webContents.send(IPC.MEMORY_CAPTURED, { count: inserted.length, memories: inserted })
+    }
+  } catch (e) {
+    console.warn('[memory] session archive capture failed:', (e as Error).message)
+  }
+}
+
 export function sessionHandlers(): void {
   ipcMain.handle(IPC.SESSIONS_LIST, () =>
     dbAll(`
@@ -50,6 +80,9 @@ export function sessionHandlers(): void {
 
   ipcMain.handle(IPC.SESSIONS_ARCHIVE, (_e, id: string, archived: boolean) => {
     dbRun(`UPDATE sessions SET archived = ? WHERE id = ?`, [archived ? 1 : 0, id])
+    // Archiving a chat = a natural "done" signal → distill long-term memories
+    // from it in the background (best-effort, never blocks the reply).
+    if (archived) void captureSessionMemoryInBackground(id)
     return { ok: true }
   })
 

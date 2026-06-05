@@ -1,18 +1,16 @@
-import type { ReactNode } from 'react'
 import {
-  MessageSquare, Zap, Image, Film, BookOpen, Building2, Sparkles, CalendarClock, Settings,
-  Sun, Moon, Languages, PanelLeftClose, PanelLeftOpen, type LucideIcon
+  MessageSquare, Zap, Image, Film, Brain, Building2, Sparkles, CalendarClock, Settings,
+  PanelLeftClose, PanelLeftOpen, type LucideIcon
 } from 'lucide-react'
 import { useUIStore } from '../../stores/ui'
 import { useScheduledNotifications } from '../../stores/scheduledNotifications'
 import { cn } from '../../lib/utils'
-import { useT, setLanguage, useLanguage } from '../../lib/i18n'
+import { useT } from '../../lib/i18n'
 
 export function Sidebar() {
-  const { currentPage, setPage, theme, toggleTheme, sidebarExpanded, setSidebarExpanded } = useUIStore()
+  const { currentPage, setPage, sidebarExpanded, setSidebarExpanded } = useUIStore()
   const expanded = sidebarExpanded
   const t = useT()
-  const lang = useLanguage()
   const hasUnreadScheduled = useScheduledNotifications(s => Object.keys(s.unread).length > 0)
 
   // Dashboard is intentionally not in the side nav — accessible from the top-right
@@ -24,12 +22,10 @@ export function Sidebar() {
     { id: 'video' as const, icon: Film, label: t('nav.video') },
     { id: 'gallery' as const, icon: Image, label: t('nav.gallery') },
     { id: 'workflow' as const, icon: Zap, label: t('nav.workflow') },
-    { id: 'knowledge' as const, icon: BookOpen, label: t('nav.knowledge') },
+    { id: 'memory' as const, icon: Brain, label: t('nav.memory') },
     { id: 'skills' as const, icon: Sparkles, label: t('nav.skills') },
     { id: 'scheduler' as const, icon: CalendarClock, label: t('nav.scheduler') },
   ]
-
-  const themeLabel = theme === 'dark' ? t('nav.themeLight') : t('nav.themeDark')
 
   return (
     <aside
@@ -68,21 +64,9 @@ export function Sidebar() {
 
       <div className="flex-1" />
 
-      {/* Bottom utilities */}
+      {/* Bottom utilities — language & theme moved to the top bar (next to the
+          account menu); only Settings remains here. */}
       <div className="w-full flex flex-col gap-1 pt-1.5 border-t border-sidebar-border/60">
-        <NavButton
-          icon={Languages}
-          label={t('nav.languageSwitch')}
-          expanded={expanded}
-          onClick={() => setLanguage(lang === 'zh' ? 'en' : 'zh')}
-          cornerBadge={lang.toUpperCase()}
-        />
-        <NavButton
-          icon={theme === 'dark' ? Sun : Moon}
-          label={themeLabel}
-          expanded={expanded}
-          onClick={toggleTheme}
-        />
         <NavButton
           icon={Settings}
           label={t('nav.settings')}
@@ -96,7 +80,7 @@ export function Sidebar() {
 }
 
 function NavButton({
-  icon: Icon, iconSize = 20, label, active = false, expanded, onClick, dot = false, cornerBadge
+  icon: Icon, iconSize = 20, label, active = false, expanded, onClick, dot = false
 }: {
   icon: LucideIcon
   iconSize?: number
@@ -105,8 +89,6 @@ function NavButton({
   expanded: boolean
   onClick: () => void
   dot?: boolean
-  /** Tiny badge over the icon (e.g. current language code). */
-  cornerBadge?: ReactNode
 }) {
   return (
     <button
@@ -125,11 +107,6 @@ function NavButton({
         <Icon size={iconSize} strokeWidth={active ? 2 : 1.75} />
         {dot && (
           <span className="absolute -top-1 -right-1.5 w-1.5 h-1.5 rounded-full bg-red-500 ring-2 ring-sidebar" />
-        )}
-        {cornerBadge != null && (
-          <span className="absolute -right-2.5 -bottom-1.5 px-0.5 text-[8px] font-bold leading-none text-muted-foreground/80">
-            {cornerBadge}
-          </span>
         )}
       </span>
       {expanded && (

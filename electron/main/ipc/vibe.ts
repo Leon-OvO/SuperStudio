@@ -30,6 +30,7 @@ import type {
 import { getMainWindow } from '../index'
 import { getProviders, getSettings } from '../services/store'
 import { createLLMClient, thinkingStreamOpts, effectiveProtocol } from '../services/llm'
+import { recallForProject, captureFromTranscript } from '../services/memory'
 import {
   getVibeProjectsRoot,
   addRecentProject,
@@ -661,10 +662,17 @@ function buildApplySystem(request: VibeRequestRow, currentTask: VibeTaskRow, oth
   const otherSummary = otherTasks
     .map(t => `${t.status === 'done' ? '✓' : '☐'} ${t.ord}. ${t.title}`)
     .join('\n  ')
+  // Long-term memory about this project + the user (Hermes-style recall). Lets
+  // the company "remember" past decisions/conventions across requests.
+  let memoryBlock = ''
+  try {
+    const mem = recallForProject(`${currentTask.title}\n${currentTask.description || ''}`, request.project_path)
+    if (mem) memoryBlock = `\n已知的长期记忆（关于该项目/用户，主动遵循，勿复述）：\n<untrusted_content source="memory">\n${mem}\n</untrusted_content>\n`
+  } catch { /* recall is best-effort */ }
   return `You are implementing a single task within a larger coding change. Stay focused on THIS task only.
 
 Change: ${request.title}
-${request.summary ? `Summary: ${request.summary}\n` : ''}
+${request.summary ? `Summary: ${request.summary}\n` : ''}${memoryBlock}
 
 All tasks (for context — do NOT execute others):
   ${otherSummary}
@@ -691,6 +699,32 @@ Do NOT:
 - Touch files unrelated to this specific task
 - Write comments unless they explain non-obvious WHY
 - Execute other tasks in the list`
+}
+
+/** After a request is delivered, distill project-level long-term memories from
+ *  its transcript (best-effort, background) so the company "remembers" this
+ *  project's decisions/conventions next time. Honors the auto-capture setting. */
+async function captureRequestMemory(request: VibeRequestRow): Promise<void> {
+  try {
+    if (getSettings().memoryAutoCapture === false) return
+    const msgs = listMessages(request.id)
+    const transcript = [
+      `需求：${request.title}`,
+      request.summary ? `摘要：${request.summary}` : '',
+      ...msgs.filter(m => m.content && m.content.trim()).map(m => `${m.role}: ${m.content}`),
+    ].filter(Boolean).join('\n\n')
+    const inserted = await captureFromTranscript({
+      transcript,
+      source: `request:${request.id}`,
+      allowedKinds: ['project', 'skill'],
+      scopeKey: request.project_path,
+    })
+    if (inserted.length) {
+      getMainWindow()?.webContents.send(IPC.MEMORY_CAPTURED, { count: inserted.length, memories: inserted })
+    }
+  } catch (e) {
+    console.warn('[memory] request capture failed:', (e as Error).message)
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1748,6 +1782,8 @@ export function vibeHandlers(): void {
         if (!stillPending) {
           const empIds = new Set(finalTasks.map(t => t.assignee_employee_id).filter(Boolean) as string[])
           for (const id of empIds) bumpEmployeeStats(id, { done: 1 })
+          // 公司越用越聪明：交付后从本需求记录提炼项目记忆（后台、不阻塞）
+          void captureRequestMemory(request)
         }
 
         win.webContents.send(IPC.VIBE_DONE, { projectPath, requestId: request.id, cancelled: ctl.signal.aborted })

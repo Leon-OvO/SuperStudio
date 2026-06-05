@@ -44,6 +44,7 @@ interface TaskRow {
   provider_id: string | null
   model: string | null
   webhook_bot_id: string | null
+  computer_mode: number
   enabled: number
   last_fired_at: number | null
   next_fire_at: number
@@ -89,7 +90,7 @@ async function tickOnce(): Promise<void> {
   const now = Date.now()
   const due = dbAll<TaskRow>(
     `SELECT id, name, prompt, schedule_kind, schedule_value, session_id, provider_id, model,
-            webhook_bot_id, enabled, last_fired_at, next_fire_at, consecutive_failures
+            webhook_bot_id, computer_mode, enabled, last_fired_at, next_fire_at, consecutive_failures
      FROM scheduled_tasks
      WHERE enabled = 1 AND next_fire_at <= ?
      ORDER BY next_fire_at ASC`,
@@ -110,7 +111,7 @@ function catchUpOnStartup(): void {
   const now = Date.now()
   const tasks = dbAll<TaskRow>(
     `SELECT id, name, prompt, schedule_kind, schedule_value, session_id, provider_id, model,
-            webhook_bot_id, enabled, last_fired_at, next_fire_at, consecutive_failures
+            webhook_bot_id, computer_mode, enabled, last_fired_at, next_fire_at, consecutive_failures
      FROM scheduled_tasks
      WHERE enabled = 1`
   )
@@ -178,7 +179,10 @@ async function executeTask(row: TaskRow, opts: { isManual: boolean }): Promise<v
         message: row.prompt,
         overrideProviderId: row.provider_id ?? undefined,
         overrideModel: row.model ?? undefined,
-        scheduledContext: true
+        scheduledContext: true,
+        // Computer-use scheduled run: unattended, so the engine auto-arms (no
+        // confirm dialog) — still gated by the global computerUseEnabled switch.
+        computerMode: row.computer_mode === 1
       }, mainWindow)
     }
   } catch (e) {
@@ -321,7 +325,7 @@ async function maybeSendWebhook(
 function loadTask(taskId: string): TaskRow | null {
   return dbGet<TaskRow>(
     `SELECT id, name, prompt, schedule_kind, schedule_value, session_id, provider_id, model,
-            webhook_bot_id, enabled, last_fired_at, next_fire_at, consecutive_failures
+            webhook_bot_id, computer_mode, enabled, last_fired_at, next_fire_at, consecutive_failures
      FROM scheduled_tasks WHERE id = ?`,
     [taskId]
   )

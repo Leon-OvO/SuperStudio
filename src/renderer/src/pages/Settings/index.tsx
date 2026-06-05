@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { ProviderConfig, AppSettings } from '../../../../shared/ipc-types'
 import { GlobalSettings } from './GlobalSettings'
+import { PluginsTab } from './PluginsTab'
 import { McpServers } from './McpServers'
 import { About } from './About'
 import { AccountTab } from './AccountTab'
@@ -12,7 +13,7 @@ import { useT } from '../../lib/i18n'
 // 'system' is the parent tab that now bundles 模型 / 自动切换模型 / 构建 as
 // sub-sections (see SystemTab). The standalone 'defaults' / 'auto-model' /
 // 'build' tabs are gone from the sidebar.
-type Tab = 'account' | 'system' | 'search' | 'kb' | 'mcp' | 'about'
+type Tab = 'account' | 'system' | 'search' | 'kb' | 'mcp' | 'plugins' | 'about'
 
 export function SettingsPage() {
   const t = useT()
@@ -150,12 +151,14 @@ export function SettingsPage() {
         <TabButton active={tab === 'search'} onClick={() => setTab('search')}>{t('settings.tabWebSearch')}</TabButton>
         <TabButton active={tab === 'kb'} onClick={() => setTab('kb')}>{t('settings.tabKnowledgeBase')}</TabButton>
         <TabButton active={tab === 'mcp'} onClick={() => setTab('mcp')}>{t('settings.tabMcpServers')}</TabButton>
+        <TabButton active={tab === 'plugins'} onClick={() => setTab('plugins')}>{t('settings.tabPlugins')}</TabButton>
         <div className="flex-1" />
         <TabButton active={tab === 'about'} onClick={() => setTab('about')}>{t('settings.tabAbout')}</TabButton>
       </aside>
       <div className="flex-1 overflow-y-auto p-6">
         {tab === 'account' && <AccountTab onProvidersRefresh={reload} />}
         {tab === 'mcp' && <McpServers />}
+        {tab === 'plugins' && settings && <PluginsTab settings={settings} onSave={handleSaveSettings} />}
         {tab === 'system' && (
           <SystemTab
             settings={settings}

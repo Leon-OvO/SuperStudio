@@ -25,6 +25,7 @@ interface TaskRow {
   provider_id: string | null
   model: string | null
   webhook_bot_id: string | null
+  computer_mode: number
   enabled: number
   last_fired_at: number | null
   next_fire_at: number
@@ -48,7 +49,7 @@ export function schedulerHandlers(): void {
   ipcMain.handle(IPC.SCHEDULER_LIST, () => {
     const rows = dbAll<TaskRow>(
       `SELECT id, name, prompt, schedule_kind, schedule_value, session_id, provider_id, model,
-              webhook_bot_id, enabled, last_fired_at, next_fire_at, consecutive_failures, created_at, updated_at
+              webhook_bot_id, computer_mode, enabled, last_fired_at, next_fire_at, consecutive_failures, created_at, updated_at
        FROM scheduled_tasks ORDER BY created_at DESC`
     )
     return rows.map(rowToTask)
@@ -57,7 +58,7 @@ export function schedulerHandlers(): void {
   ipcMain.handle(IPC.SCHEDULER_GET, (_e, id: string) => {
     const row = dbGet<TaskRow>(
       `SELECT id, name, prompt, schedule_kind, schedule_value, session_id, provider_id, model,
-              webhook_bot_id, enabled, last_fired_at, next_fire_at, consecutive_failures, created_at, updated_at
+              webhook_bot_id, computer_mode, enabled, last_fired_at, next_fire_at, consecutive_failures, created_at, updated_at
        FROM scheduled_tasks WHERE id = ?`,
       [id]
     )
@@ -85,13 +86,13 @@ export function schedulerHandlers(): void {
     dbRun(
       `INSERT INTO scheduled_tasks (
          id, name, prompt, schedule_kind, schedule_value, session_id,
-         provider_id, model, webhook_bot_id, enabled, last_fired_at, next_fire_at,
+         provider_id, model, webhook_bot_id, computer_mode, enabled, last_fired_at, next_fire_at,
          consecutive_failures, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, 0, ?, ?)`,
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, 0, ?, ?)`,
       [
         id, input.name, input.prompt, input.scheduleKind, JSON.stringify(input.scheduleValue),
         sessionId, input.providerId ?? null, input.model ?? null, input.webhookBotId ?? null,
-        enabled ? 1 : 0, next, now, now
+        input.computerMode ? 1 : 0, enabled ? 1 : 0, next, now, now
       ]
     )
     return rowToTask(loadRowOrThrow(id))
@@ -113,11 +114,12 @@ export function schedulerHandlers(): void {
     dbRun(
       `UPDATE scheduled_tasks SET
          name = ?, prompt = ?, schedule_kind = ?, schedule_value = ?,
-         provider_id = ?, model = ?, webhook_bot_id = ?, next_fire_at = ?, updated_at = ?
+         provider_id = ?, model = ?, webhook_bot_id = ?, computer_mode = ?, next_fire_at = ?, updated_at = ?
        WHERE id = ?`,
       [
         input.name, input.prompt, input.scheduleKind, JSON.stringify(input.scheduleValue),
-        input.providerId ?? null, input.model ?? null, input.webhookBotId ?? null, next, now, id
+        input.providerId ?? null, input.model ?? null, input.webhookBotId ?? null,
+        input.computerMode ? 1 : 0, next, now, id
       ]
     )
     return rowToTask(loadRowOrThrow(id))
@@ -245,6 +247,7 @@ function rowToTask(row: TaskRow): ScheduledTask {
     providerId: row.provider_id,
     model: row.model,
     webhookBotId: row.webhook_bot_id,
+    computerMode: row.computer_mode === 1,
     enabled: row.enabled === 1,
     lastFiredAt: row.last_fired_at,
     nextFireAt: row.next_fire_at,

@@ -9,21 +9,22 @@ import { ChatPage } from './pages/Chat'
 import { WorkflowPage } from './pages/Workflow'
 import { GalleryPage } from './pages/Gallery'
 import { VideoPage } from './pages/Video'
-import { KnowledgePage } from './pages/Knowledge'
+import { MemoryPage } from './pages/Memory'
 import { VibePage } from './pages/Vibe'
 import { SkillsPage } from './pages/Skills'
 import { SchedulerPage } from './pages/Scheduler'
 import { SettingsPage } from './pages/Settings'
 import { ShortcutsHelp } from './components/ui/ShortcutsHelp'
 import { CommandPalette } from './components/ui/CommandPalette'
-import { ToastHost } from './components/ui/Toast'
+import { ToastHost, toast } from './components/ui/Toast'
+import { useConfirmDialog } from './components/ui/ConfirmDialog'
 import { LoginScreen } from './pages/Login'
 import { DataDirectorySetup } from './components/DataDirectorySetup'
 import { ChatModelSetup } from './components/ChatModelSetup'
 import { UpdateNotifier } from './components/UpdateNotifier'
 import { useScheduledNotifications } from './stores/scheduledNotifications'
 
-type PageId = 'dashboard' | 'chat' | 'workflow' | 'gallery' | 'knowledge' | 'vibe' | 'skills' | 'scheduler' | 'video' | 'settings'
+type PageId = 'dashboard' | 'chat' | 'workflow' | 'gallery' | 'memory' | 'vibe' | 'skills' | 'scheduler' | 'video' | 'settings'
 
 export default function App() {
   const { currentPage, setPage, skin, setPendingWorkflowId } = useUIStore()
@@ -45,9 +46,35 @@ export default function App() {
   // reload (e.g. on login/logout cycles), nor override a page that shell-open
   // already navigated to.
   const didApplyStartupPageRef = useRef(false)
+  const cuConfirm = useConfirmDialog()
 
   useEffect(() => {
     restoreSession()
+  }, [])
+
+  // Computer Use arming: main asks here so the confirm uses the app's styled
+  // dialog (not a native OS box). Reply with the user's choice.
+  useEffect(() => {
+    const off = window.api.onComputerUseConfirm?.(async (req) => {
+      const ok = await cuConfirm.confirm({
+        title: '允许 AI 操控你的电脑？',
+        message: 'AI 即将开始操控你的鼠标、键盘和屏幕，能点击、输入到本机任意程序。仅在你信任当前任务时允许；操作期间屏幕顶部会有红色提示，按 Esc 可随时立即急停。',
+        tone: 'danger',
+        confirmLabel: '允许 AI 操控',
+        cancelLabel: '取消',
+      })
+      window.api.respondComputerUseConfirm?.(req.id, ok)
+    })
+    return () => { off?.() }
+  }, [cuConfirm])
+
+  // Long-term memory captured anywhere (chat archive / company delivery / manual)
+  // → surface a single app-wide toast so "越用越聪明" is visible regardless of page.
+  useEffect(() => {
+    const off = window.api.onMemoryCaptured?.((info) => {
+      if (info?.count > 0) toast.success(`🧠 已记住 ${info.count} 条`)
+    })
+    return () => { off?.() }
   }, [])
 
   // Re-check the data-directory setting whenever the user transitions into a
@@ -163,7 +190,7 @@ export default function App() {
       }
 
       // Mod + 0-7 : nav to main pages
-      const pageMap: Record<string, PageId> = { '0': 'dashboard', '1': 'chat', '2': 'workflow', '3': 'gallery', '4': 'knowledge', '5': 'vibe', '6': 'skills', '7': 'scheduler' }
+      const pageMap: Record<string, PageId> = { '0': 'dashboard', '1': 'chat', '2': 'workflow', '3': 'gallery', '4': 'memory', '5': 'vibe', '6': 'skills', '7': 'scheduler' }
       if (pageMap[e.key]) {
         // Don't hijack number input inside text fields
         if (inTextField) return
@@ -309,7 +336,7 @@ export default function App() {
           {currentPage === 'workflow' && <WorkflowPage />}
           {currentPage === 'gallery' && <GalleryPage />}
           {currentPage === 'video' && <VideoPage />}
-          {currentPage === 'knowledge' && <KnowledgePage />}
+          {currentPage === 'memory' && <MemoryPage />}
           {currentPage === 'vibe' && <VibePage />}
           {currentPage === 'skills' && <SkillsPage />}
           {currentPage === 'scheduler' && <SchedulerPage />}
@@ -320,6 +347,7 @@ export default function App() {
       <ShortcutsHelp open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
       <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
       <ToastHost />
+      {cuConfirm.element}
       <UpdateNotifier />
     </div>
   )

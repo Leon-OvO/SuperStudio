@@ -12,6 +12,7 @@ const ZH: Dict = {
   'nav.gallery': '素材库',
   'nav.video': '视频',
   'nav.knowledge': '知识库',
+  'nav.memory': '记忆',
   'nav.skills': '技能',
   'nav.scheduler': '定时',
   'nav.company': '公司',
@@ -131,6 +132,7 @@ const ZH: Dict = {
   'skills.tabBrowse': '发现',
   'skills.tabSources': '源',
   'skills.mySkills': '我的技能',
+  'skills.importLocal': '导入本地技能',
   'skills.searchInstalledPlaceholder': '搜索已安装…',
   'skills.emptyInstalledTitle': '还没安装任何技能',
   'skills.emptyInstalledMessage': '点上方「发现」浏览推荐技能，或在「源」里添加自定义仓库。',
@@ -167,8 +169,9 @@ const ZH: Dict = {
   'settings.tabAccount': '账号',
   'settings.tabGlobal': '全局',
   'settings.tabWebSearch': '网络搜索',
-  'settings.tabKnowledgeBase': '知识库',
+  'settings.tabKnowledgeBase': '记忆',
   'settings.tabMcpServers': 'MCP 服务器',
+  'settings.tabPlugins': '插件',
   'settings.tabAbout': '关于 & 更新',
 
   // Chat header
@@ -190,6 +193,7 @@ const EN: Dict = {
   'nav.gallery': 'Asset Library',
   'nav.video': 'Video',
   'nav.knowledge': 'Knowledge',
+  'nav.memory': 'Memory',
   'nav.skills': 'Skills',
   'nav.scheduler': 'Scheduler',
   'nav.company': 'Company',
@@ -307,6 +311,7 @@ const EN: Dict = {
   'skills.tabBrowse': 'Discover',
   'skills.tabSources': 'Sources',
   'skills.mySkills': 'My Skills',
+  'skills.importLocal': 'Import Local Skill',
   'skills.searchInstalledPlaceholder': 'Search installed…',
   'skills.emptyInstalledTitle': 'No skills installed yet',
   'skills.emptyInstalledMessage': 'Open "Discover" above to browse recommended skills, or add a custom repository under "Sources".',
@@ -343,8 +348,9 @@ const EN: Dict = {
   'settings.tabAccount': 'Account',
   'settings.tabGlobal': 'General',
   'settings.tabWebSearch': 'Web Search',
-  'settings.tabKnowledgeBase': 'Knowledge Base',
+  'settings.tabKnowledgeBase': 'Memory',
   'settings.tabMcpServers': 'MCP Servers',
+  'settings.tabPlugins': 'Plugins',
   'settings.tabAbout': 'About & Updates',
 
   // Chat header

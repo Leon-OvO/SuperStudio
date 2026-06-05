@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { ArrowLeft, Save, AlertTriangle, ChevronDown, ChevronUp } from 'lucide-react'
+import { ArrowLeft, Save, AlertTriangle, ChevronDown, ChevronUp, Monitor } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { toast } from '../../components/ui/Toast'
 import { Select } from '../../components/ui/Select'
@@ -41,13 +41,18 @@ export function TaskForm({ task, fromTemplate, onBack, onSaved }: Props) {
   const [providerId, setProviderId] = useState<string>(task?.providerId ?? '')
   const [model, setModel] = useState<string>(task?.model ?? '')
   const [webhookBotId, setWebhookBotId] = useState<string>(task?.webhookBotId ?? '')
+  const [computerMode, setComputerMode] = useState(task?.computerMode ?? false)
   const [providers, setProviders] = useState<ProviderConfig[]>([])
   const [bots, setBots] = useState<WebhookBot[]>([])
+  const [computerUseEnabled, setComputerUseEnabled] = useState(false)
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
     window.api.listProviders().then(list => setProviders(list as ProviderConfig[])).catch(() => {})
-    window.api.getSettings().then(s => setBots((s as AppSettings).webhookBots ?? [])).catch(() => {})
+    window.api.getSettings().then(s => {
+      setBots((s as AppSettings).webhookBots ?? [])
+      setComputerUseEnabled((s as AppSettings).computerUseEnabled === true)
+    }).catch(() => {})
   }, [])
 
   function switchKind(next: ScheduleKind) {
@@ -107,6 +112,7 @@ export function TaskForm({ task, fromTemplate, onBack, onSaved }: Props) {
         providerId: advancedOpen && providerId ? providerId : null,
         model: advancedOpen && model ? model : null,
         webhookBotId: webhookBotId || null,
+        computerMode,
         enabled: task?.enabled ?? true
       }
       const saved = task
@@ -313,6 +319,44 @@ export function TaskForm({ task, fromTemplate, onBack, onSaved }: Props) {
               </div>
             )}
           </div>
+
+          {/* Computer-use mode — high-risk, unattended desktop control. Only
+              shown when the Computer Use plugin is enabled (设置 → 插件). */}
+          {computerUseEnabled && (
+          <div className={cn(
+            'rounded-md border transition-colors',
+            computerMode ? 'border-red-500/50 bg-red-500/[0.06]' : 'border-border'
+          )}>
+            <button
+              onClick={() => setComputerMode(v => !v)}
+              className="w-full px-3 py-2.5 flex items-center justify-between gap-3 text-left"
+            >
+              <span className="flex items-center gap-2 min-w-0">
+                <Monitor size={15} className={cn('shrink-0', computerMode ? 'text-red-600' : 'text-muted-foreground')} />
+                <span className="min-w-0">
+                  <span className={cn('block text-xs font-medium', computerMode ? 'text-red-600' : 'text-foreground')}>电脑操控（让 AI 自动操作本机）</span>
+                  <span className="block text-[11px] text-muted-foreground mt-0.5">到点后 AI 会看屏幕、自动操作鼠标键盘来完成任务</span>
+                </span>
+              </span>
+              <span className={cn(
+                'shrink-0 w-9 h-5 rounded-full transition-colors relative',
+                computerMode ? 'bg-red-500' : 'bg-muted'
+              )}>
+                <span className={cn(
+                  'absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all',
+                  computerMode ? 'left-[18px]' : 'left-0.5'
+                )} />
+              </span>
+            </button>
+            {computerMode && (
+              <div className="px-3 pb-3 -mt-0.5">
+                <p className="text-[11px] leading-relaxed text-red-600/90 dark:text-red-400/90">
+                  ⚠️ 高危：定时无人值守时 AI 将自动操控你的电脑（点击 / 输入到任意程序），运行期间屏幕上有红色提示，可按 <b>Esc</b> 急停。需选择带视觉的 Claude 模型才会生效。
+                </p>
+              </div>
+            )}
+          </div>
+          )}
 
           {/* Notice */}
           <div className="flex items-start gap-2 p-3 rounded-md bg-amber-500/10 border border-amber-500/30 text-amber-700 dark:text-amber-300">

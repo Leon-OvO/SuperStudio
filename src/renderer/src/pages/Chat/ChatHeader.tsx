@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
-import { GitBranch, MessageSquare, Pencil, Check, X, Download, ChevronDown } from 'lucide-react'
+import { GitBranch, MessageSquare, Pencil, Check, X, Download, ChevronDown, Brain, Loader2 } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { useT } from '../../lib/i18n'
+import { toast } from '../../components/ui/Toast'
 
 // ImageParams + helpers live here for backward compat — used by ChatPage + ChatInput
 export interface ImageParams {
@@ -50,7 +51,21 @@ export function ChatHeader({ sessionId, sessionTitle, onSaveAsWorkflow, onRename
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(sessionTitle)
   const [exportOpen, setExportOpen] = useState(false)
+  const [remembering, setRemembering] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
+
+  async function rememberConversation() {
+    if (!sessionId || remembering) return
+    setRemembering(true)
+    try {
+      const r = await window.api.captureSessionMemory(sessionId) as { count: number }
+      toast.success(r.count > 0 ? `已记住 ${r.count} 条` : '这次对话暂无值得长期记住的内容')
+    } catch (e) {
+      toast.error('提炼记忆失败：' + (e as Error).message)
+    } finally {
+      setRemembering(false)
+    }
+  }
   const exportWrapRef = useRef<HTMLDivElement>(null)
 
   // Close export menu on outside click
@@ -156,6 +171,15 @@ export function ChatHeader({ sessionId, sessionTitle, onSaveAsWorkflow, onRename
             {onRename && (
               <Pencil size={11} className="opacity-0 group-hover:opacity-60 transition-opacity shrink-0 text-muted-foreground" />
             )}
+          </button>
+          <button
+            onClick={rememberConversation}
+            disabled={remembering}
+            title="从这次对话提炼长期记忆（让助手越用越懂你）"
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors disabled:opacity-50"
+          >
+            {remembering ? <Loader2 size={12} className="animate-spin" /> : <Brain size={12} />}
+            记住对话
           </button>
           {onExport && (
             <div ref={exportWrapRef} className="relative">

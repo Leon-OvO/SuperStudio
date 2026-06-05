@@ -5,7 +5,7 @@ import { sessionHandlers } from './sessions'
 import { agentHandlers } from './agent'
 import { fileHandlers } from './files'
 import { galleryHandlers } from './gallery'
-import { kbHandlers } from './knowledge'
+import { memoryHandlers } from './memory'
 import { workflowHandlers } from './workflows'
 import { imageEditHandlers } from './image-edit'
 import { videoHandlers } from './video'
@@ -37,7 +37,7 @@ export function registerIpcHandlers(): void {
     ['agent', agentHandlers],
     ['files', fileHandlers],
     ['gallery', galleryHandlers],
-    ['knowledge', kbHandlers],
+    ['memory', memoryHandlers],
     ['workflows', workflowHandlers],
     ['imageEdit', imageEditHandlers],
     ['video', videoHandlers],

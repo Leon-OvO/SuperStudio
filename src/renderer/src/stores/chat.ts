@@ -23,6 +23,8 @@ interface ChatState {
    *  / starting another session wipes the in-flight session's step list. */
   stepsBySession: Record<string, AgentStep[]>
   mountedSpaceIds: string[]
+  /** Per-turn "电脑操控" mode toggle (runs the screenshot loop on send). */
+  computerMode: boolean
   /** Per-session model override: sessionId -> { providerId, model } */
   sessionModel: Record<string, { providerId: string; model: string }>
 
@@ -50,6 +52,7 @@ interface ChatState {
   updateStep: (step: AgentProgressEvent) => void
   clearSteps: (sessionId: string) => void
   setMountedSpaces: (ids: string[]) => void
+  setComputerMode: (on: boolean) => void
   setSessionModel: (sessionId: string, providerId: string, model: string) => void
 }
 
@@ -60,6 +63,7 @@ export const useChatStore = create<ChatState>((set) => ({
   runningSessionIds: [],
   stepsBySession: {},
   mountedSpaceIds: [],
+  computerMode: false,
   sessionModel: {},
 
   setSessions: (sessions) => set({ sessions }),
@@ -140,6 +144,7 @@ export const useChatStore = create<ChatState>((set) => ({
     stepsBySession: { ...s.stepsBySession, [sessionId]: [] }
   })),
   setMountedSpaces: (ids) => set({ mountedSpaceIds: ids }),
+  setComputerMode: (on) => set({ computerMode: on }),
   setSessionModel: (sessionId, providerId, model) => set(s => ({
     sessionModel: { ...s.sessionModel, [sessionId]: { providerId, model } }
   }))

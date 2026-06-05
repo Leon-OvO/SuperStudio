@@ -20,11 +20,11 @@ interface Attachment { name: string; path: string; mimeType: string }
 
 export function ChatPage() {
   const {
-    sessions, activeSessionId, messages, runningSessionIds, sessionModel, mountedSpaceIds,
+    sessions, activeSessionId, messages, runningSessionIds, sessionModel, computerMode,
     setSessions, setActiveSession, addSession, removeSession, updateSessionTitle,
     setMessages, addMessage, upsertMessage, appendStreamDelta, removeMessage, removeMessagesFrom, updateMessageContent,
     startRun, stopRun, updateStep,
-    setSessionModel, setMountedSpaces
+    setSessionModel, setComputerMode
   } = useChatStore()
 
   // "Running" from the active session's point of view — used to gate sending /
@@ -51,14 +51,21 @@ export function ChatPage() {
   const [editorSrc, setEditorSrc] = React.useState<string | null>(null)
   const [providersCount, setProvidersCount] = React.useState<number | null>(null)
   const [defaultChatModel, setDefaultChatModelState] = React.useState<string>('')
+  const [computerUseEnabled, setComputerUseEnabled] = React.useState<boolean>(false)
+  // If the user disables the Computer Use plugin, drop any leftover per-turn
+  // computerMode so it doesn't silently re-arm when the plugin is turned back on.
+  useEffect(() => {
+    if (!computerUseEnabled && computerMode) setComputerMode(false)
+  }, [computerUseEnabled, computerMode, setComputerMode])
   const dlg = useConfirmDialog()
 
   useEffect(() => {
     loadSessions()
-    const loadSettings = () => window.api.getSettings().then((s: { defaultChatProviderId: string; defaultChatModel: string; defaultImageModel?: string; defaultImageProviderId?: string }) => {
+    const loadSettings = () => window.api.getSettings().then((s: { defaultChatProviderId: string; defaultChatModel: string; defaultImageModel?: string; defaultImageProviderId?: string; computerUseEnabled?: boolean }) => {
       defaultModelRef.current = { providerId: s.defaultChatProviderId, model: s.defaultChatModel }
       setDefaultChatModelState(s.defaultChatModel || '')
       setDefaultImageModel(s.defaultImageModel || '')
+      setComputerUseEnabled(s.computerUseEnabled === true)
       if (s.defaultImageProviderId && s.defaultImageModel) {
         defaultImageModelRef.current = { providerId: s.defaultImageProviderId, model: s.defaultImageModel }
       }
@@ -258,10 +265,10 @@ export function ChatPage() {
       attachments,
       {
         ...(override ? { providerId: override.providerId, model: override.model } : {}),
-        mountedSpaceIds: mountedSpaceIds.length ? mountedSpaceIds : undefined,
         imageSize,
         imageQuality,
-        imageCount
+        imageCount,
+        computerMode: computerMode || undefined
       }
     )
   }
@@ -463,11 +470,12 @@ export function ChatPage() {
           // Always typeable — first-use has no session yet; handleSend lazily
           // creates one on the first send. Only `isRunning` gates input (inside ChatInput).
           disabled={false}
-          mountedSpaceIds={mountedSpaceIds}
-          onMountedSpacesChange={setMountedSpaces}
           attachments={attachments}
           setAttachments={setAttachments}
           imageMode={isImageMode}
+          computerMode={computerMode}
+          onComputerModeChange={setComputerMode}
+          computerUseEnabled={computerUseEnabled}
           providerId={currentOverride?.providerId || ''}
           model={currentOverride?.model || ''}
           onModelChange={(p, m) => activeSessionId && setSessionModel(activeSessionId, p, m)}

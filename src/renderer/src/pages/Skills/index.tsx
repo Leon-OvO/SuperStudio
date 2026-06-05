@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Sparkles, Download, Trash2, ToggleLeft, ToggleRight, RefreshCw, Plus, Link2,
   MessageSquare, Code2, Video, Loader2, ExternalLink, X, AlertCircle, Globe, Package,
-  Search, ChevronLeft, ChevronRight, ChevronDown, Shield, FileText
+  Search, ChevronLeft, ChevronRight, ChevronDown, Shield, FileText, FolderOpen
 } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { useT } from '../../lib/i18n'
@@ -201,6 +201,35 @@ export function SkillsPage() {
     }
   }
 
+  // Import skill bundle(s) from local folders (offline / self-authored) — used by
+  // both the "导入本地技能" button and drag-and-drop.
+  async function importLocalFromPaths(rawPaths: string[]) {
+    // Dedupe — a multi-file drop from one folder would otherwise re-import it.
+    const paths = [...new Set(rawPaths)]
+    if (!paths.length) return
+    setInstalling('__local__')
+    let ok = 0
+    try {
+      for (const p of paths) {
+        try {
+          const skill = await window.api.importLocalSkill(p) as InstalledSkillInfo
+          toast.success(`已导入「${skill.name}」`)
+          ok++
+        } catch (e) {
+          toast.error('导入失败：' + (e as Error).message)
+        }
+      }
+      if (ok) await refreshInstalled()
+    } finally {
+      setInstalling(null)
+    }
+  }
+
+  async function importLocal() {
+    const paths = await window.api.openFileDialog({ properties: ['openDirectory', 'multiSelections'] })
+    if (paths?.length) await importLocalFromPaths(paths)
+  }
+
   // ---- sources actions ----
 
   async function addSource() {
@@ -298,6 +327,8 @@ export function SkillsPage() {
             onUninstall={uninstall}
             onUpgrade={upgradeToRuntime}
             onRefresh={refreshInstalled}
+            onImportLocal={importLocal}
+            onImportPaths={importLocalFromPaths}
           />
         )}
         {tab === 'browse' && (
@@ -336,7 +367,7 @@ export function SkillsPage() {
 // ============================================================================
 
 function InstalledTab({
-  list, installing, onToggle, onToggleScenario, onUninstall, onUpgrade, onRefresh
+  list, installing, onToggle, onToggleScenario, onUninstall, onUpgrade, onRefresh, onImportLocal, onImportPaths
 }: {
   list: InstalledSkillInfo[]
   installing: string | null
@@ -345,11 +376,34 @@ function InstalledTab({
   onUninstall: (s: InstalledSkillInfo) => void
   onUpgrade: (s: InstalledSkillInfo) => void
   onRefresh: () => void
+  onImportLocal: () => void
+  onImportPaths: (paths: string[]) => void
 }) {
   const t = useT()
   const [page, setPage] = useState(1)
   const [keyword, setKeyword] = useState('')
   const [appliedKeyword, setAppliedKeyword] = useState('')
+  const [dragOver, setDragOver] = useState(false)
+
+  // Drag-and-drop import: a dropped folder resolves to its disk path via
+  // webUtils (window.api.getPathForFile), then goes through the same importer.
+  const handleDragOver = (e: React.DragEvent) => {
+    if (!Array.from(e.dataTransfer.types).includes('Files')) return
+    e.preventDefault()
+    setDragOver(true)
+  }
+  const handleDragLeave = (e: React.DragEvent) => {
+    if (e.currentTarget.contains(e.relatedTarget as Node | null)) return
+    setDragOver(false)
+  }
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault()
+    setDragOver(false)
+    const paths = Array.from(e.dataTransfer.files)
+      .map(f => window.api.getPathForFile(f))
+      .filter((p): p is string => !!p)
+    if (paths.length) onImportPaths(paths)
+  }
 
   // Debounce the keyword like BrowseTab so typing doesn't thrash the slice.
   useEffect(() => {
@@ -402,7 +456,19 @@ function InstalledTab({
   }
 
   return (
-    <div className="max-w-4xl mx-auto px-6 py-6 space-y-4">
+    <div
+      className="relative max-w-4xl mx-auto px-6 py-6 space-y-4"
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
+      {dragOver && (
+        <div className="absolute inset-2 z-20 flex items-center justify-center rounded-xl bg-primary/[0.06] border-2 border-dashed border-primary/50 pointer-events-none">
+          <span className="flex items-center gap-2 text-sm font-medium text-primary">
+            <FolderOpen size={16} /> 松手导入技能文件夹（需包含 SKILL.md）
+          </span>
+        </div>
+      )}
       <div className="flex items-center gap-2 flex-wrap">
         <h2 className="text-sm font-semibold whitespace-nowrap">{t('skills.mySkills')}</h2>
         <span className="text-[11px] text-muted-foreground/60 whitespace-nowrap">
@@ -430,6 +496,15 @@ function InstalledTab({
             </button>
           )}
         </div>
+        <button
+          onClick={onImportLocal}
+          disabled={installing === '__local__'}
+          title="从本地文件夹导入技能（文件夹内需包含 SKILL.md）；也可直接把技能文件夹拖到此页面"
+          className="flex items-center gap-1 h-7 px-2.5 text-xs rounded-md border border-border bg-card hover:bg-accent text-foreground transition-colors disabled:opacity-50 shrink-0"
+        >
+          {installing === '__local__' ? <Loader2 size={12} className="animate-spin" /> : <FolderOpen size={12} />}
+          {t('skills.importLocal')}
+        </button>
       </div>
 
       {pageItems.length === 0 ? (

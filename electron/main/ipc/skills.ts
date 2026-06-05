@@ -7,7 +7,7 @@ import {
   type SkillScenario
 } from '../services/skills-db'
 import { fetchRegistry, fetchManifest, ensureBundledInstalled, type RegistryEntry, type FetchedRegistry, type BrowseParams } from '../services/skills-registry'
-import { downloadSkillBundle, parseSkillMd, readSkillResource } from '../services/skill-files'
+import { downloadSkillBundle, importLocalSkillBundle, parseSkillMd, readSkillResource } from '../services/skill-files'
 
 export function skillsHandlers(): void {
   // First-run seed of the builtin registry source + the bundled skill set
@@ -45,6 +45,29 @@ export function skillsHandlers(): void {
     // Legacy flat-registry entry — prompt-only skill from a manifest.
     const manifest = await fetchManifest(entry)
     return installSkill(manifest, sourceUrl)
+  })
+
+  // Import a skill bundle from a local folder (offline / self-authored skills).
+  // Copies the bundle to disk and installs it as a runtime skill, same as a
+  // SkillHub download but with no slug (can't be re-fetched, only re-imported).
+  ipcMain.handle(IPC.SKILLS_IMPORT_LOCAL, async (_e, sourcePath: string) => {
+    const bundle = importLocalSkillBundle(sourcePath)
+    const parsed = parseSkillMd(bundle.skillMd)
+    return installRuntimeSkill({
+      id: bundle.id,
+      slug: '',
+      name: parsed.name || bundle.name,
+      description: parsed.description || '',
+      icon: '🧩',
+      version: '0.0.0',
+      author: '',
+      homepage: undefined,
+      skillBody: parsed.body,
+      resourceFiles: bundle.files,
+      installPath: bundle.installPath,
+      sourceUrl: 'local',
+      suggestedScenarios: ['chat', 'vibe']
+    })
   })
 
   ipcMain.handle(IPC.SKILLS_UNINSTALL, (_e, id: string) => {

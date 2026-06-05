@@ -1,10 +1,15 @@
 import { useEffect, useState } from 'react'
-import { Minus, Square, X, Maximize2 } from 'lucide-react'
+import { Minus, Square, X, Maximize2, Sun, Moon, Languages } from 'lucide-react'
 import { TopBarUser } from './TopBarUser'
+import { useUIStore } from '../../stores/ui'
+import { useT, setLanguage, useLanguage } from '../../lib/i18n'
 
 export function TitleBar() {
   const [isMaximized, setIsMaximized] = useState(false)
   const isWin = window.api.platform === 'win32'
+  const t = useT()
+  const lang = useLanguage()
+  const { theme, toggleTheme } = useUIStore()
 
   useEffect(() => {
     if (!isWin) return
@@ -38,6 +43,20 @@ export function TitleBar() {
         className="flex items-center h-full pr-1.5 gap-1"
         style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
       >
+        {/* Quick toggles: language + dark mode (moved here from the sidebar) */}
+        <TopToggle
+          onClick={() => setLanguage(lang === 'zh' ? 'en' : 'zh')}
+          title={t('nav.languageSwitch')}
+        >
+          <Languages size={14} />
+          <span className="text-[8px] font-bold leading-none ml-0.5">{lang.toUpperCase()}</span>
+        </TopToggle>
+        <TopToggle
+          onClick={toggleTheme}
+          title={theme === 'dark' ? t('nav.themeLight') : t('nav.themeDark')}
+        >
+          {theme === 'dark' ? <Sun size={14} /> : <Moon size={14} />}
+        </TopToggle>
         <TopBarUser />
         {isWin && (
           <div className="flex items-stretch h-full ml-1">
@@ -54,6 +73,26 @@ export function TitleBar() {
         )}
       </div>
     </div>
+  )
+}
+
+function TopToggle({
+  onClick,
+  title,
+  children
+}: {
+  onClick: () => void
+  title: string
+  children: React.ReactNode
+}) {
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      className="h-7 px-1.5 rounded-md flex items-center justify-center text-foreground/70 hover:bg-foreground/10 hover:text-foreground transition-colors"
+    >
+      {children}
+    </button>
   )
 }
 

@@ -116,6 +116,106 @@ export async function downloadSkillBundle(slug: string, id: string, version?: st
   return { installPath: dir, files: written, skillMd }
 }
 
+export interface ImportedBundle extends DownloadedBundle { id: string; name: string }
+
+/** Directories never worth copying into a skill bundle (noise / huge / unsafe). */
+const IMPORT_SKIP_DIRS = new Set(['node_modules', '.git', '.svn', '__pycache__', '.DS_Store'])
+
+/** Recursively list bundle-relative (posix) file paths under `dir`, enforcing
+ *  the same count / size caps as a remote download. Skips noise dirs + symlinks. */
+function listLocalBundleFiles(dir: string): { files: string[]; total: number } {
+  const out: string[] = []
+  let total = 0
+  const walk = (abs: string, rel: string): void => {
+    let entries: fs.Dirent[]
+    try { entries = fs.readdirSync(abs, { withFileTypes: true }) }
+    catch { return } // dir vanished / unreadable mid-walk — skip it
+    for (const e of entries) {
+      if (e.isSymbolicLink()) continue // never follow symlinks out of the tree
+      if (e.isDirectory()) {
+        if (IMPORT_SKIP_DIRS.has(e.name)) continue
+        walk(path.join(abs, e.name), rel ? `${rel}/${e.name}` : e.name)
+        continue
+      }
+      if (!e.isFile()) continue
+      const relPath = rel ? `${rel}/${e.name}` : e.name
+      // A file can disappear between readdir and stat — skip it rather than crash.
+      let size: number
+      try { size = fs.statSync(path.join(abs, e.name)).size }
+      catch { continue }
+      if (size > MAX_FILE_SIZE) {
+        console.warn(`[skill-files] import skipping oversized file ${relPath} (${size} bytes)`)
+        continue
+      }
+      total += size
+      if (total > MAX_TOTAL_SIZE) throw new Error(`技能包过大（超过 ${(MAX_TOTAL_SIZE / 1024 / 1024).toFixed(0)} MB）`)
+      out.push(relPath)
+      if (out.length > MAX_FILES) throw new Error(`技能文件数超限（> ${MAX_FILES}）`)
+    }
+  }
+  walk(dir, '')
+  return { files: out, total }
+}
+
+/** Find a SKILL.md / skill.md / README.md anywhere in the tree (prefer SKILL.md,
+ *  then the shallowest). Used to re-root when the user picked a parent folder. */
+function findSkillMdDeep(files: string[]): string | null {
+  const cand = files.filter(f => /(^|\/)(skill|readme)\.md$/i.test(f))
+  if (!cand.length) return null
+  cand.sort((a, b) => {
+    const rank = (f: string): number => (/(^|\/)skill\.md$/i.test(f) ? 0 : 1)
+    if (rank(a) !== rank(b)) return rank(a) - rank(b)
+    return a.split('/').length - b.split('/').length
+  })
+  return cand[0]
+}
+
+/**
+ * Import a skill bundle from a local folder (or a path to its SKILL.md) into
+ * <userData>/skills/<id>/. Mirrors downloadSkillBundle but copies from disk.
+ * The id is derived from the SKILL.md `name` (or folder name), prefixed `local-`
+ * so it never collides with a SkillHub slug.
+ */
+export function importLocalSkillBundle(sourcePath: string): ImportedBundle {
+  let st: fs.Stats
+  try { st = fs.statSync(sourcePath) }
+  catch { throw new Error('所选路径不存在或无法访问') }
+  let srcDir = st.isFile() ? path.dirname(sourcePath) : sourcePath
+
+  let rel = listLocalBundleFiles(srcDir).files
+  if (!rel.length) throw new Error('所选文件夹为空')
+  let skillMdRel = findSkillMd(rel)
+  // The user may have picked the bundle's PARENT folder — if SKILL.md isn't at
+  // the top level, re-root to wherever the nearest SKILL.md actually lives.
+  if (!skillMdRel) {
+    const deep = findSkillMdDeep(rel)
+    if (deep) {
+      srcDir = path.dirname(safeJoin(srcDir, deep))
+      rel = listLocalBundleFiles(srcDir).files
+      skillMdRel = findSkillMd(rel)
+    }
+  }
+  if (!skillMdRel) throw new Error('未找到 SKILL.md —— 请选择包含 SKILL.md 的技能文件夹')
+
+  const skillMd = fs.readFileSync(safeJoin(srcDir, skillMdRel), 'utf8')
+  const { name } = parseSkillMd(skillMd)
+  const baseName = name.trim() || path.basename(srcDir)
+  const id = 'local-' + sanitizeId(baseName).toLowerCase()
+
+  const dir = skillDir(id)
+  // Fresh copy — wipe any prior import of the same id so removed files don't linger.
+  fs.rmSync(dir, { recursive: true, force: true })
+  fs.mkdirSync(dir, { recursive: true })
+  const written: string[] = []
+  for (const r of rel) {
+    const dest = safeJoin(dir, r)
+    fs.mkdirSync(path.dirname(dest), { recursive: true })
+    fs.copyFileSync(safeJoin(srcDir, r), dest)
+    written.push(r)
+  }
+  return { id, name: baseName, installPath: dir, files: written, skillMd }
+}
+
 /** Locate the manifest file: SKILL.md (exact) → case-insensitive skill.md → README.md. */
 function findSkillMd(files: string[]): string | null {
   const top = files.filter(f => !f.includes('/'))

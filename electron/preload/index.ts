@@ -112,7 +112,7 @@ const api = {
     sessionId: string,
     message: string,
     attachments?: unknown[],
-    overrides?: { providerId?: string; model?: string; mountedSpaceIds?: string[]; imageSize?: string; imageQuality?: string; imageCount?: number }
+    overrides?: { providerId?: string; model?: string; mountedSpaceIds?: string[]; imageSize?: string; imageQuality?: string; imageCount?: number; computerMode?: boolean }
   ) => ipcRenderer.invoke(IPC.AGENT_RUN, sessionId, message, attachments, overrides),
   stopAgent: (sessionId: string) => ipcRenderer.invoke(IPC.AGENT_STOP, sessionId),
   classifyIntent: (message: string, providerId: string, model: string) =>
@@ -192,23 +192,27 @@ const api = {
     failures: string[]
   }>,
 
-  // --- Knowledge Base ---
-  listSpaces: () => ipcRenderer.invoke(IPC.KB_SPACES_LIST),
-  saveSpace: (space: unknown) => ipcRenderer.invoke(IPC.KB_SPACES_SAVE, space),
-  deleteSpace: (id: string) => ipcRenderer.invoke(IPC.KB_SPACES_DELETE, id),
-  listPages: (spaceId: string) => ipcRenderer.invoke(IPC.KB_PAGES_LIST, spaceId),
-  savePage: (page: unknown) => ipcRenderer.invoke(IPC.KB_PAGES_SAVE, page),
-  deletePage: (id: string) => ipcRenderer.invoke(IPC.KB_PAGES_DELETE, id),
-  importFile: (params: unknown) => ipcRenderer.invoke(IPC.KB_IMPORT_FILE, params),
-  onKbImportProgress: (cb: (event: unknown) => void) => {
-    ipcRenderer.on(IPC.KB_IMPORT_PROGRESS, (_e, data) => cb(data))
-    return () => ipcRenderer.removeAllListeners(IPC.KB_IMPORT_PROGRESS)
+  // --- Long-term memory ---
+  listMemories: (filter?: { kind?: string; scopeKey?: string | null; status?: string; query?: string }) =>
+    ipcRenderer.invoke(IPC.MEMORY_LIST, filter),
+  saveMemory: (input: unknown) => ipcRenderer.invoke(IPC.MEMORY_SAVE, input),
+  deleteMemory: (id: string) => ipcRenderer.invoke(IPC.MEMORY_DELETE, id),
+  setMemoryPinned: (id: string, pinned: boolean) => ipcRenderer.invoke(IPC.MEMORY_SET_PINNED, { id, pinned }),
+  archiveMemory: (id: string, archived: boolean) => ipcRenderer.invoke(IPC.MEMORY_ARCHIVE, { id, archived }),
+  captureSessionMemory: (sessionId: string) => ipcRenderer.invoke(IPC.MEMORY_CAPTURE_SESSION, sessionId),
+  onMemoryCaptured: (cb: (info: { count: number; memories: unknown[] }) => void) => {
+    const listener = (_e: unknown, info: { count: number; memories: unknown[] }) => cb(info)
+    ipcRenderer.on(IPC.MEMORY_CAPTURED, listener)
+    return () => ipcRenderer.removeListener(IPC.MEMORY_CAPTURED, listener)
   },
-  searchKb: (query: string, spaceIds?: string[]) =>
-    ipcRenderer.invoke(IPC.KB_SEARCH, query, spaceIds),
-  listSources: (spaceId: string) => ipcRenderer.invoke(IPC.KB_SOURCES_LIST, spaceId),
-  deleteSource: (sourceId: string) => ipcRenderer.invoke(IPC.KB_SOURCES_DELETE, sourceId),
-  reindexSpace: (spaceId: string) => ipcRenderer.invoke(IPC.KB_REINDEX_SPACE, spaceId),
+
+  // --- Computer Use arming confirmation (styled in-app dialog) ---
+  onComputerUseConfirm: (cb: (req: { id: string }) => void) => {
+    const listener = (_e: unknown, req: { id: string }) => cb(req)
+    ipcRenderer.on(IPC.COMPUTER_USE_CONFIRM, listener)
+    return () => ipcRenderer.removeListener(IPC.COMPUTER_USE_CONFIRM, listener)
+  },
+  respondComputerUseConfirm: (id: string, ok: boolean) => ipcRenderer.send(IPC.COMPUTER_USE_CONFIRM_REPLY, { id, ok }),
 
   // --- Window controls ---
   platform: process.platform,
@@ -314,6 +318,7 @@ const api = {
   // --- Skills ---
   listSkills: () => ipcRenderer.invoke(IPC.SKILLS_LIST),
   installSkill: (args: { sourceUrl: string; entry: unknown }) => ipcRenderer.invoke(IPC.SKILLS_INSTALL, args),
+  importLocalSkill: (sourcePath: string) => ipcRenderer.invoke(IPC.SKILLS_IMPORT_LOCAL, sourcePath),
   uninstallSkill: (id: string) => ipcRenderer.invoke(IPC.SKILLS_UNINSTALL, id),
   setSkillEnabled: (args: { id: string; enabled: boolean }) => ipcRenderer.invoke(IPC.SKILLS_SET_ENABLED, args),
   setSkillScenarios: (args: { id: string; scenarios: ('chat' | 'vibe' | 'video')[] }) =>

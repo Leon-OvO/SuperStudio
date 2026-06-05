@@ -91,32 +91,6 @@ function createTables(): void {
       updated_at INTEGER NOT NULL
     );
 
-    CREATE TABLE IF NOT EXISTS kb_spaces (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      global_enabled INTEGER NOT NULL DEFAULT 0,
-      created_at INTEGER NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS kb_pages (
-      id TEXT PRIMARY KEY,
-      space_id TEXT NOT NULL,
-      title TEXT NOT NULL,
-      content TEXT NOT NULL DEFAULT '',
-      updated_at INTEGER NOT NULL,
-      created_at INTEGER NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS kb_sources (
-      id TEXT PRIMARY KEY,
-      space_id TEXT NOT NULL,
-      name TEXT NOT NULL,
-      file_path TEXT,
-      source_type TEXT NOT NULL,
-      chunk_count INTEGER DEFAULT 0,
-      created_at INTEGER NOT NULL
-    );
-
     -- Vibe / Build page: project-level metadata
     CREATE TABLE IF NOT EXISTS vibe_projects (
       path           TEXT PRIMARY KEY,
@@ -265,6 +239,33 @@ function createTables(): void {
       FOREIGN KEY (task_id) REFERENCES scheduled_tasks(id) ON DELETE CASCADE
     );
     CREATE INDEX IF NOT EXISTS idx_scheduled_task_runs_task ON scheduled_task_runs(task_id, fired_at);
+
+    -- Long-term memory (Hermes-style). Replaces the vector knowledge base.
+    -- One row per memory, discriminated by kind:
+    --   profile  — durable facts about the user (global, scope_key NULL)
+    --   project  — facts/decisions for a company(Vibe) project (scope_key = vibe_projects.path)
+    --   episode  — summary of a past chat session (scope_key = session id)
+    --   skill    — a reusable how-to distilled from solving something (scope_key NULL or project path)
+    -- Recall is lightweight: scope + tag-keyword hits + recency + pinned (NO vectors / NO FTS).
+    -- tags is a JSON string[] assigned at capture so recall can match without CJK tokenization.
+    CREATE TABLE IF NOT EXISTS memories (
+      id           TEXT PRIMARY KEY,
+      kind         TEXT NOT NULL,
+      scope_key    TEXT,
+      title        TEXT NOT NULL,
+      content      TEXT NOT NULL DEFAULT '',
+      tags         TEXT,                              -- JSON string[]
+      source       TEXT,                              -- 'session:<id>' | 'request:<id>' | 'manual'
+      pinned       INTEGER NOT NULL DEFAULT 0,
+      status       TEXT NOT NULL DEFAULT 'active',    -- 'active' | 'archived'
+      confidence   REAL,
+      created_at   INTEGER NOT NULL,
+      updated_at   INTEGER NOT NULL,
+      last_used_at INTEGER,
+      use_count    INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_mem_kind_scope ON memories(kind, scope_key, status);
+    CREATE INDEX IF NOT EXISTS idx_mem_recent ON memories(updated_at);
   `)
   saveDb()
 }
@@ -319,6 +320,16 @@ function applyMigrations(): void {
   // 空 / NULL = 无依赖，可与同批任务并行。apply 阶段据此用 topologicalLevels 分层
   // 执行（层内并行、层间串行），取代「无脑全并发」，让有先后顺序的任务正确排队。
   try { db.run(`ALTER TABLE vibe_tasks ADD COLUMN deps TEXT`) } catch { /* already exists */ }
+  // v12: long-term memory replaced the vector knowledge base — drop legacy KB
+  // tables (their data lived only here; vectors were in a separate lancedb dir).
+  try { db.run(`DROP TABLE IF EXISTS kb_pages`) } catch { /* ignore */ }
+  try { db.run(`DROP TABLE IF EXISTS kb_sources`) } catch { /* ignore */ }
+  try { db.run(`DROP TABLE IF EXISTS kb_spaces`) } catch { /* ignore */ }
+  // v13: scheduled tasks can run in 电脑操控 (computer-use) mode — the timed run
+  // drives the desktop via the screenshot loop instead of a plain chat reply.
+  // Unattended, so it auto-arms (no confirm dialog); still gated behind the
+  // global computerUseEnabled switch. 0 = normal chat run, 1 = computer-use.
+  try { db.run(`ALTER TABLE scheduled_tasks ADD COLUMN computer_mode INTEGER NOT NULL DEFAULT 0`) } catch { /* already exists */ }
 }
 
 // Helper: run a query and save

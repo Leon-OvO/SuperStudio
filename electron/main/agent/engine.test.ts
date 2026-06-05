@@ -53,7 +53,7 @@ vi.mock('../services/store', () => ({
 
 vi.mock('../services/llm', () => ({ createLLMClient: () => ({}) }))
 vi.mock('../services/mcp', () => ({ mcpManager: { listAllTools: async () => [], callTool: async () => ({ text: '' }) } }))
-vi.mock('../services/knowledge', () => ({ searchKnowledge: async () => [] }))
+vi.mock('../services/memory', () => ({ recallForChat: () => '' }))
 vi.mock('../services/skills-db', () => ({ getActiveSkillsForScenario: () => [] }))
 vi.mock('../services/tray', () => ({ notifyTaskComplete: vi.fn() }))
 vi.mock('../services/model-pricing', () => ({ computeCost: () => null, modelContextWindow: () => 128_000, DEFAULT_CONTEXT_TOKENS: 128_000 }))

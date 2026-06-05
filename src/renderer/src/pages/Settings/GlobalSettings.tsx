@@ -56,6 +56,7 @@ export function GlobalSettings({ tab, settings, providers, onSave, onProvidersRe
     await onProvidersRefresh?.()
   }, [onProvidersRefresh])
 
+
   if (tab === 'defaults') {
     return (
       <div className="space-y-4 max-w-2xl">
@@ -103,14 +104,6 @@ export function GlobalSettings({ tab, settings, providers, onSave, onProvidersRe
           providerId={draft.defaultVideoProviderId}
           modelId={draft.defaultVideoModel}
           onChange={(p, m) => updatePair('defaultVideoProviderId', p, 'defaultVideoModel', m)}
-          onRefresh={handleRefreshModels}
-        />
-        <ModelPicker
-          label="向量嵌入（知识库）"
-          providers={providers}
-          providerId={draft.defaultEmbeddingProviderId}
-          modelId={draft.defaultEmbeddingModel}
-          onChange={(p, m) => updatePair('defaultEmbeddingProviderId', p, 'defaultEmbeddingModel', m)}
           onRefresh={handleRefreshModels}
         />
 
@@ -261,17 +254,17 @@ export function GlobalSettings({ tab, settings, providers, onSave, onProvidersRe
   if (tab === 'kb') {
     return (
       <div className="space-y-4 max-w-2xl">
-        <h2 className="text-lg font-semibold">知识库</h2>
+        <h2 className="text-lg font-semibold">记忆</h2>
         <label className="flex items-center gap-2 text-sm">
           <input
             type="checkbox"
-            checked={draft.kbGlobalEnabled}
-            onChange={e => update('kbGlobalEnabled', e.target.checked)}
+            checked={draft.memoryAutoCapture !== false}
+            onChange={e => update('memoryAutoCapture', e.target.checked)}
           />
-          为所有对话启用全局知识库上下文
+          自动从对话和公司工作中提炼长期记忆
         </label>
         <p className="text-xs text-muted-foreground">
-          启用后会在每次对话中自动检索配置为全局的知识空间作为上下文。会话内手动挂载的知识空间仍优先于全局空间。
+          开启后，对话归档时、公司需求交付后，会自动把值得长期记住的要点（你的偏好、项目决策、可复用做法等）提炼成记忆，并在之后的对话/公司里自动召回——越用越懂你。可在「记忆」页查看、编辑、删除。
         </p>
         <button onClick={save} className="btn-primary">保存</button>
       </div>

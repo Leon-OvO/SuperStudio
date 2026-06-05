@@ -1,7 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
-import { Send, Square, Paperclip, X, ImagePlus, FileText, ImageOff } from 'lucide-react'
+import { Send, Square, Paperclip, X, ImagePlus, FileText, ImageOff, Monitor } from 'lucide-react'
 import { cn } from '../../lib/utils'
-import { KbMountSelector } from './KbMountSelector'
 import { ModelPicker } from './ModelPicker'
 import { Select } from '../../components/ui/Select'
 import { useImageContextMenu } from '../../components/ui/ImageContextMenu'
@@ -15,9 +14,13 @@ interface Props {
   onStop: () => void
   isRunning: boolean
   disabled: boolean
-  mountedSpaceIds: string[]
-  onMountedSpacesChange: (ids: string[]) => void
   imageMode?: boolean
+  /** "电脑操控" mode: this turn runs the screenshot loop to drive the desktop. */
+  computerMode?: boolean
+  onComputerModeChange?: (on: boolean) => void
+  /** Whether the Computer Use plugin is enabled (Settings → 插件). The 电脑操控
+   *  toggle is only shown when this is true. */
+  computerUseEnabled?: boolean
   /** Controlled attachments state (lifted to parent so external sources can inject). */
   attachments: Attachment[]
   setAttachments: React.Dispatch<React.SetStateAction<Attachment[]>>
@@ -33,7 +36,8 @@ interface Props {
 }
 
 export function ChatInput({
-  onSend, onStop, isRunning, disabled, mountedSpaceIds, onMountedSpacesChange, imageMode,
+  onSend, onStop, isRunning, disabled, imageMode,
+  computerMode, onComputerModeChange, computerUseEnabled,
   attachments, setAttachments,
   providerId, model, onModelChange,
   imageParams, onImageParamsChange,
@@ -336,7 +340,24 @@ export function ChatInput({
               </button>
             )}
 
-            <KbMountSelector mountedIds={mountedSpaceIds} onChange={onMountedSpacesChange} />
+            {!imageMode && onComputerModeChange && computerUseEnabled && (
+              <button
+                onClick={() => onComputerModeChange(!computerMode)}
+                disabled={isRunning}
+                title={computerMode
+                  ? '电脑操控已开启：本轮 AI 可看屏幕、操作鼠标键盘。点击关闭'
+                  : '开启电脑操控：让 AI 看屏幕、操作你的鼠标键盘'}
+                className={cn(
+                  'flex items-center gap-1 px-2 h-8 rounded-lg text-xs border transition-all disabled:opacity-40 shrink-0',
+                  computerMode
+                    ? 'border-red-500/50 bg-red-500/10 text-red-600'
+                    : 'border-border text-muted-foreground hover:text-foreground hover:bg-muted/60'
+                )}
+              >
+                <Monitor size={14} />
+                电脑操控
+              </button>
+            )}
 
             <ModelPicker providerId={providerId} model={model} onChange={onModelChange} />
           </div>

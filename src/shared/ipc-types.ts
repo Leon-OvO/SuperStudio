@@ -62,19 +62,18 @@ export const IPC = {
   GALLERY_BATCH_SAVE: 'gallery:batch-save',
   GALLERY_IMPORT: 'gallery:import',
 
-  // Knowledge base
-  KB_SPACES_LIST: 'kb:spaces-list',
-  KB_SPACES_SAVE: 'kb:spaces-save',
-  KB_SPACES_DELETE: 'kb:spaces-delete',
-  KB_PAGES_LIST: 'kb:pages-list',
-  KB_PAGES_SAVE: 'kb:pages-save',
-  KB_PAGES_DELETE: 'kb:pages-delete',
-  KB_IMPORT_FILE: 'kb:import-file',
-  KB_IMPORT_PROGRESS: 'kb:import-progress', // main → renderer (event)
-  KB_SEARCH: 'kb:search',
-  KB_SOURCES_LIST: 'kb:sources-list',
-  KB_SOURCES_DELETE: 'kb:sources-delete',
-  KB_REINDEX_SPACE: 'kb:reindex-space',
+  // Long-term memory (Hermes-style; replaces the vector knowledge base)
+  MEMORY_LIST: 'memory:list',
+  MEMORY_SAVE: 'memory:save',
+  MEMORY_DELETE: 'memory:delete',
+  MEMORY_SET_PINNED: 'memory:set-pinned',
+  MEMORY_ARCHIVE: 'memory:archive',
+  MEMORY_CAPTURE_SESSION: 'memory:capture-session', // renderer → main: 手动从一个会话提炼记忆
+  MEMORY_CAPTURED: 'memory:captured',               // main → renderer (event): 自动/手动捕获产出
+
+  // Computer Use arming confirmation (in-app styled dialog via round-trip)
+  COMPUTER_USE_CONFIRM: 'computer-use:confirm',           // main → renderer: ask permission { id }
+  COMPUTER_USE_CONFIRM_REPLY: 'computer-use:confirm-reply', // renderer → main: { id, ok }
 
   // Window controls
   WIN_MINIMIZE: 'win:minimize',
@@ -202,6 +201,7 @@ export const IPC = {
   SKILLS_BROWSE: 'skills:browse',
   SKILLS_SET_ALLOW_SCRIPTS: 'skills:set-allow-scripts',
   SKILLS_READ_FILE: 'skills:read-file',
+  SKILLS_IMPORT_LOCAL: 'skills:import-local',
 
   // Talent pool (encrypted bundled catalog of agent personas / "招募人才")
   TALENT_BROWSE: 'talent:browse',
@@ -363,6 +363,7 @@ export interface ProviderConfig {
   platform?: string
 }
 
+
 /** Current subscription / token plan status, as surfaced to the renderer */
 export interface TokenPlanInfo {
   planType: string                                    // 'lite' | 'pro' | 'max' | ...
@@ -400,6 +401,14 @@ export interface AppSettings {
   searchBrowserVisible?: boolean
   kbGlobalEnabled: boolean
   kbGlobalSpaceIds: string[]
+  /** Auto-capture long-term memories from conversations / company work. */
+  memoryAutoCapture?: boolean
+  /** Master switch for Computer Use (let the agent control mouse/keyboard/screen). Default off. */
+  computerUseEnabled?: boolean
+  /** Privacy curtain ("伪锁屏"): during a Computer Use run, cover all screens with a
+   *  black, capture-excluded window so onlookers can't see what the agent is doing —
+   *  while the session stays unlocked so screenshots + input keep working. Default off. */
+  computerUsePrivacyCurtain?: boolean
   dataDirectory: string
   // Auto model routing
   autoModelEnabled: boolean
@@ -781,6 +790,9 @@ export interface ScheduledTask {
   model: string | null
   /** When set, the run's result is pushed to this WebhookBot (by id). */
   webhookBotId: string | null
+  /** When true, the timed run drives the desktop (电脑操控 / computer-use) instead
+   *  of a plain chat reply. Unattended → auto-armed; needs the global switch on. */
+  computerMode: boolean
   enabled: boolean
   lastFiredAt: number | null
   nextFireAt: number
@@ -809,6 +821,7 @@ export interface ScheduledTaskInput {
   providerId?: string | null
   model?: string | null
   webhookBotId?: string | null
+  computerMode?: boolean
   enabled?: boolean
 }
 
