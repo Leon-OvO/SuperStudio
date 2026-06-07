@@ -46,6 +46,7 @@ const NEVER_SHIP = [
   'sources/', // ~840 talent personas in raw .md (kept private; the packed .enc ships)
   'bp/',      // business plan
   'demo/',    // internal demos
+  '.github/', // GitHub Actions CI — belongs to the SuperStudio build, useless on the DWork (Gogs) repo
   // talent-crypto + the packed resources/talent-pool.enc SHIP to entitled DWork
   // customers (paid content), so they are NOT excluded here.
 ]
@@ -247,6 +248,12 @@ const tracked = execSync('git ls-files --cached --others --exclude-standard -z',
 let coreCount = 0, overlayCount = 0, stubCount = 0, scrubCount = 0
 for (const file of tracked) {
   if (file.startsWith(OUT + '/')) continue
+  // Defensive: never copy a stray .git move-aside backup (e.g. `.tmp-dwork-core-git/`
+  // left at repo root while preserving core/.git across this script's rmSync). It's
+  // untracked so `git ls-files --others` would otherwise slurp its 300 internal
+  // objects straight into the deliverable. (Prefer moving such backups OUTSIDE the
+  // repo, but guard here too.)
+  if (file.startsWith('.tmp-dwork-')) continue
   // Stubs first: core gets a no-op, overlay gets the real file to overwrite it.
   if (STUBS[file]) {
     writeFile(CORE, file, STUBS[file])
