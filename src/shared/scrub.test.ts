@@ -3,7 +3,7 @@ import { scrubAddresses } from './scrub'
 
 describe('scrubAddresses', () => {
   it('strips scheme URLs', () => {
-    expect(scrubAddresses('打开 https://api.supercode.help/v1/chat 失败')).toBe('打开 [链接] 失败')
+    expect(scrubAddresses('打开 https://api.example.com/v1/chat 失败')).toBe('打开 [链接] 失败')
     expect(scrubAddresses('see http://x.com/a?b=1#c here')).toBe('see [链接] here')
     expect(scrubAddresses('ws://example.net:8080/sock')).toBe('[链接]')
   })
@@ -20,7 +20,7 @@ describe('scrubAddresses', () => {
   })
 
   it('strips bare domains ending in a curated TLD', () => {
-    expect(scrubAddresses('reach api.supercode.help fast')).toBe('reach [地址] fast')
+    expect(scrubAddresses('reach api.example.com fast')).toBe('reach [地址] fast')
     expect(scrubAddresses('foo.com and bar.cn')).toBe('[地址] and [地址]')
     expect(scrubAddresses('host www.example.net:443/path x')).toBe('host [地址] x')
   })

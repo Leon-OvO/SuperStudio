@@ -9,7 +9,8 @@ import {
   flattenMcpTools,
   truncateToolResult,
   estimateTokens,
-  trimHistoryToBudget
+  trimHistoryToBudget,
+  looksTruncated
 } from './pure'
 
 describe('buildAutoTitle', () => {
@@ -159,5 +160,27 @@ describe('truncateToolResult', () => {
     const out = truncateToolResult(big, 20)
     expect(typeof out).toBe('string')
     expect(out as string).toContain('truncated')
+  })
+})
+
+describe('looksTruncated', () => {
+  it('flags placeholder / "rest unchanged" stubs', () => {
+    expect(looksTruncated('function a(){}\n// ... rest of the code unchanged')).toBe(true)
+    expect(looksTruncated('<html>\n<!-- ... 其余省略 ... -->\n</html>')).toBe(true)
+    expect(looksTruncated('def f():\n    pass\n# ...remaining unchanged')).toBe(true)
+    expect(looksTruncated('第一部分内容……\n（其余代码保持不变）')).toBe(true)
+    expect(looksTruncated('前面略\n以下省略')).toBe(true)
+    expect(looksTruncated('/* ...rest of the file unchanged */')).toBe(true)
+    expect(looksTruncated('// (rest of the implementation here)')).toBe(true)
+    expect(looksTruncated('表头...\n省略其余若干行')).toBe(true)
+  })
+  it('does NOT flag legitimate complete content', () => {
+    expect(looksTruncated('')).toBe(false)
+    expect(looksTruncated('const a = 1\nconst b = 2\nexport { a, b }')).toBe(false)
+    // ellipsis used in normal prose (no rest/省略 truncation idiom)
+    expect(looksTruncated('他停顿了一下……然后继续说话。')).toBe(false)
+    expect(looksTruncated('# 标题\n\n这是一份完整的报告，分析了其余竞争对手的表现。')).toBe(false)
+    expect(looksTruncated('Loading... please wait')).toBe(false)
+    expect(looksTruncated('TODO: implement the rest later')).toBe(false)
   })
 })

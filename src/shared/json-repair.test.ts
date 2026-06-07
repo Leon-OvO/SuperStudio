@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseJsonLoose } from './json-repair'
+import { parseJsonLoose, repairBadEscapes } from './json-repair'
 
 describe('repairUnescapedQuotes / parseJsonLoose', () => {
   it('repairs unescaped ASCII quotes used as Chinese 引号 inside values', () => {
@@ -21,5 +21,25 @@ describe('repairUnescapedQuotes / parseJsonLoose', () => {
 
   it('throws the original error when even repair cannot parse', () => {
     expect(() => parseJsonLoose('[{"a": ')).toThrow()
+  })
+
+  it('repairs an unescaped Windows path (bad backslash escape)', () => {
+    // The exact "Bad escaped character" failure: a lone backslash before a
+    // non-escape char (here a drive path inside a value).
+    const broken = '[{"params":{"value":"导出到 D:\\Administrator\\Desktop\\周报.xlsx"}}]'
+    expect(() => JSON.parse(broken)).toThrow()
+    const fixed = parseJsonLoose<Array<{ params: { value: string } }>>(broken)
+    expect(fixed[0].params.value).toBe('导出到 D:\\Administrator\\Desktop\\周报.xlsx')
+  })
+
+  it('keeps valid \\n / \\t / \\uXXXX escapes intact while fixing bad ones', () => {
+    const s = '[{"v":"行1\\n行2\\t制表\\u0041 但坏的\\x转义"}]'
+    const fixed = parseJsonLoose<Array<{ v: string }>>(s)
+    expect(fixed[0].v).toBe('行1\n行2\t制表A 但坏的\\x转义')
+  })
+
+  it('repairBadEscapes leaves clean JSON unchanged', () => {
+    const clean = '[{"a":"x\\ny","b":1}]'
+    expect(repairBadEscapes(clean)).toBe(clean)
   })
 })

@@ -1,9 +1,9 @@
 import { create } from 'zustand'
-import type { SuperCodeUser, AuthState, StoredKeyInfo } from '../../../shared/ipc-types'
+import type { AccountUser, AuthState, StoredKeyInfo } from '../../../shared/ipc-types'
 
 interface AuthStore {
   isLoggedIn: boolean
-  user: SuperCodeUser | null
+  user: AccountUser | null
   keyId: number | null
   keyValueMasked: string
   allKeys: StoredKeyInfo[]

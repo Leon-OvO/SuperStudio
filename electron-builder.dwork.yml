@@ -1,0 +1,105 @@
+# DWork (private-build flavor) packaging config.
+#
+# Standalone electron-builder config used by `npm run dist:dwork:*`. Mirrors the
+# SuperStudio `build` block in package.json, but:
+#   - DWork app identity (appId / productName / copyright / icons)
+#   - extraResources does NOT include resources/talent-pool.enc — the proprietary
+#     talent pool is never bundled into a DWork build.
+#   - no `publish` target — DWork is delivered as source / via its own host.
+#
+# The JS bundle must be built with FLAVOR=dwork first (build:dwork) so the
+# renderer/main get __APP_FLAVOR__='dwork'. Icons under build/dwork/ are
+# placeholders until design supplies the real DWork assets.
+appId: com.dwork.app
+productName: DWork
+copyright: Copyright © 2026 DWork
+npmRebuild: false
+directories:
+  buildResources: build
+electronLanguages:
+  - en-US
+  - zh-CN
+files:
+  - out/**
+  - package.json
+  - "!**/.eslintrc.{js,cjs}"
+  - "!**/{.DS_Store,.git,.hg,.svn,CVS,RCS,SCCS,.gitignore,.gitattributes}"
+  - "!{.env,.env.*,.npmrc,pnpm-lock.yaml}"
+  - "!.claude/**"
+  - "!openspec/**"
+  - "!scripts/**"
+  - "!build/**"
+  - "!dist/**"
+  - "!node_modules/monaco-editor/**"
+  - "!node_modules/@monaco-editor/**"
+  - "!node_modules/lucide-react/**"
+  - "!node_modules/recharts/**"
+  - "!node_modules/@xterm/**"
+  - "!node_modules/@xyflow/**"
+  - "!node_modules/@reduxjs/**"
+  - "!node_modules/react-dom/**"
+  - "!node_modules/react-markdown/**"
+  - "!node_modules/remark-gfm/**"
+  - "!node_modules/@tanstack/**"
+  - "!node_modules/@napi-rs/**"
+  - "!node_modules/pdfjs-dist/legacy/**"
+  - "!node_modules/pdfjs-dist/image_decoders/**"
+  - "!node_modules/pdfjs-dist/web/**"
+  - "!node_modules/sql.js/dist/sql-asm*"
+  - "!node_modules/sql.js/dist/worker.sql-asm*"
+  - "!node_modules/sql.js/dist/*-debug*"
+  - "!node_modules/sql.js/dist/*-browser*"
+  - "!node_modules/**/*.map"
+  - "!node_modules/**/*.d.ts"
+  - "!node_modules/**/*.d.mts"
+asarUnpack:
+  - node_modules/sql.js/**
+  - node_modules/node-pty/**
+  - node_modules/@nut-tree-fork/**
+extraResources:
+  - from: build/dwork/icon.ico
+    to: icon.ico
+compression: maximum
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+    - target: portable
+      arch:
+        - x64
+  icon: build/dwork/icon.ico
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  installerIcon: build/dwork/icon.ico
+  uninstallerIcon: build/dwork/icon.ico
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  artifactName: ${productName}-${version}-Setup.${ext}
+portable:
+  artifactName: ${productName}-${version}-Portable.${ext}
+mac:
+  target:
+    - target: dmg
+      arch:
+        - x64
+        - arm64
+    - target: zip
+      arch:
+        - x64
+        - arm64
+  icon: build/dwork/icon.icns
+  category: public.app-category.productivity
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  artifactName: ${productName}-${version}-mac-${arch}.${ext}
+dmg:
+  contents:
+    - x: 130
+      y: 220
+    - x: 410
+      y: 220
+      type: link
+      path: /Applications
+publish: null

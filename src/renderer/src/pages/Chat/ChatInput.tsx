@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
-import { Send, Square, Paperclip, X, ImagePlus, FileText, ImageOff, Monitor } from 'lucide-react'
+import { Send, Square, Paperclip, X, ImagePlus, FileText, ImageOff, Monitor, Folder, FolderOpen } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { ModelPicker } from './ModelPicker'
 import { Select } from '../../components/ui/Select'
@@ -21,6 +21,12 @@ interface Props {
   /** Whether the Computer Use plugin is enabled (Settings → 插件). The 电脑操控
    *  toggle is only shown when this is true. */
   computerUseEnabled?: boolean
+  /** This conversation's working directory (absolute path); '' = unset. When set,
+   *  the agent default-saves files there and can list its contents. */
+  workingDir?: string
+  /** Set or clear the working directory (receives '' to clear). When provided,
+   *  the 工作目录 chip is shown in the toolbar. */
+  onSetWorkingDir?: (dir: string) => void
   /** Controlled attachments state (lifted to parent so external sources can inject). */
   attachments: Attachment[]
   setAttachments: React.Dispatch<React.SetStateAction<Attachment[]>>
@@ -38,6 +44,7 @@ interface Props {
 export function ChatInput({
   onSend, onStop, isRunning, disabled, imageMode,
   computerMode, onComputerModeChange, computerUseEnabled,
+  workingDir, onSetWorkingDir,
   attachments, setAttachments,
   providerId, model, onModelChange,
   imageParams, onImageParamsChange,
@@ -77,6 +84,16 @@ export function ChatInput({
   }
 
   const removeAttachment = (i: number) => setAttachments(a => a.filter((_, j) => j !== i))
+
+  // Pick a working directory for this conversation. The chosen folder becomes the
+  // agent's default save location + an approved read/write root for the session.
+  const handlePickWorkingDir = useCallback(async () => {
+    if (!onSetWorkingDir) return
+    const paths = await window.api.openFileDialog({ properties: ['openDirectory'] })
+    if (paths?.length) onSetWorkingDir(paths[0])
+  }, [onSetWorkingDir])
+
+  const workingDirName = workingDir ? (workingDir.split(/[\\/]/).filter(Boolean).pop() || workingDir) : ''
 
   const handlePaste = async (e: React.ClipboardEvent) => {
     const imageItems = Array.from(e.clipboardData.items).filter(item => item.type.startsWith('image/'))
@@ -357,6 +374,45 @@ export function ChatInput({
                 <Monitor size={14} />
                 电脑操控
               </button>
+            )}
+
+            {onSetWorkingDir && (
+              workingDir ? (
+                <div
+                  title={`工作目录：${workingDir}\n点击更换 · × 清除`}
+                  className="flex items-center gap-1 pl-2 pr-1 h-8 rounded-lg text-xs border border-primary/40 bg-primary/5 text-foreground/80 max-w-[160px] shrink-0"
+                >
+                  <button
+                    type="button"
+                    onClick={handlePickWorkingDir}
+                    disabled={isRunning}
+                    className="flex items-center gap-1 min-w-0 disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    <FolderOpen size={13} className="shrink-0 text-primary" />
+                    <span className="truncate">{workingDirName}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onSetWorkingDir('')}
+                    disabled={isRunning}
+                    title="清除工作目录"
+                    className="shrink-0 text-muted-foreground hover:text-foreground disabled:opacity-40"
+                  >
+                    <X size={11} />
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handlePickWorkingDir}
+                  disabled={isRunning}
+                  title="设置本对话的工作目录：之后新建 / 读写文件默认放这里，AI 也能用 list_dir 列出其中的文件"
+                  className="flex items-center gap-1 px-2 h-8 rounded-lg text-xs border border-dashed border-border text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-all disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
+                >
+                  <Folder size={13} />
+                  工作目录
+                </button>
+              )
             )}
 
             <ModelPicker providerId={providerId} model={model} onChange={onModelChange} />

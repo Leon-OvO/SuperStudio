@@ -337,10 +337,10 @@ function ModelPicker({ label, providers, providerId, modelId, onChange, onRefres
     )
   }
 
-  // Display label: "<platform> · <plan name>" for supercode-managed providers
-  // so the picker reads as Token Plans; manual providers fall back to bare name.
+  // Display label: "<platform> · <name>" when a provider declares an upstream
+  // platform (grouped pickers); otherwise the bare name.
   const planLabel = (p: ProviderConfig) =>
-    p.source === 'supercode' && p.platform ? `${p.platform} · ${p.name}` : p.name
+    p.platform ? `${p.platform} · ${p.name}` : p.name
 
   return (
     <div className="space-y-1.5">

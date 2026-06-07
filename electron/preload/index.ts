@@ -8,7 +8,7 @@ const api = {
   logout: () => ipcRenderer.invoke(IPC.AUTH_LOGOUT),
   getAuthState: () => ipcRenderer.invoke(IPC.AUTH_GET_STATE),
   getSavedCredentials: () => ipcRenderer.invoke(IPC.AUTH_GET_SAVED_CREDS) as Promise<{ email: string; password: string } | null>,
-  initAccount: () => ipcRenderer.invoke(IPC.SUPERCODE_INIT_ACCOUNT),
+  initAccount: () => ipcRenderer.invoke(IPC.ACCOUNT_INIT),
   listKeyOptions: () => ipcRenderer.invoke(IPC.ACCOUNT_LIST_KEY_OPTIONS),
   selectPlatformKey: (args: { groupId: number; keyId: number }) => ipcRenderer.invoke(IPC.ACCOUNT_SELECT_KEY, args),
   revealKey: (args: { keyId: number }) => ipcRenderer.invoke(IPC.ACCOUNT_REVEAL_KEY, args),
@@ -96,6 +96,8 @@ const api = {
   deleteSession: (id: string) => ipcRenderer.invoke(IPC.SESSIONS_DELETE, id),
   renameSession: (id: string, title: string) => ipcRenderer.invoke(IPC.SESSIONS_RENAME, id, title),
   archiveSession: (id: string, archived: boolean) => ipcRenderer.invoke(IPC.SESSIONS_ARCHIVE, id, archived),
+  setSessionWorkingDir: (id: string, dir: string) =>
+    ipcRenderer.invoke(IPC.SESSIONS_SET_WORKING_DIR, id, dir) as Promise<{ ok: boolean; error?: string; workingDir?: string }>,
   listMessages: (sessionId: string) => ipcRenderer.invoke(IPC.MESSAGES_LIST, sessionId),
   deleteMessage: (messageId: string) => ipcRenderer.invoke(IPC.MESSAGES_DELETE, messageId),
   deleteMessagesFrom: (messageId: string) => ipcRenderer.invoke(IPC.MESSAGES_DELETE_FROM, messageId),

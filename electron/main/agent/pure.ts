@@ -210,3 +210,26 @@ export function truncateToolResult<T>(value: T, maxChars = 12000): T | string {
     return value
   }
 }
+
+// Placeholder/truncation idioms a model emits when it lazily writes a STUB instead
+// of the full file ("// ...rest unchanged", "其余省略", "(rest of the code)"). Used
+// by write_text_file to REFUSE such a write, because that tool overwrites the file
+// wholesale (after backing up) — a stub would silently destroy the real content.
+// Patterns are deliberately specific (a marker/comment + a rest/省略/unchanged word,
+// or an explicit Chinese "其余<名词>…省略/保持不变" construct) to avoid false
+// positives on legitimate prose that merely happens to contain "..." or "省略".
+const TRUNCATION_MARKERS: RegExp[] = [
+  /(?:\/\/|#|--)\s*\.{2,}\s*(?:rest|remaining|unchanged|the rest|其余|省略|余下)/i,
+  /\/\*\s*\.{2,}[\s\S]{0,40}?(?:rest|remaining|unchanged|其余|省略)[\s\S]{0,40}?\*\//i,
+  /<!--\s*\.{2,}[\s\S]{0,40}?(?:rest|remaining|unchanged|其余|省略)[\s\S]{0,40}?-->/i,
+  /\(\s*(?:the\s+)?(?:rest|remaining)\s+of\s+[^)]{0,40}?(?:code|file|content|implementation)[^)]{0,20}?\)/i,
+  /(?:其余|以下|后续|剩余|其它|其他)(?:的)?(?:代码|内容|部分|行|配置|逻辑|函数|字段|数据)?\s*(?:保持不变|保持原样|此处省略|这里省略|省略|略去|未作改动|未改动|不再赘述)/,
+  /(?:省略|略去)(?:其余|余下|后续|剩余|以下|部分|若干|\s*N\s*行)/,
+]
+
+/** True if `content` looks like a truncated stub / contains a "rest omitted"
+ *  placeholder rather than the complete file body. Conservative by design. */
+export function looksTruncated(content: string): boolean {
+  if (!content) return false
+  return TRUNCATION_MARKERS.some(re => re.test(content))
+}

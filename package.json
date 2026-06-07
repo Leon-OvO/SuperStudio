@@ -12,6 +12,10 @@
     "dist": "npm run build && electron-builder",
     "dist:win": "npm run build && electron-builder --win",
     "dist:mac": "npm run build && electron-builder --mac",
+    "dev:dwork": "cross-env FLAVOR=dwork node scripts/dev.js",
+    "build:dwork": "cross-env FLAVOR=dwork electron-vite build",
+    "dist:dwork:win": "npm run build:dwork && electron-builder --win --config electron-builder.dwork.yml",
+    "dist:dwork:mac": "npm run build:dwork && electron-builder --mac --config electron-builder.dwork.yml",
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json",
     "typecheck:web": "tsc --noEmit -p tsconfig.web.json",
     "test": "vitest run",
@@ -85,7 +89,7 @@
     "publish": [
       {
         "provider": "github",
-        "owner": "xizim",
+        "owner": "Leon-OvO",
         "repo": "SuperStudio",
         "releaseType": "release"
       }
@@ -135,7 +139,8 @@
       "resources/**",
       "node_modules/sql.js/**",
       "node_modules/node-pty/**",
-      "node_modules/@nut-tree-fork/**"
+      "node_modules/@nut-tree-fork/**",
+      "node_modules/pdfjs-dist/build/pdf.worker.min.mjs"
     ],
     "extraResources": [
       {

@@ -121,3 +121,23 @@ export function isApproved(filePath: string): boolean {
 
   return false
 }
+
+/**
+ * Stricter gate for DIRECTORY ENUMERATION (the list_dir tool). isApproved()
+ * deliberately permits the desktop / userData / temp as always-writable
+ * convenience roots so the agent can default-save and read a KNOWN file there.
+ * Those must NOT be bulk-enumerable: otherwise a prompt-injected model could
+ * `list_dir` the user's entire Desktop in any conversation — discovering then
+ * reading personal files — without the user ever pinning a working dir or
+ * attaching anything. Enumeration is therefore limited to roots the user
+ * explicitly opted into THIS session: the pinned working directory / Vibe
+ * project roots (sessionApprovedRoots, prefix match) and exactly-approved paths.
+ */
+export function isEnumerableDir(dirPath: string): boolean {
+  if (!dirPath) return false
+  const norm = normalize(dirPath)
+  for (const root of sessionApprovedRoots) {
+    if (norm === root || norm.startsWith(root + '/')) return true
+  }
+  return sessionApproved.has(norm)
+}

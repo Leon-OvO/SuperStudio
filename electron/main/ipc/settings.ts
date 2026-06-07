@@ -3,8 +3,7 @@ import fs from 'fs'
 import { IPC } from '../../../src/shared/ipc-types'
 import { getSettings, saveSettings, getProviders, saveProvider, deleteProvider, getMcpServers, saveMcpServer, deleteMcpServer, BUILTIN_MODEL_DEFAULTS } from '../services/store'
 import type { McpServerConfig, ProviderConfig } from '../../../src/shared/ipc-types'
-import { getAllKeys, storeAllKeys } from '../auth-store'
-import { apiGetKeyPlaintext, apiListKeys, apiListSubscriptionKeys } from '../supercode-api'
+import { getProviderKeyRecovery } from '../services/key-store'
 
 /** Detect masked / placeholder key values returned by list endpoints. */
 function looksLikeRealKey(k: string | undefined | null): boolean {
@@ -12,60 +11,6 @@ function looksLikeRealKey(k: string | undefined | null): boolean {
   if (k.length < 20) return false
   if (k.includes('*') || k.includes('...')) return false
   return true
-}
-
-/**
- * For a supercode provider whose persisted `apiKey` looks masked (left over
- * from an earlier sync that couldn't recover plaintext), try to restore the
- * real value via /api/v1/keys/{id} and update the saved provider in place.
- * Returns the plaintext to use, or null if recovery failed.
- *
- * The provider id is of the form `supercode-{groupId}` — we map back to a
- * key id via the cached allKeys, falling back to a live list scan if needed.
- */
-async function recoverSupercodeProviderKey(provider: ProviderConfig): Promise<string | null> {
-  if (provider.source !== 'supercode') return null
-  const m = /^supercode-(\d+)$/.exec(provider.id)
-  if (!m) return null
-  const groupId = Number(m[1])
-
-  // 1) Cached key id
-  let keyId = getAllKeys().find(k => k.groupId === groupId)?.id ?? 0
-  // 2) Live scan across both pools if not cached
-  if (!keyId) {
-    try {
-      const [fresh, freshSub] = await Promise.all([
-        apiListKeys().catch(() => []),
-        apiListSubscriptionKeys().catch(() => [])
-      ])
-      keyId = fresh.find(k => k.group_id === groupId)?.id
-        ?? freshSub.find(k => (k.group?.id ?? k.group_id) === groupId)?.id
-        ?? 0
-    } catch { /* fall through */ }
-  }
-  if (!keyId) {
-    console.warn(`[settings] recoverSupercodeProviderKey: no key id found for groupId=${groupId}`)
-    return null
-  }
-
-  try {
-    const plain = await apiGetKeyPlaintext(keyId)
-    if (!looksLikeRealKey(plain)) return null
-    // Update the saved provider so subsequent calls hit the fast path
-    saveProvider({ ...provider, apiKey: plain })
-    // Warm the auth-store cache too
-    const allKeys = getAllKeys()
-    const idx = allKeys.findIndex(k => k.id === keyId)
-    if (idx >= 0) {
-      allKeys[idx] = { ...allKeys[idx], key: plain }
-      storeAllKeys(allKeys)
-    }
-    console.log(`[settings] recovered plaintext for ${provider.id} via /keys/${keyId}`)
-    return plain
-  } catch (e) {
-    console.warn(`[settings] recoverSupercodeProviderKey failed for ${provider.id}:`, (e as Error).message)
-    return null
-  }
 }
 
 export function settingsHandlers(): void {
@@ -132,32 +77,28 @@ export function settingsHandlers(): void {
       throw new Error('Auto-fetch only supported for OpenAI-compatible providers')
     }
 
-    // For supercode providers, the saved apiKey may be masked (e.g.
-    // "sk-d8d66...3b43") if an earlier sync stored what the list endpoint
-    // returned. Recover plaintext via /keys/{id} before calling /v1/models
-    // — otherwise the upstream will 401 and the user has to manually click
-    // 重置全部 for no obvious reason.
+    // The saved apiKey may be masked (e.g. "sk-d8d66...3b43") if an earlier sync
+    // stored what a list endpoint returned. Try the injected key-recovery seam
+    // before calling /v1/models — otherwise the upstream 401s and the user has
+    // to re-enter the key. Recovery is a no-op for plain BYOK providers.
     let apiKey = provider.apiKey
-    if (provider.source === 'supercode' && !looksLikeRealKey(apiKey)) {
-      const plain = await recoverSupercodeProviderKey(provider)
+    if (!looksLikeRealKey(apiKey)) {
+      const plain = await getProviderKeyRecovery().recover(provider.id)
       if (plain) apiKey = plain
     }
 
     if (!apiKey || apiKey.length < 8) {
-      if (provider.source === 'supercode') {
-        throw new Error('此 Key 已失效或未正确保存，请到「账号」中点击「重置全部」重新拉取')
-      }
-      throw new Error('API Key 为空')
+      throw new Error('API Key 为空或无效，请在「设置 → API 提供商」中重新填写。')
     }
     const baseUrl = (provider.baseUrl || 'https://api.openai.com').replace(/\/v1\/?$/, '')
     console.log(`[settings] fetch-models for ${providerId}: ${baseUrl}/v1/models (key length=${apiKey.length})`)
     let res = await fetch(`${baseUrl}/v1/models`, {
       headers: { Authorization: `Bearer ${apiKey}` }
     })
-    // One retry: if a supercode provider 401s, the stored key may be stale.
-    // Refresh from /keys/{id} and try again.
-    if (res.status === 401 && provider.source === 'supercode' && looksLikeRealKey(apiKey)) {
-      const refreshed = await recoverSupercodeProviderKey(provider)
+    // One retry: if the upstream 401s, the stored key may be stale. Ask the
+    // recovery seam to refresh and try again (no-op for BYOK providers).
+    if (res.status === 401 && looksLikeRealKey(apiKey)) {
+      const refreshed = await getProviderKeyRecovery().recover(provider.id)
       if (refreshed && refreshed !== apiKey) {
         console.log(`[settings] retrying /v1/models with refreshed key for ${providerId}`)
         apiKey = refreshed
@@ -169,9 +110,6 @@ export function settingsHandlers(): void {
     if (!res.ok) {
       const body = await res.text().catch(() => '')
       console.warn(`[settings] fetch-models ${res.status}: ${body.slice(0, 300)}`)
-      if (res.status === 401 && provider.source === 'supercode') {
-        throw new Error('此 Key 已失效（服务端返回 401）。请到「账号」中点击 Token Plan 的「重置」重新生成。')
-      }
       throw new Error(`获取模型列表失败 (${res.status}) ${body.slice(0, 200)}`)
     }
     const raw = await res.json()

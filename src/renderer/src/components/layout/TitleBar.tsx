@@ -3,6 +3,8 @@ import { Minus, Square, X, Maximize2, Sun, Moon, Languages } from 'lucide-react'
 import { TopBarUser } from './TopBarUser'
 import { useUIStore } from '../../stores/ui'
 import { useT, setLanguage, useLanguage } from '../../lib/i18n'
+import { BRAND } from '@shared/brand'
+import { ACCOUNT_MODE } from '@shared/flavor'
 
 export function TitleBar() {
   const [isMaximized, setIsMaximized] = useState(false)
@@ -26,7 +28,7 @@ export function TitleBar() {
       {isWin ? (
         <div className="w-[52px] shrink-0 flex items-center justify-center">
           <div className="w-4 h-4 rounded-md bg-primary flex items-center justify-center shadow-sm">
-            <span className="text-primary-foreground font-bold text-[9px] leading-none">S</span>
+            <span className="text-primary-foreground font-bold text-[9px] leading-none">{BRAND.productName.charAt(0).toUpperCase()}</span>
           </div>
         </div>
       ) : (
@@ -35,7 +37,7 @@ export function TitleBar() {
 
       {/* App title */}
       <span className="text-xs text-foreground/70 font-semibold tracking-tight flex-1">
-        SuperStudio
+        {BRAND.productName}
       </span>
 
       {/* Right cluster: user account + window controls (not draggable) */}
@@ -57,7 +59,7 @@ export function TitleBar() {
         >
           {theme === 'dark' ? <Sun size={14} /> : <Moon size={14} />}
         </TopToggle>
-        <TopBarUser />
+        {ACCOUNT_MODE === 'hosted' && <TopBarUser />}
         {isWin && (
           <div className="flex items-stretch h-full ml-1">
             <WinBtn onClick={() => window.api.winMinimize()} label="最小化">

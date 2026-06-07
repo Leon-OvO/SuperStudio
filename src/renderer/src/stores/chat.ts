@@ -54,6 +54,9 @@ interface ChatState {
   setMountedSpaces: (ids: string[]) => void
   setComputerMode: (on: boolean) => void
   setSessionModel: (sessionId: string, providerId: string, model: string) => void
+  /** Update a session's working directory in the local list (after the main
+   *  process has persisted it via setSessionWorkingDir IPC). */
+  setSessionWorkingDir: (sessionId: string, dir: string) => void
 }
 
 export const useChatStore = create<ChatState>((set) => ({
@@ -147,5 +150,8 @@ export const useChatStore = create<ChatState>((set) => ({
   setComputerMode: (on) => set({ computerMode: on }),
   setSessionModel: (sessionId, providerId, model) => set(s => ({
     sessionModel: { ...s.sessionModel, [sessionId]: { providerId, model } }
+  })),
+  setSessionWorkingDir: (sessionId, dir) => set(s => ({
+    sessions: s.sessions.map(sess => sess.id === sessionId ? { ...sess, workingDir: dir } : sess)
   }))
 }))

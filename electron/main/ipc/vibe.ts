@@ -480,13 +480,13 @@ function resolveProjectModel(project: VibeProjectRow): { providerId: string; mod
     const m = settings.defaultChatModel || def.models[0]
     if (def.models.includes(m)) return { providerId: def.id, modelId: m }
   }
-  // 3. First supercode provider with models
-  const sc = providers.find(p => p.source === 'supercode' && p.models.length > 0)
+  // 3. Prefer an Anthropic-native-capable provider with models
+  const sc = providers.find(p => p.anthropicNative && p.models.length > 0)
   if (sc) return { providerId: sc.id, modelId: sc.models[0] }
   // 4. Any provider with models
   const any = providers.find(p => p.models.length > 0)
   if (any) return { providerId: any.id, modelId: any.models[0] }
-  throw new Error('没有可用的模型。请到「账号 → API Keys」初始化，或在「设置 → 模型」配置一个 Key。')
+  throw new Error('没有可用的模型。请在「设置」中配置一个提供商 Key 并选择默认对话模型。')
 }
 
 // ---------------------------------------------------------------------------

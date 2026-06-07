@@ -1,17 +1,20 @@
 import { create } from 'zustand'
+import { BRAND } from '@shared/brand'
 
 type Page = 'dashboard' | 'chat' | 'workflow' | 'gallery' | 'memory' | 'vibe' | 'skills' | 'scheduler' | 'video' | 'company' | 'settings'
 type Theme = 'light' | 'dark'
 /** Skin = whole-app color palette. Replaces the old binary light/dark toggle —
  *  each skin maps to a light-or-dark base so Monaco / xterm can still pick a
- *  compatible variant via the derived `theme` field. */
-export type Skin = 'classic' | 'warm' | 'cold' | 'twilight' | 'terminal'
+ *  compatible variant via the derived `theme` field.
+ *  'dwork' is the Bootstrap-v5-styled light skin used by the DWork flavor. */
+export type Skin = 'classic' | 'warm' | 'cold' | 'twilight' | 'terminal' | 'dwork'
 export const SKIN_IS_DARK: Record<Skin, boolean> = {
   classic: false,
   warm: false,
   cold: true,
   twilight: true,
-  terminal: true
+  terminal: true,
+  dwork: false
 }
 type VibeActivity = 'requests' | 'files'
 
@@ -59,13 +62,19 @@ interface UIState {
   setSidebarExpanded: (v: boolean) => void
 }
 
-const SKIN_KEYS: Skin[] = ['classic', 'warm', 'cold', 'twilight', 'terminal']
+const SKIN_KEYS: Skin[] = ['classic', 'warm', 'cold', 'twilight', 'terminal', 'dwork']
+// First-run default skin is brand-driven: DWork boots into the Bootstrap-styled
+// skin, SuperStudio into classic. Falls back to classic if a brand names a skin
+// that isn't registered.
+const DEFAULT_SKIN: Skin = SKIN_KEYS.includes(BRAND.defaultSkin as Skin)
+  ? (BRAND.defaultSkin as Skin)
+  : 'classic'
 const savedSkin: Skin = (() => {
   const raw = localStorage.getItem('ss-skin')
   if (raw && SKIN_KEYS.includes(raw as Skin)) return raw as Skin
-  // Migrate from pre-skin builds: dark → twilight, anything else → classic.
+  // Migrate from pre-skin builds: dark → twilight, anything else → brand default.
   const legacy = localStorage.getItem('ss-theme')
-  return legacy === 'dark' ? 'twilight' : 'classic'
+  return legacy === 'dark' ? 'twilight' : DEFAULT_SKIN
 })()
 const savedTermHeight = (() => {
   const raw = localStorage.getItem('ss-terminal-height')

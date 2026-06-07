@@ -1,13 +1,13 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import {
   Plus, Trash2, Pin, PinOff, Archive, ArchiveRestore, Search, Eye, Edit3,
-  User, FolderGit2, History, Sparkles, Brain, X
+  User, FolderGit2, History, Sparkles, Brain, X, ShieldCheck
 } from 'lucide-react'
 import { cn, formatDate } from '../../lib/utils'
 import { renderMarkdown } from '../../lib/markdown'
 import { useConfirmDialog } from '../../components/ui/ConfirmDialog'
 
-type MemoryKind = 'profile' | 'project' | 'episode' | 'skill'
+type MemoryKind = 'profile' | 'project' | 'episode' | 'skill' | 'correction'
 
 interface Memory {
   id: string
@@ -29,6 +29,7 @@ const KINDS: { id: MemoryKind; label: string; icon: typeof User; hint: string }[
   { id: 'project', label: '项目记忆', icon: FolderGit2, hint: '每个公司项目的事实、决策、约定' },
   { id: 'episode', label: '过往经历', icon: History, hint: '过去做过什么的摘要' },
   { id: 'skill', label: '技能', icon: Sparkles, hint: '可复用的做法 / 解决套路' },
+  { id: 'correction', label: '交付标准', icon: ShieldCheck, hint: '你纠正过的交付要求，AI 以后会遵守（可删除）' },
 ]
 
 export function MemoryPage() {

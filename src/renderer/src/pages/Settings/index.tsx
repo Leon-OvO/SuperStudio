@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react'
 import type { ProviderConfig, AppSettings } from '../../../../shared/ipc-types'
+import { ACCOUNT_MODE } from '@shared/flavor'
+import { getAccountUI } from '../../lib/account-ui'
 import { GlobalSettings } from './GlobalSettings'
 import { PluginsTab } from './PluginsTab'
 import { McpServers } from './McpServers'
 import { About } from './About'
-import { AccountTab } from './AccountTab'
+import { ProviderManager } from './ProviderManager'
 import { SystemTab } from './SystemTab'
 import { useConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { toast } from '../../components/ui/Toast'
@@ -36,19 +38,21 @@ export function SettingsPage() {
     setProviders(p)
     setSettings(s)
 
-    // Defensive Token Plan sync: AccountTab triggers ensureSubscriptionKey on
-    // its own mount, but a user who opens Settings → 模型 directly (without
-    // ever visiting the Account tab) wouldn't pick up a Token Plan they
-    // activated after their last login. Idempotent — won't double-create.
-    try {
-      const status = await window.api.getSubscriptionStatus?.()
-      if (status && status.status === 'active') {
-        await window.api.ensureSubscriptionKey?.()
-        const fresh = await window.api.listProviders()
-        setProviders(fresh)
+    // Defensive Token Plan sync (supercode flavor only): AccountTab triggers
+    // ensureSubscriptionKey on its own mount, but a user who opens Settings →
+    // 模型 directly wouldn't pick up a Token Plan activated after last login.
+    // Idempotent. BYOK has no account backend, so it's skipped entirely.
+    if (ACCOUNT_MODE === 'hosted') {
+      try {
+        const status = await window.api.getSubscriptionStatus?.()
+        if (status && status.status === 'active') {
+          await window.api.ensureSubscriptionKey?.()
+          const fresh = await window.api.listProviders()
+          setProviders(fresh)
+        }
+      } catch (e) {
+        console.warn('[settings] Token Plan auto-sync skipped:', (e as Error).message)
       }
-    } catch (e) {
-      console.warn('[settings] Token Plan auto-sync skipped:', (e as Error).message)
     }
   }
 
@@ -146,7 +150,7 @@ export function SettingsPage() {
   return (
     <div className="flex h-full">
       <aside className="w-48 shrink-0 border-r border-border bg-sidebar p-2 space-y-1 flex flex-col">
-        <TabButton active={tab === 'account'} onClick={() => setTab('account')}>{t('settings.tabAccount')}</TabButton>
+        <TabButton active={tab === 'account'} onClick={() => setTab('account')}>{ACCOUNT_MODE === 'hosted' ? t('settings.tabAccount') : 'API 提供商'}</TabButton>
         <TabButton active={tab === 'system'} onClick={() => setTab('system')}>{t('settings.tabGlobal')}</TabButton>
         <TabButton active={tab === 'search'} onClick={() => setTab('search')}>{t('settings.tabWebSearch')}</TabButton>
         <TabButton active={tab === 'kb'} onClick={() => setTab('kb')}>{t('settings.tabKnowledgeBase')}</TabButton>
@@ -156,7 +160,14 @@ export function SettingsPage() {
         <TabButton active={tab === 'about'} onClick={() => setTab('about')}>{t('settings.tabAbout')}</TabButton>
       </aside>
       <div className="flex-1 overflow-y-auto p-6">
-        {tab === 'account' && <AccountTab onProvidersRefresh={reload} />}
+        {tab === 'account' && (() => {
+          // supercode flavor renders the overlay-registered AccountTab; BYOK
+          // (no registration) falls back to the local provider manager.
+          const AccountTabComponent = getAccountUI().AccountTabComponent
+          return ACCOUNT_MODE === 'hosted' && AccountTabComponent
+            ? <AccountTabComponent onProvidersRefresh={reload} />
+            : <ProviderManager providers={providers} onRefresh={reload} />
+        })()}
         {tab === 'mcp' && <McpServers />}
         {tab === 'plugins' && settings && <PluginsTab settings={settings} onSave={handleSaveSettings} />}
         {tab === 'system' && (

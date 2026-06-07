@@ -330,6 +330,11 @@ function applyMigrations(): void {
   // Unattended, so it auto-arms (no confirm dialog); still gated behind the
   // global computerUseEnabled switch. 0 = normal chat run, 1 = computer-use.
   try { db.run(`ALTER TABLE scheduled_tasks ADD COLUMN computer_mode INTEGER NOT NULL DEFAULT 0`) } catch { /* already exists */ }
+  // v14: per-session 工作目录 (opt-in). The absolute path the user pinned for a
+  // conversation: the agent default-saves new files there, registers it as an
+  // approved root (whole subtree read/write), and exposes list_dir so the model
+  // can discover what's inside. NULL/'' = unset → fall back to the desktop default.
+  try { db.run(`ALTER TABLE sessions ADD COLUMN working_dir TEXT`) } catch { /* already exists */ }
 }
 
 // Helper: run a query and save

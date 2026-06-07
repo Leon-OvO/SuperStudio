@@ -3,6 +3,7 @@ import { Loader2, RefreshCw, Sparkles, ExternalLink, Database, Download, Upload,
 import { useT } from '../../lib/i18n'
 import { useConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { toast } from '../../components/ui/Toast'
+import { BRAND_LINKS } from '../../../../shared/brand-links'
 
 interface Props {
   onExportData: () => void
@@ -47,16 +48,20 @@ export function About({
           </span>
           <span className="text-muted-foreground">{t('about.platform')}</span>
           <span className="font-mono text-xs">{window.api.platform ?? 'unknown'}</span>
-          <span className="text-muted-foreground">{t('about.website')}</span>
-          <a
-            href="https://www.supercode.help"
-            target="_blank"
-            rel="noreferrer"
-            className="text-primary hover:underline inline-flex items-center gap-1"
-          >
-            www.supercode.help
-            <ExternalLink size={11} />
-          </a>
+          {BRAND_LINKS.websiteUrl && (
+            <>
+              <span className="text-muted-foreground">{t('about.website')}</span>
+              <a
+                href={BRAND_LINKS.websiteUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="text-primary hover:underline inline-flex items-center gap-1"
+              >
+                {BRAND_LINKS.websiteUrl.replace(/^https?:\/\//, '')}
+                <ExternalLink size={11} />
+              </a>
+            </>
+          )}
         </div>
       </section>
 

@@ -15,6 +15,7 @@ export const IPC = {
   SESSIONS_DELETE: 'sessions:delete',
   SESSIONS_RENAME: 'sessions:rename',
   SESSIONS_ARCHIVE: 'sessions:archive',
+  SESSIONS_SET_WORKING_DIR: 'sessions:set-working-dir', // pin a per-conversation working directory (opt-in)
   MESSAGES_LIST: 'messages:list',
   MESSAGES_DELETE: 'messages:delete',          // delete a single message by id
   MESSAGES_DELETE_FROM: 'messages:delete-from', // delete this message + everything created after it (used for regenerate / edit)
@@ -130,7 +131,7 @@ export const IPC = {
   AUTH_REFRESH: 'auth:refresh',
   AUTH_STATE_CHANGED: 'auth:state-changed',   // main → renderer (event)
   AUTH_GET_SAVED_CREDS: 'auth:get-saved-creds',  // pre-fill login form after logout
-  SUPERCODE_INIT_ACCOUNT: 'supercode:init-account',
+  ACCOUNT_INIT: 'account:init',
 
   // Account key management
   ACCOUNT_LIST_KEY_OPTIONS: 'account:list-key-options',
@@ -357,10 +358,17 @@ export interface ProviderConfig {
   apiKey: string
   baseUrl?: string
   models: string[]
-  source?: 'supercode' | 'manual'
+  /** Where the provider came from. 'manual' = user-added (BYOK); an account
+   *  overlay may set its own marker. Open string so core needs no brand enum. */
+  source?: string
   /** Upstream platform (e.g. "Anthropic", "OpenAI") for grouping/labeling
-   *  in pickers. Only set for supercode-managed providers. */
+   *  in pickers. Only set for account-managed providers. */
   platform?: string
+  /** Capability flag: this provider's endpoint ALSO speaks Anthropic-native
+   *  /v1/messages, so Claude models can be auto-routed there. Set by whichever
+   *  layer knows the endpoint (e.g. an account overlay) — core never infers it
+   *  from a brand string. */
+  anthropicNative?: boolean
 }
 
 
@@ -681,7 +689,7 @@ export interface FetchedRegistryInfo {
 }
 
 // SuperCode auth
-export interface SuperCodeUser {
+export interface AccountUser {
   id: number
   email: string
   username?: string
@@ -726,7 +734,7 @@ export interface SubscriptionKeyView {
 
 export interface AuthState {
   isLoggedIn: boolean
-  user: SuperCodeUser | null
+  user: AccountUser | null
   keyId: number | null
   keyValue: string       // masked — first key, kept for backward compat
   allKeys?: StoredKeyInfo[]
@@ -748,6 +756,11 @@ export interface Session {
   totalCostUsd?: number
   totalInputTokens?: number
   totalOutputTokens?: number
+  /** Opt-in working directory for this conversation (absolute path). When set,
+   *  the agent default-saves new files here, treats it as an approved root
+   *  (whole subtree read/write), and can list_dir its contents. '' / undefined
+   *  = unset → desktop-default behavior. */
+  workingDir?: string
 }
 
 // Scheduled prompts

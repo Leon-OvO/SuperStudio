@@ -1,5 +1,6 @@
 import fs from 'fs'
 import path from 'path'
+import { pathToFileURL } from 'url'
 import * as XLSX from 'xlsx'
 import mammoth from 'mammoth'
 import { getSettings } from './store'
@@ -24,22 +25,71 @@ export async function readFile(filePath: string, signal?: AbortSignal): Promise<
   switch (ext) {
     case '.xlsx':
     case '.xls':
+    case '.ods':            // SheetJS reads OpenDocument spreadsheets too
       return readXlsx(filePath)
     case '.docx':
-    case '.doc':
       return readDocx(filePath)
     case '.pptx':
-    case '.ppt':
       return readPptx(filePath, signal)
     case '.pdf':
       return readPdf(filePath, signal)
+    case '.epub':
+      return readEpub(filePath, signal)
+    case '.odt':
+      return readOpenDocument(filePath, 'odt', signal)
+    case '.odp':
+      return readOpenDocument(filePath, 'odp', signal)
+    case '.rtf':
+      return readRtf(filePath)
+    case '.doc':
+    case '.ppt':
+      // Old OLE binary formats — mammoth/adm-zip can't open them (they're not zip).
+      throw new Error(
+        `暂不支持旧版二进制 ${ext} 格式。请先用 Office / WPS 把它另存为 ` +
+        `${ext === '.doc' ? '.docx' : '.pptx'} 后再读取。`
+      )
     case '.txt':
     case '.md':
       return { content: fs.readFileSync(filePath, 'utf-8'), type: 'text' }
     default:
-      throw new Error(`Unsupported file type: ${ext}`)
+      if (IMAGE_EXTS.has(ext)) {
+        throw new Error(
+          `"${path.basename(filePath)}" 是图片文件（${ext}）。file_read 只用于可提取文字的文档；` +
+          `要理解图片内容请改用 vision_analyze 工具。`
+        )
+      }
+      if (TEXT_EXTS.has(ext)) {
+        const raw = fs.readFileSync(filePath, 'utf-8')
+        const cap = 1_000_000 // guard context: don't dump a multi-MB file wholesale
+        const content = raw.length > cap
+          ? raw.slice(0, cap) + `\n\n…[已截断：文件较大，仅显示前 ${cap} 字符]`
+          : raw
+        return { content, type: 'text' }
+      }
+      throw new Error(
+        `Unsupported file type: ${ext}. 已支持：xlsx/xls/ods、docx、pptx、pdf、epub、odt/odp、rtf，` +
+        `以及各类纯文本/代码/数据文件（txt/md/csv/tsv/json/html/xml/yaml/源代码 等）。`
+      )
   }
 }
+
+// Text-like extensions readFile can return as plain UTF-8 (beyond .txt/.md).
+const TEXT_EXTS = new Set([
+  '.html', '.htm', '.css', '.js', '.mjs', '.cjs', '.ts', '.tsx', '.jsx',
+  '.json', '.json5', '.jsonc', '.xml', '.yaml', '.yml', '.csv', '.tsv', '.log', '.ini', '.conf',
+  '.toml', '.env', '.py', '.java', '.go', '.rs', '.c', '.cpp', '.h', '.hpp',
+  '.sh', '.bat', '.ps1', '.sql', '.svg', '.vue', '.php', '.rb',
+  // extended: more languages / config / markup people routinely hand the agent
+  '.tex', '.rst', '.cs', '.kt', '.kts', '.swift', '.scala', '.dart', '.lua',
+  '.r', '.pl', '.pm', '.gradle', '.properties', '.scss', '.less',
+  '.graphql', '.gql', '.proto', '.cfg', '.srt', '.vtt'
+])
+
+// Image files: file_read can't extract text from them — steer the agent to
+// vision_analyze instead of throwing a generic "unsupported" error.
+const IMAGE_EXTS = new Set([
+  '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tiff', '.tif', '.ico', '.heic', '.heif', '.avif'
+])
 
 function readXlsx(filePath: string): { content: string; type: string } {
   const workbook = XLSX.readFile(filePath)
@@ -76,9 +126,104 @@ function readPptx(filePath: string, signal?: AbortSignal): { content: string; ty
   return { content: parts.join('\n\n'), type: 'pptx' }
 }
 
+// Decode the handful of XML/HTML entities that survive tag-stripping.
+function decodeEntities(s: string): string {
+  return s
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, h) => safeFromCodePoint(parseInt(h, 16)))
+    .replace(/&#(\d+);/g, (_, d) => safeFromCodePoint(parseInt(d, 10)))
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"').replace(/&apos;/g, "'")
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+}
+function safeFromCodePoint(n: number): string {
+  try { return String.fromCodePoint(n) } catch { return '' }
+}
+
+// Strip XML/HTML markup to readable text. Closing block tags become newlines so
+// paragraphs / headings / list items / slides don't run together; everything
+// else collapses to single spaces.
+function stripMarkup(xml: string): string {
+  const withBreaks = xml
+    .replace(/<\s*br\s*\/?\s*>/gi, '\n')
+    .replace(/<\/\s*(p|h[1-6]|div|li|tr|text:p|text:h|text:list-item|draw:page|draw:frame)\s*>/gi, '\n')
+  return decodeEntities(withBreaks.replace(/<[^>]+>/g, ''))
+    .replace(/[ \t\f\v]+/g, ' ')
+    .replace(/ *\n */g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
+// Generic: pull readable text out of a zip-based document (epub / odt / odp).
+// `match` selects entry names; entries are processed in numeric-aware name order.
+function zipTextEntries(filePath: string, match: (name: string) => boolean, signal?: AbortSignal): string[] {
+  const AdmZip = require('adm-zip')
+  const zip = new AdmZip(filePath)
+  const entries = zip.getEntries()
+    .filter((e: { entryName: string }) => match(e.entryName))
+    .sort((a: { entryName: string }, b: { entryName: string }) =>
+      a.entryName.localeCompare(b.entryName, undefined, { numeric: true }))
+  const parts: string[] = []
+  for (const e of entries) {
+    throwIfAborted(signal)
+    const text = stripMarkup(e.getData().toString('utf-8'))
+    if (text) parts.push(text)
+  }
+  return parts
+}
+
+// EPUB = a zip of XHTML chapters. Extract every (x)html entry in name order —
+// good enough for text extraction without parsing the OPF spine for exact order.
+function readEpub(filePath: string, signal?: AbortSignal): { content: string; type: string } {
+  const parts = zipTextEntries(filePath, n => /\.x?html?$/i.test(n) && !/^meta-inf\//i.test(n), signal)
+  return { content: parts.join('\n\n'), type: 'epub' }
+}
+
+// OpenDocument text (.odt) / presentation (.odp): all body text lives in
+// content.xml. (.ods spreadsheets are handled by SheetJS via readXlsx instead.)
+function readOpenDocument(filePath: string, kind: string, signal?: AbortSignal): { content: string; type: string } {
+  const parts = zipTextEntries(filePath, n => n === 'content.xml', signal)
+  return { content: parts.join('\n\n'), type: kind }
+}
+
+// Minimal RTF → plain text. Handles \par/\line/\tab, \uN unicode escapes and
+// \'hh hex bytes, drops control words + groups. Lossy for exotic RTF (custom
+// codepages, embedded objects) but fine for ordinary rich text documents.
+function readRtf(filePath: string): { content: string; type: string } {
+  let s = fs.readFileSync(filePath, 'latin1')
+  // \uN <fallback> — emit the unicode char, then the RTF spec's ASCII fallback
+  // char(s) should be skipped; we just drop the optional trailing '?' / space.
+  s = s.replace(/\\u(-?\d+)\s?\??/g, (_, n) => safeFromCodePoint((parseInt(n, 10) + 65536) % 65536))
+  s = s.replace(/\\'([0-9a-fA-F]{2})/g, (_, h) => safeFromCodePoint(parseInt(h, 16)))
+  // Control words may be followed by ONE delimiter space that's part of the token
+  // (not content) — consume it so paragraphs don't start with a stray space.
+  s = s.replace(/\\pard?\b ?/g, '\n').replace(/\\line\b ?/g, '\n').replace(/\\tab\b ?/g, '\t')
+  s = s.replace(/\\[a-zA-Z]+-?\d* ?/g, '')   // remaining control words
+  s = s.replace(/[{}]/g, '').replace(/\\[*]?/g, '')
+  const content = s
+    .replace(/\r/g, '')
+    .replace(/[ \t]+\n/g, '\n')   // trailing space/tab before a newline
+    .replace(/\n[ \t]+/g, '\n')   // leading space/tab after a newline
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+  return { content, type: 'rtf' }
+}
+
 async function readPdf(filePath: string, signal?: AbortSignal): Promise<{ content: string; type: string }> {
   const { getDocument, GlobalWorkerOptions } = await import('pdfjs-dist')
-  GlobalWorkerOptions.workerSrc = ''
+  // pdfjs needs a worker module to parse. In Electron's Node main process there
+  // is no Web Worker, so pdfjs runs a "fake worker" on the main thread by
+  // dynamically importing workerSrc — meaning an EMPTY workerSrc throws
+  // 'Setting up fake worker failed: "No GlobalWorkerOptions.workerSrc specified."'.
+  // Point it at the shipped worker bundle. In a packaged build that file is
+  // unpacked out of app.asar (see asarUnpack in package.json), so rewrite the
+  // asar path to the real on-disk .unpacked copy before turning it into a file://
+  // URL that import() can load. Set once — it's a process-global.
+  if (!GlobalWorkerOptions.workerSrc) {
+    const workerPath = require.resolve('pdfjs-dist/build/pdf.worker.min.mjs')
+      .replace(/app\.asar([\\/])/, 'app.asar.unpacked$1')
+    GlobalWorkerOptions.workerSrc = pathToFileURL(workerPath).href
+  }
   // pdfjs-dist 4.x hard-rejects a Node Buffer (`getDataProp` throws
   // "Please provide binary data as `Uint8Array`, rather than `Buffer`."),
   // and fs.readFileSync returns a Buffer. Copy into a plain Uint8Array so
@@ -110,6 +255,119 @@ async function readPdf(filePath: string, signal?: AbortSignal): Promise<{ conten
   } finally {
     signal?.removeEventListener('abort', onAbort)
   }
+}
+
+export interface DirEntry {
+  name: string
+  type: 'file' | 'dir'
+  /** Bytes for files; omitted for directories. */
+  size?: number
+  /** Absolute path (forward slashes), ready to hand straight to file_read. */
+  path: string
+}
+
+/** Translate a simple shell glob (only * and ?) into an anchored, case-insensitive
+ *  RegExp. Case-insensitive so "*.XLSX" still matches "data.xlsx". */
+function globToRegExp(glob: string): RegExp {
+  const escaped = glob.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.')
+  return new RegExp(`^${escaped}$`, 'i')
+}
+
+/**
+ * List the entries under `dirPath` for the agent's list_dir tool. The CALLER
+ * MUST have authorized `dirPath` (isApproved) — this is a pure fs walk with no
+ * sandbox check of its own.
+ *
+ *  - `pattern`: simple name glob (only * and ?) matched against each file's
+ *    basename. Directories are always included (so the model can drill down)
+ *    even when a pattern is given.
+ *  - `recursive`: walk subfolders, depth-capped (MAX_DEPTH) to avoid pathological
+ *    trees; node_modules / .git / dotfolders are not descended into.
+ *  - Total entries are capped (MAX_ENTRIES); `truncated` flags when the cap hit,
+ *    so a huge directory can't blow the model's context window.
+ */
+export function listDir(params: { dirPath: string; pattern?: string; recursive?: boolean; limit?: number }): { dir: string; entries: DirEntry[]; truncated: boolean } {
+  const { dirPath, pattern, recursive = false } = params
+  if (!fs.existsSync(dirPath)) throw new Error(`目录不存在: ${dirPath}`)
+  if (!fs.statSync(dirPath).isDirectory()) throw new Error(`不是目录: ${dirPath}`)
+
+  const MAX_ENTRIES = Math.min(Math.max(params.limit ?? 500, 1), 2000)
+  const MAX_DEPTH = 4
+  const SKIP_DESCEND = new Set(['node_modules', '.git', '.svn', '.hg', '.backup'])
+  const matcher = pattern ? globToRegExp(pattern) : null
+  const toFwd = (p: string): string => p.replace(/\\/g, '/')
+
+  const entries: DirEntry[] = []
+  let truncated = false
+
+  // Resolve the root's real path once so recursive descent can refuse to follow a
+  // symlink / Windows junction that escapes it. Without this, a reparse point
+  // inside the root would emit child paths that TEXTUALLY start with the root
+  // (so the purely-prefix isApproved gate would accept them) while physically
+  // pointing elsewhere — a read-escape out of the approved subtree.
+  let rootRealNorm: string
+  try { rootRealNorm = fs.realpathSync(dirPath).replace(/\\/g, '/').toLowerCase() }
+  catch { rootRealNorm = dirPath.replace(/\\/g, '/').toLowerCase() }
+  const withinRoot = (p: string): boolean => {
+    let real: string
+    try { real = fs.realpathSync(p).replace(/\\/g, '/').toLowerCase() } catch { return false }
+    return real === rootRealNorm || real.startsWith(rootRealNorm + '/')
+  }
+
+  const walk = (dir: string, depth: number): void => {
+    if (truncated) return
+    let dirents: fs.Dirent[]
+    try { dirents = fs.readdirSync(dir, { withFileTypes: true }) } catch { return }
+    // Stable order: directories first, then files, each alphabetical.
+    dirents.sort((a, b) => (Number(b.isDirectory()) - Number(a.isDirectory())) || a.name.localeCompare(b.name))
+    for (const d of dirents) {
+      if (entries.length >= MAX_ENTRIES) { truncated = true; return }
+      const full = path.join(dir, d.name)
+      if (d.isDirectory()) {
+        entries.push({ name: d.name, type: 'dir', path: toFwd(full) })
+        if (recursive && depth < MAX_DEPTH && !SKIP_DESCEND.has(d.name) && !d.name.startsWith('.') && withinRoot(full)) {
+          walk(full, depth + 1)
+        }
+      } else {
+        if (matcher && !matcher.test(d.name)) continue
+        let size: number | undefined
+        try { size = fs.statSync(full).size } catch { /* unreadable — omit size */ }
+        entries.push({ name: d.name, type: 'file', size, path: toFwd(full) })
+      }
+    }
+  }
+  walk(dirPath, 0)
+  return { dir: toFwd(dirPath), entries, truncated }
+}
+
+/**
+ * Write arbitrary TEXT to disk (HTML / Markdown / CSV / JSON / code / SVG …).
+ * Unlike writeFile (xlsx-only, cell operations), this is the general
+ * "save this text as a file" path. Backs up an existing file first (same
+ * .backup convention as writeFile) unless appending.
+ */
+export function writeTextFile(params: { filePath: string; content: string; append?: boolean }): { backupPath?: string; modified: string; created: boolean } {
+  const { filePath, content, append } = params
+  const targetDir = path.dirname(filePath)
+  try { fs.mkdirSync(targetDir, { recursive: true }) } catch { /* may already exist */ }
+
+  const existed = fs.existsSync(filePath)
+  let backupPath: string | undefined
+  if (existed && !append) {
+    const settings = getSettings()
+    const backupBase = settings.dataDirectory || path.dirname(filePath)
+    const backupDir = path.join(backupBase, '.backup')
+    fs.mkdirSync(backupDir, { recursive: true })
+    const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+    const ext = path.extname(filePath)
+    backupPath = path.join(backupDir, `${path.basename(filePath, ext)}.${ts}${ext}`)
+    fs.copyFileSync(filePath, backupPath)
+  }
+
+  if (append && existed) fs.appendFileSync(filePath, content, 'utf-8')
+  else fs.writeFileSync(filePath, content, 'utf-8')
+
+  return { backupPath, modified: filePath, created: !existed }
 }
 
 interface WriteOperation {

@@ -10,8 +10,7 @@ import { workflowHandlers } from './workflows'
 import { imageEditHandlers } from './image-edit'
 import { videoHandlers } from './video'
 import { mcpHandlers } from './mcp'
-import { authHandlers } from './auth'
-import { dashboardHandlers } from './dashboard'
+import { getAuthProvider } from '../services/auth-provider'
 import { vibeHandlers } from './vibe'
 import { skillsHandlers } from './skills'
 import { terminalHandlers } from './terminal'
@@ -29,9 +28,16 @@ export function registerIpcHandlers(): void {
   // handlers — must still register. Without isolation a single failure aborts
   // the whole function, and every later group's invoke then fails at runtime
   // with "No handler registered for …".
+  // Auth + account IPC is owned by the injected AuthProvider seam (BYOK shell by
+  // default; the supercode overlay registers the full account + dashboard set).
+  // Registered first so the renderer's AUTH_GET_STATE always has a handler.
+  try {
+    getAuthProvider().registerIpcHandlers()
+  } catch (e) {
+    console.error('[ipc] auth provider registration failed:', (e as Error)?.message ?? e)
+  }
+
   const groups: ReadonlyArray<readonly [string, () => void]> = [
-    ['auth', authHandlers],
-    ['dashboard', dashboardHandlers],
     ['settings', settingsHandlers],
     ['sessions', sessionHandlers],
     ['agent', agentHandlers],

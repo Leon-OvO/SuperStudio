@@ -33,6 +33,11 @@ function loadNut(): typeof NutType {
 }
 
 const TARGET_MAX_W = 1280
+// JPEG (not PNG) for the model's screenshots: a screen JPEG at q72 is ~5-10x
+// smaller than PNG, so it encodes + uploads much faster each step, with no
+// meaningful loss for UI reading. (Pixel count — and thus vision-token cost —
+// is unchanged; that's bounded by TARGET_MAX_W.)
+const JPEG_QUALITY = 72
 
 /** Set on every screenshot so action coordinates map target→absolute px.
  *  offX/offY = the captured display's origin in the OS virtual-desktop space
@@ -135,7 +140,7 @@ export async function captureScreenshot(): Promise<ScreenshotResult> {
     targetH,
   }
   const pos = currentDisplayPos()
-  return { image: img.toPNG().toString('base64'), width: targetW, height: targetH, displayIndex: pos.index, displayCount: pos.count }
+  return { image: img.toJPEG(JPEG_QUALITY).toString('base64'), width: targetW, height: targetH, displayIndex: pos.index, displayCount: pos.count }
 }
 
 /** Target display size for the model (computed on first screenshot; falls back

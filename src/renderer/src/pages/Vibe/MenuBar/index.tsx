@@ -10,6 +10,7 @@ import {
 import { Menu, MenuItem, MenuSeparator, MenuLabel } from './Menu'
 import { ProjectPill } from './ProjectPill'
 import { ModelPicker } from '../ModelPicker'
+import { BRAND_LINKS } from '@shared/brand-links'
 import { useUIStore } from '../../../stores/ui'
 import { runEditorCommand } from '../Editor/active-editor'
 import type { OpenTab } from '../store'
@@ -250,17 +251,21 @@ export function MenuBar(props: Props) {
           onClick={() => window.dispatchEvent(new CustomEvent('app:open-shortcuts'))}
         />
         <MenuSeparator />
-        <MenuItem
-          icon={<Globe size={12} />}
-          label="官方网站"
-          onClick={() => window.open('https://www.supercode.help', '_blank')}
-        />
+        {BRAND_LINKS.websiteUrl && (
+          <MenuItem
+            icon={<Globe size={12} />}
+            label="官方网站"
+            onClick={() => window.open(BRAND_LINKS.websiteUrl, '_blank')}
+          />
+        )}
         <MenuItem
           icon={<Info size={12} />}
           label="关于"
           onClick={() => setPage('settings')}
         />
-        <MenuItem icon={<HelpCircle size={12} />} label="文档" onClick={() => window.open('https://www.supercode.help', '_blank')} />
+        {BRAND_LINKS.websiteUrl && (
+          <MenuItem icon={<HelpCircle size={12} />} label="文档" onClick={() => window.open(BRAND_LINKS.websiteUrl, '_blank')} />
+        )}
       </Menu>
 
       {/* ─── Center: command-center project pill ─── */}

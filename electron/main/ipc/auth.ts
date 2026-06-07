@@ -382,6 +382,7 @@ async function runAccountSetup(onStep?: (step: number) => void): Promise<SetupRe
       baseUrl: 'https://api.supercode.help/v1',
       models,
       source: 'supercode',
+      anthropicNative: true,
       platform: keyEntry.platform
     })
   }
@@ -486,7 +487,7 @@ export function authHandlers(): void {
     return getCredentials()
   })
 
-  // SUPERCODE_INIT_ACCOUNT — called by LoginScreen during post-login setup
+  // ACCOUNT_INIT — called by LoginScreen during post-login setup
   // and by AccountTab on manual reset. Returns the new auth state but does
   // NOT broadcast it: doing so would flip `isLoggedIn` to true in the auth
   // store while LoginScreen is still showing its setup-step UI, tearing the
@@ -494,7 +495,7 @@ export function authHandlers(): void {
   // user has actually finished logging in. The two callers (LoginScreen and
   // AccountTab) both call setAuthState(result) themselves once they're
   // ready to transition.
-  ipcMain.handle(IPC.SUPERCODE_INIT_ACCOUNT, async () => {
+  ipcMain.handle(IPC.ACCOUNT_INIT, async () => {
     const { hasLegacyProviders } = await runAccountSetup()
     const state = buildAuthState()
     return { ...state, hasLegacyProviders }
@@ -610,6 +611,7 @@ export function authHandlers(): void {
       baseUrl: 'https://api.supercode.help/v1',
       models,
       source: 'supercode',
+      anthropicNative: true,
       platform: entry.platform
     })
 
@@ -848,6 +850,7 @@ export function authHandlers(): void {
       baseUrl: 'https://api.supercode.help/v1',
       models,
       source: 'supercode',
+      anthropicNative: true,
       platform: group.platform
     })
 

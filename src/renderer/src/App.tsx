@@ -4,7 +4,6 @@ import { useAuthStore } from './stores/auth'
 import { useVibeStore } from './pages/Vibe/store'
 import { Sidebar } from './components/layout/Sidebar'
 import { TitleBar } from './components/layout/TitleBar'
-import { DashboardPage } from './pages/Dashboard'
 import { ChatPage } from './pages/Chat'
 import { WorkflowPage } from './pages/Workflow'
 import { GalleryPage } from './pages/Gallery'
@@ -18,11 +17,13 @@ import { ShortcutsHelp } from './components/ui/ShortcutsHelp'
 import { CommandPalette } from './components/ui/CommandPalette'
 import { ToastHost, toast } from './components/ui/Toast'
 import { useConfirmDialog } from './components/ui/ConfirmDialog'
-import { LoginScreen } from './pages/Login'
 import { DataDirectorySetup } from './components/DataDirectorySetup'
 import { ChatModelSetup } from './components/ChatModelSetup'
 import { UpdateNotifier } from './components/UpdateNotifier'
 import { useScheduledNotifications } from './stores/scheduledNotifications'
+import { BRAND } from '@shared/brand'
+import { ACCOUNT_MODE } from '@shared/flavor'
+import { getAccountUI } from './lib/account-ui'
 
 type PageId = 'dashboard' | 'chat' | 'workflow' | 'gallery' | 'memory' | 'vibe' | 'skills' | 'scheduler' | 'video' | 'settings'
 
@@ -81,7 +82,9 @@ export default function App() {
   // logged-in state. Logged-out users see the login screen first; we only
   // gate the main UI behind the directory choice, not the login itself.
   useEffect(() => {
-    if (!isLoggedIn) { setDataDirReady(null); setChatModelReady(null); return }
+    // BYOK (DWork) has no login, so don't wait on isLoggedIn — proceed straight
+    // to the data-dir / model gates. supercode still gates on login.
+    if (ACCOUNT_MODE !== 'byok' && !isLoggedIn) { setDataDirReady(null); setChatModelReady(null); return }
     let cancelled = false
     ;(async () => {
       try {
@@ -127,12 +130,18 @@ export default function App() {
   // dark-base skins (cold/twilight).
   useLayoutEffect(() => {
     const root = document.documentElement
-    root.classList.remove('skin-classic', 'skin-warm', 'skin-cold', 'skin-twilight', 'skin-terminal')
+    root.classList.remove('skin-classic', 'skin-warm', 'skin-cold', 'skin-twilight', 'skin-terminal', 'skin-dwork')
     root.classList.add(`skin-${skin}`)
     const isDark = SKIN_IS_DARK[skin]
     if (isDark) root.classList.add('dark')
     else root.classList.remove('dark')
   }, [skin])
+
+  // Window/document title is brand-driven (index.html's static title is just
+  // the pre-hydration fallback). DWork builds show "DWork", SuperStudio "SuperStudio".
+  useLayoutEffect(() => {
+    document.title = BRAND.productName
+  }, [])
 
   // Tag <html> with the OS so platform-specific font-smoothing rules apply
   useLayoutEffect(() => {
@@ -277,11 +286,16 @@ export default function App() {
     )
   }
 
-  if (!isLoggedIn) {
+  // Login gate applies only to the account-based flavor (supercode). The login
+  // screen is provided by the account UI seam (registered by the overlay); the
+  // BYOK flavor (DWork) registers none and skips straight to onboarding.
+  const LoginComponent = getAccountUI().LoginComponent
+  const DashboardComponent = getAccountUI().DashboardComponent
+  if (ACCOUNT_MODE === 'hosted' && !isLoggedIn && LoginComponent) {
     return (
       <div className="flex flex-col h-screen w-screen overflow-hidden bg-background text-foreground">
         <TitleBar />
-        <LoginScreen />
+        <LoginComponent />
       </div>
     )
   }
@@ -331,7 +345,7 @@ export default function App() {
       <div className="flex flex-1 overflow-hidden">
         <Sidebar />
         <main className="flex-1 overflow-hidden">
-          {currentPage === 'dashboard' && <DashboardPage />}
+          {currentPage === 'dashboard' && DashboardComponent && <DashboardComponent />}
           {currentPage === 'chat' && <ChatPage />}
           {currentPage === 'workflow' && <WorkflowPage />}
           {currentPage === 'gallery' && <GalleryPage />}

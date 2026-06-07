@@ -1,5 +1,6 @@
 import { ipcMain, dialog, BrowserWindow } from 'electron'
 import fs from 'fs'
+import path from 'path'
 import { IPC } from '../../../src/shared/ipc-types'
 import { dbRun, dbAll, dbGet } from '../db/sqlite'
 import { randomUUID } from 'crypto'
@@ -42,6 +43,7 @@ export function sessionHandlers(): void {
              s.updated_at AS updatedAt,
              COALESCE(s.archived, 0) AS archived,
              COALESCE(s.is_scheduled, 0) AS isScheduled,
+             s.working_dir AS workingDir,
              COALESCE((SELECT SUM(cost_usd)      FROM messages WHERE session_id = s.id), 0) AS totalCostUsd,
              COALESCE((SELECT SUM(input_tokens)  FROM messages WHERE session_id = s.id), 0) AS totalInputTokens,
              COALESCE((SELECT SUM(output_tokens) FROM messages WHERE session_id = s.id), 0) AS totalOutputTokens
@@ -84,6 +86,27 @@ export function sessionHandlers(): void {
     // from it in the background (best-effort, never blocks the reply).
     if (archived) void captureSessionMemoryInBackground(id)
     return { ok: true }
+  })
+
+  // Pin (or clear) a conversation's working directory. Validated against the
+  // real filesystem here so a stale/typo'd path never reaches the agent: a
+  // non-existent or non-directory path is rejected; an empty string clears it
+  // (stored as NULL → the agent falls back to the desktop default).
+  ipcMain.handle(IPC.SESSIONS_SET_WORKING_DIR, (_e, id: string, dir: string) => {
+    const trimmed = (dir ?? '').trim()
+    if (trimmed) {
+      // Invariant: working dir is an ABSOLUTE path. A relative value would be
+      // resolved against the main-process CWD here AND again in the engine
+      // (path.resolve), making the approved root silently depend on CWD.
+      if (!path.isAbsolute(trimmed)) return { ok: false, error: '工作目录必须是绝对路径' }
+      try {
+        if (!fs.statSync(trimmed).isDirectory()) return { ok: false, error: '所选路径不是文件夹' }
+      } catch {
+        return { ok: false, error: '文件夹不存在或无法访问' }
+      }
+    }
+    dbRun(`UPDATE sessions SET working_dir = ? WHERE id = ?`, [trimmed || null, id])
+    return { ok: true, workingDir: trimmed }
   })
 
   ipcMain.handle(IPC.MESSAGES_LIST, (_e, sessionId: string) => {
@@ -212,7 +235,7 @@ export function sessionHandlers(): void {
     const dlg = win ? await dialog.showSaveDialog(win, opts) : await dialog.showSaveDialog(opts)
     if (dlg.canceled || !dlg.filePath) return { canceled: true }
 
-    const sessions = dbAll(`SELECT id, title, created_at AS createdAt, updated_at AS updatedAt, COALESCE(archived, 0) AS archived, COALESCE(is_scheduled, 0) AS isScheduled FROM sessions ORDER BY created_at ASC`)
+    const sessions = dbAll(`SELECT id, title, created_at AS createdAt, updated_at AS updatedAt, COALESCE(archived, 0) AS archived, COALESCE(is_scheduled, 0) AS isScheduled, working_dir AS workingDir FROM sessions ORDER BY created_at ASC`)
     const messages = dbAll(
       `SELECT id, session_id AS sessionId, role, content, tool_calls AS toolCallsJson,
               attachments AS attachmentsJson, meta AS metaJson, created_at AS createdAt
@@ -243,7 +266,7 @@ export function sessionHandlers(): void {
     }
     const data = parsed as {
       version?: number
-      sessions?: Array<{ id: string; title: string; createdAt: number; updatedAt: number; archived?: number; isScheduled?: number }>
+      sessions?: Array<{ id: string; title: string; createdAt: number; updatedAt: number; archived?: number; isScheduled?: number; workingDir?: string | null }>
       messages?: Array<{
         id: string; sessionId: string; role: string; content: string;
         toolCallsJson?: string | null; attachmentsJson?: string | null; metaJson?: string | null;
@@ -266,8 +289,8 @@ export function sessionHandlers(): void {
         if (strategy === 'merge') { sessionsSkipped++; continue }
       }
       dbRun(
-        `INSERT OR REPLACE INTO sessions (id, title, created_at, updated_at, archived, is_scheduled) VALUES (?, ?, ?, ?, ?, ?)`,
-        [s.id, s.title, s.createdAt, s.updatedAt, s.archived ?? 0, s.isScheduled ?? 0]
+        `INSERT OR REPLACE INTO sessions (id, title, created_at, updated_at, archived, is_scheduled, working_dir) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [s.id, s.title, s.createdAt, s.updatedAt, s.archived ?? 0, s.isScheduled ?? 0, s.workingDir ?? null]
       )
       sessionsAdded++
     }

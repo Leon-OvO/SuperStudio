@@ -2,12 +2,13 @@ import { streamText, tool, jsonSchema, type Tool, type CoreMessage } from 'ai'
 import { z } from 'zod'
 import { BrowserWindow } from 'electron'
 import { IPC, AgentProgressEvent } from '../../../src/shared/ipc-types'
-import { repairUnescapedQuotes } from '../../../src/shared/json-repair'
+import { parseJsonLoose } from '../../../src/shared/json-repair'
+import { BRAND } from '../../../src/shared/brand'
 import { createLLMClient, thinkingStreamOpts, effectiveProtocol } from '../services/llm'
 import { getSettings, getProviders } from '../services/store'
 import { generateImage } from '../services/image'
 import { generateVideo } from '../services/video'
-import { readFile, writeFile } from '../services/fileops'
+import { readFile, writeFile, writeTextFile, listDir } from '../services/fileops'
 import { searchWeb } from '../services/search'
 import { openPage, snapshotPage, actOnPage, uploadToPage } from '../services/web-browse'
 import { runComputerAction, captureScreenshot, getTargetDisplaySize, resetComputerDisplay, listComputerDisplays, currentDisplayBadge, type ComputerActionInput } from '../services/computer-use'
@@ -20,9 +21,10 @@ import { buildSkillTools } from './skill-tools'
 import { notifyTaskComplete } from '../services/tray'
 import { dbRun, dbAll, dbGet } from '../db/sqlite'
 import { computeCost, modelContextWindow } from '../services/model-pricing'
-import { isApproved, registerApproved, invalidateDbCache } from '../services/path-allow'
+import { isApproved, isEnumerableDir, registerApproved, registerApprovedRoot, invalidateDbCache } from '../services/path-allow'
 import { agentRunSemaphore } from './semaphore'
-import { buildAutoTitle, computeToolAllowSet, parseSizeFromMessage, friendlyError, truncateToolResult, trimHistoryToBudget } from './pure'
+import { buildAutoTitle, computeToolAllowSet, parseSizeFromMessage, friendlyError, truncateToolResult, trimHistoryToBudget, looksTruncated } from './pure'
+import { reconcileGrounding } from './grounding'
 import { randomUUID } from 'crypto'
 import path from 'path'
 import fs from 'fs'
@@ -60,6 +62,19 @@ function tryAutoTitle(sessionId: string, userMessage: string, isImage: boolean, 
     dbRun(`UPDATE sessions SET title = ? WHERE id = ?`, [title, sessionId])
     return title
   } catch { return null }
+}
+
+/** Read a session's opt-in working directory. Returns '' if unset, or if the
+ *  stored path no longer exists / isn't a directory (stale after a move/delete)
+ *  — callers then fall back to the desktop default. When non-empty, the agent
+ *  default-saves there, registers it as an approved root, and can list_dir it. */
+function readSessionWorkingDir(sessionId: string): string {
+  try {
+    const row = dbGet<{ working_dir: string | null }>(`SELECT working_dir FROM sessions WHERE id = ?`, [sessionId])
+    const dir = (row?.working_dir || '').trim()
+    if (!dir) return ''
+    return fs.existsSync(dir) && fs.statSync(dir).isDirectory() ? dir : ''
+  } catch { return '' }
 }
 
 export async function runAgent(
@@ -111,9 +126,12 @@ export async function runAgent(
     return
   }
 
+  // Hoisted to function scope so the Layer 3 correction hook (in the run try
+  // below) can exclude THIS turn's user message when finding the prior one.
+  let userMsgId = ''
   try {
     // Save user message
-    const userMsgId = randomUUID()
+    userMsgId = randomUUID()
     dbRun(
       `INSERT INTO messages (id, session_id, role, content, attachments, created_at) VALUES (?, ?, 'user', ?, ?, ?)`,
       [
@@ -163,7 +181,17 @@ export async function runAgent(
     // 12K-char text result as user-facing content, narrates "现在获取页面快照…"
     // then stops with finish_reason='stop' instead of calling web_snapshot.
     let webSnapshotAvailable = false
-    const systemPrompt = buildSystemPrompt(kbContext, mcpTools, activeSkills, scheduledContext)
+    // Per-session 工作目录 (opt-in). Validate it still exists; an invalid/stale
+    // path falls back to the desktop default. When valid, approve the whole tree
+    // (read+write) so file tools work inside it without per-file approval, tell
+    // the model to default-save there, and use it as the bash/skill cwd below.
+    // NOTE: registerApprovedRoot trust is process-global (same convention as Vibe
+    // project roots) — it persists for the process and is visible to later runs of
+    // other sessions. Acceptable because it only ever trusts a directory the user
+    // explicitly picked this session and is never restored on startup.
+    const workingDir = readSessionWorkingDir(sessionId)
+    if (workingDir) registerApprovedRoot(workingDir)
+    const systemPrompt = buildSystemPrompt(kbContext, mcpTools, activeSkills, scheduledContext, workingDir)
 
     const toolCallLog: Array<{ toolName: string; args: unknown; result: unknown }> = []
     let stepIndex = 0
@@ -198,7 +226,10 @@ export async function runAgent(
     if (computerMode && settings.computerUseEnabled) {
       const provCfg = allProviders.find(p => p.id === effectiveProviderId)
       const provType = provCfg ? effectiveProtocol(provCfg, effectiveModel) : undefined
-      const thinkOpts = thinkingStreamOpts(provType, settings.chatThinkingMode)
+      // Force "fast" (no extended thinking) per step: each computer-use step is a
+      // small "what do I click next" decision, so per-click extended thinking just
+      // adds latency. Trades a little reasoning depth for much snappier actions.
+      const thinkOpts = thinkingStreamOpts(provType, 'fast', effectiveModel)
       const history = await buildMessageHistory(sessionId, message, attachments, effectiveModel)
       const asstMsgId = randomUUID()
       const cuLog: Array<{ toolName: string; args: unknown; result: unknown }> = []
@@ -233,6 +264,61 @@ export async function runAgent(
       }
       const disp = await getTargetDisplaySize()
       const displays = listComputerDisplays()
+
+      // Make enabled skills reachable inside computer-use too — pure point-and-look
+      // is slow; a skill often carries a faster playbook (shortcuts / steps / a
+      // bundled script). Reuse the chat-scenario active skills: list runtime skills
+      // in the prompt + expose load_skill / read_skill_file / (gated) bash so the
+      // model can pull the full SKILL.md while driving the desktop.
+      const cuRuntimeSkills = activeSkills.filter(s => s.runtime)
+      const cuLegacySkills = activeSkills.filter(s => !s.runtime)
+      // cuSkillLogic = real tools WITH execute (used to run them manually below).
+      // cuSkillDefs  = same tools with execute STRIPPED — what the model sees.
+      // Why strip: streamText({maxSteps:1}) auto-executes any tool that HAS
+      // execute, but the SDK closes the stream before that async result lands, so
+      // the result would be lost. By exposing execute-less defs, streamText stops
+      // at the call (like computer/finish) and we invoke the logic ourselves and
+      // feed the result back as a tool-result — keeping the loop's 1-call-per-turn
+      // model and guaranteeing the model actually receives the skill output.
+      let cuSkillLogic: Record<string, ReturnType<typeof tool>> = {}
+      let cuSkillDefs: Record<string, ReturnType<typeof tool>> = {}
+      if (cuRuntimeSkills.length) {
+        const includeBash = cuRuntimeSkills.some(s => s.allowScripts)
+        const skillWorkspace = path.join(app.getPath('userData'), 'skill-workspace')
+        try { fs.mkdirSync(skillWorkspace, { recursive: true }) } catch { /* ignore */ }
+        cuSkillLogic = buildSkillTools({
+          activeSkills: cuRuntimeSkills,
+          cwd: workingDir || skillWorkspace,
+          abortSignal: abort.signal,
+          includeBash,
+          hooks: {
+            onUse: (toolName, args) => {
+              const label = typeof args.name === 'string' ? args.name
+                : typeof args.command === 'string' ? args.command
+                : typeof args.path === 'string' ? args.path : undefined
+              setComputerUseStatus('📖 技能 ' + toolName + (label ? '：' + label : ''))
+              emit({ stepIndex: stepIndex++, stepName: 'Skill', toolName, status: 'running', message: label })
+            },
+            onResult: (toolName, args, result, isError) => {
+              emit({ stepIndex: stepIndex - 1, stepName: 'Skill', toolName, status: isError ? 'error' : 'done' })
+              cuLog.push({ toolName, args, result })
+            },
+          },
+        }) as Record<string, ReturnType<typeof tool>>
+        for (const [name, def] of Object.entries(cuSkillLogic)) {
+          cuSkillDefs[name] = { ...(def as object), execute: undefined } as ReturnType<typeof tool>
+        }
+      }
+      const cuSkillSection =
+        (cuLegacySkills.length
+          ? `\n\n## 已启用技能（补充指引，附加于你的基础行为之上；若与上面的电脑操控规则冲突，以上面的规则为准）\n` +
+            cuLegacySkills.map(s => `### ${s.name}\n${(s.systemPrompt || '').trim() || `(${s.description || ''})`}`).join('\n\n')
+          : '') +
+        (cuRuntimeSkills.length
+          ? `\n\n## 可用技能（按需加载）\n用户启用了以下技能（每个是一份"操作说明 + 资源包"）。当任务和某个技能相关时，【先调用 load_skill(技能名) 加载完整说明再照着做】——纯靠看图点按很慢，技能里通常有更高效的步骤/快捷键/脚本。可用 read_skill_file 读参考文件、bash 跑被允许的脚本（路径用 load_skill 返回的 basePath 拼）。\n` +
+            cuRuntimeSkills.map(s => `- ${s.name}: ${s.description || '(无描述)'}`).join('\n')
+          : '')
+
       const ensureArmed = async (): Promise<boolean> =>
         armComputerUse({
           parent: win,
@@ -259,8 +345,10 @@ export async function runAgent(
           : '') +
         (scheduledContext
           ? `\n${displays.length > 1 ? '7' : '6'}) 这是【定时自动执行】，当前没有用户在旁边——不要等待或询问用户，直接按 prompt 把任务做完后调用 finish。`
-          : '')
+          : '') +
+        cuSkillSection
       const cuTools = {
+        ...cuSkillDefs,
         computer: tool({
           description:
             `执行一个电脑操作。action：screenshot｜left_click/right_click/middle_click/double_click/triple_click(在 coordinate 处点击)｜` +
@@ -301,9 +389,24 @@ export async function runAgent(
       await new Promise(r => setTimeout(r, 350)) // let the minimize settle before capturing
 
       const messages: CoreMessage[] = [...(history as CoreMessage[])]
+      // Keep only the most recent few screenshots as real images; downgrade older
+      // ones to a tiny text placeholder. Old screenshots are useless for deciding
+      // the next action but pile up as image tokens → every later LLM call gets
+      // slower + pricier. This is the biggest speed win as a task grows long.
+      const KEEP_SHOTS = 2
+      const recentShots: CoreMessage[] = []
+      const pushShot = (text: string, b64: string): void => {
+        const m: CoreMessage = { role: 'user', content: [{ type: 'text', text }, { type: 'image', image: Buffer.from(b64, 'base64') }] }
+        messages.push(m)
+        recentShots.push(m)
+        while (recentShots.length > KEEP_SHOTS) {
+          const old = recentShots.shift()
+          if (old) old.content = [{ type: 'text', text: '（历史截图已省略，以最新截图为准）' }]
+        }
+      }
       const shot0 = await captureScreenshot()
       const badge0 = currentDisplayBadge()
-      messages.push({ role: 'user', content: [{ type: 'text', text: `当前屏幕截图${badge0 ? '（' + badge0 + '）' : ''}：` }, { type: 'image', image: Buffer.from(shot0.image, 'base64') }] })
+      pushShot(`当前屏幕截图${badge0 ? '（' + badge0 + '）' : ''}：`, shot0.image)
 
       let actionsDone = 0
       let nudges = 0
@@ -377,8 +480,26 @@ export async function runAgent(
           messages.push({ role: 'tool', content: [{ type: 'tool-result', toolCallId: cuCall.toolCallId, toolName: 'computer', result: r.text ?? '已执行，最新截图见下一条用户消息。' }] })
           if (r.image) {
             const badge = currentDisplayBadge()
-            messages.push({ role: 'user', content: [{ type: 'text', text: `操作后的最新屏幕截图${badge ? '（' + badge + '）' : ''}：` }, { type: 'image', image: Buffer.from(r.image, 'base64') }] })
+            pushShot(`操作后的最新屏幕截图${badge ? '（' + badge + '）' : ''}：`, r.image)
           }
+          continue
+        }
+
+        // A skill tool (load_skill / read_skill_file / bash) was called. We run it
+        // manually (its execute was stripped from what the model saw) and feed the
+        // result back as a tool-result message, so the model sees it next turn.
+        // Not a "fake action" — it did real work, so don't trip the nudge below.
+        const skillCall = calls.find(c => !!cuSkillLogic[c.toolName])
+        if (skillCall) {
+          const run = cuSkillLogic[skillCall.toolName].execute as
+            undefined | ((a: unknown, o: unknown) => Promise<unknown>)
+          let result: unknown = { error: '技能工具不可用' }
+          if (run) {
+            try { result = await run(skillCall.args, { toolCallId: skillCall.toolCallId, messages: [], abortSignal: abort.signal }) }
+            catch (e) { result = { error: (e as Error).message } }
+          }
+          messages.push({ role: 'tool', content: [{ type: 'tool-result', toolCallId: skillCall.toolCallId, toolName: skillCall.toolName, result: result as never }] })
+          nudges = 0
           continue
         }
 
@@ -497,12 +618,27 @@ export async function runAgent(
             const myIdx = stepIndex++
             if (abort.signal.aborted) return '[web_search aborted]'
             emit({ stepIndex: myIdx, stepName: 'Web Search', toolName: 'web_search', status: 'running', message: `Searching: ${query}` })
-            const result = await searchWeb(query, settings.searchApiKey, settings.searchProvider, 5, { searxngUrl: settings.searxngUrl, browserVisible: settings.searchBrowserVisible })
+            // Wrap like the other tools: if every engine throws, return a tool-error
+            // (with recovery steer) rather than aborting the turn.
+            let result: Awaited<ReturnType<typeof searchWeb>>
+            try {
+              result = await searchWeb(query, settings.searchApiKey, settings.searchProvider, 5, { searxngUrl: settings.searxngUrl, browserVisible: settings.searchBrowserVisible })
+            } catch (searchErr) {
+              const msg = (searchErr as Error)?.message || String(searchErr)
+              emit({ stepIndex: myIdx, stepName: 'Web Search', toolName: 'web_search', status: 'error', message: msg })
+              toolCallLog.push({ toolName: 'web_search', args: { query }, result: { error: msg } })
+              return `[web_search error] ${msg}。请换更短/不同的关键词重试 web_search，或改用 web_open 打开相关站点。`
+            }
             const doneMsg = result.fallbackReason
               ? `Found ${result.results.length} via ${result.source} (fallback: ${result.fallbackReason})`
               : `Found ${result.results.length} via ${result.source}`
             emit({ stepIndex: myIdx, stepName: 'Web Search', toolName: 'web_search', status: 'done', message: doneMsg })
             toolCallLog.push({ toolName: 'web_search', args: { query }, result })
+            // Zero results is NOT "the answer is nothing" — steer recovery so the
+            // model reworks the query / opens a source instead of giving up.
+            if (!result.results?.length) {
+              return { ...result, hint: `未命中结果（${result.fallbackReason || result.source}）。请换更短/不同的关键词重试 web_search，或直接 web_open 一个相关站点；不要据此判定信息不存在。` }
+            }
             return result
           }
         }),
@@ -841,7 +977,18 @@ export async function runAgent(
               return `[vision_analyze error] ${msg}`
             }
             emit({ stepIndex: myIdx, stepName: 'Vision Analysis', toolName: 'vision_analyze', status: 'running' })
-            const result = await analyzeImage(imagePath, question, settings)
+            // Wrap like file_read: a corrupt/unreadable image or an LLM error must
+            // not throw OUT of execute (which aborts the whole turn + any parallel
+            // work this step). Return a tool-error the model can react to instead.
+            let result: Awaited<ReturnType<typeof analyzeImage>>
+            try {
+              result = await analyzeImage(imagePath, question, settings)
+            } catch (visErr) {
+              const msg = (visErr as Error)?.message || String(visErr)
+              emit({ stepIndex: myIdx, stepName: 'Vision Analysis', toolName: 'vision_analyze', status: 'error', message: msg })
+              toolCallLog.push({ toolName: 'vision_analyze', args: { imagePath, question }, result: { error: msg } })
+              return `[vision_analyze error] ${msg}`
+            }
             emit({ stepIndex: myIdx, stepName: 'Vision Analysis', toolName: 'vision_analyze', status: 'done' })
             toolCallLog.push({ toolName: 'vision_analyze', args: { imagePath, question }, result })
             return result
@@ -849,7 +996,10 @@ export async function runAgent(
         }),
         }),
         file_read: tool({
-          description: 'Read and extract text content from XLSX, DOCX, PPTX, or PDF files',
+          description: 'Read and extract text content from a document by absolute path. Supported: ' +
+            'PDF; Office (.xlsx/.xls, .docx, .pptx); OpenDocument (.ods, .odt, .odp); .epub; .rtf; ' +
+            'and any plain-text / code / data file (.txt/.md/.csv/.tsv/.json/.html/.xml/.yaml/.sql/源代码 等). ' +
+            'For images use vision_analyze instead; for old binary .doc/.ppt, ask the user to convert to .docx/.pptx.',
           parameters: z.object({ filePath: z.string().describe('Absolute path to the file') }),
           execute: async ({ filePath }) => {
             const myIdx = stepIndex++
@@ -860,8 +1010,21 @@ export async function runAgent(
               return `[file_read error] ${msg}`
             }
             emit({ stepIndex: myIdx, stepName: 'File Read', toolName: 'file_read', status: 'running', message: path.basename(filePath) })
-            // abort.signal lets Stop interrupt a long PDF/PPTX parse
-            const result = await readFile(filePath, abort.signal)
+            // abort.signal lets Stop interrupt a long PDF/PPTX parse.
+            // Wrap in try/catch like every other tool: a corrupt PDF / encrypted
+            // or malformed zip (epub/odt/odp/xlsx) / unsupported type would
+            // otherwise throw OUT of execute and abort the whole turn with a
+            // "流式响应中途出错" wrapper — instead, return a clean tool-error the
+            // model can read and react to (e.g. tell the user the file is broken).
+            let result: Awaited<ReturnType<typeof readFile>>
+            try {
+              result = await readFile(filePath, abort.signal)
+            } catch (readErr) {
+              const msg = (readErr as Error)?.message || String(readErr)
+              emit({ stepIndex: myIdx, stepName: 'File Read', toolName: 'file_read', status: 'error', message: msg })
+              toolCallLog.push({ toolName: 'file_read', args: { filePath }, result: { error: msg } })
+              return `[file_read error] ${msg}`
+            }
             emit({ stepIndex: myIdx, stepName: 'File Read', toolName: 'file_read', status: 'done' })
             toolCallLog.push({ toolName: 'file_read', args: { filePath }, result })
             // Cap the model-facing copy so a huge PDF/XLSX dump can't blow the
@@ -869,22 +1032,78 @@ export async function runAgent(
             return truncateToolResult(result)
           }
         }),
+        list_dir: tool({
+          description: 'List the files & folders inside the conversation working directory — use this to DISCOVER what files exist before reading them. ' +
+            'Omit dirPath to list the session 工作目录 (working directory) itself; you may also pass an absolute dirPath that is the working directory or any folder UNDER it (or another project root already approved this session). ' +
+            'You CANNOT enumerate the desktop or arbitrary system folders. ' +
+            'Optional `pattern` filters by a simple name glob (e.g. "*.xlsx", "report*"); `recursive` walks subfolders (depth-capped). ' +
+            'Returns { dir, entries: [{ name, type, size, path }], truncated }. Pass an entry\'s absolute `path` to file_read. ' +
+            'The result is a point-in-time snapshot: the user may add/remove files between turns, so DO NOT reuse an earlier list_dir result from the conversation — call it again to get the current contents.',
+          parameters: z.object({
+            dirPath: z.string().nullable().optional().describe('Absolute directory path (the working dir or a folder under it). Omit or null = the session working directory.'),
+            pattern: z.string().nullable().optional().describe('Optional name glob filter, e.g. "*.csv". Omit or null = all entries.'),
+            recursive: z.boolean().nullable().optional().describe('Recurse into subfolders (depth-capped). Omit or null = false.')
+          }),
+          execute: async ({ dirPath, pattern, recursive }) => {
+            const myIdx = stepIndex++
+            const target = (dirPath || workingDir || '').trim()
+            if (!target) {
+              const msg = '未指定目录，且本会话未设置工作目录。请传入工作目录下的绝对 dirPath，或先让用户在对话里设置工作目录。'
+              emit({ stepIndex: myIdx, stepName: 'List Dir', toolName: 'list_dir', status: 'error', message: msg })
+              toolCallLog.push({ toolName: 'list_dir', args: { dirPath, pattern, recursive }, result: { error: msg } })
+              return `[list_dir error] ${msg}`
+            }
+            // Stricter than file_read's isApproved: enumeration is allowed ONLY for
+            // the pinned working dir / approved project roots (and their subtrees),
+            // never the desktop — so a poisoned prompt can't list the user's whole
+            // Desktop and then read every file it finds.
+            if (!isEnumerableDir(target)) {
+              const msg = `路径不可枚举：${target}。只能列出本会话的工作目录或其子目录（以及本会话已授权的项目根目录）。`
+              emit({ stepIndex: myIdx, stepName: 'List Dir', toolName: 'list_dir', status: 'error', message: msg })
+              toolCallLog.push({ toolName: 'list_dir', args: { dirPath: target, pattern, recursive }, result: { error: msg } })
+              return `[list_dir error] ${msg}`
+            }
+            emit({ stepIndex: myIdx, stepName: 'List Dir', toolName: 'list_dir', status: 'running', message: path.basename(target) || target })
+            try {
+              const result = listDir({ dirPath: target, pattern: pattern ?? undefined, recursive: recursive ?? false })
+              emit({ stepIndex: myIdx, stepName: 'List Dir', toolName: 'list_dir', status: 'done' })
+              toolCallLog.push({ toolName: 'list_dir', args: { dirPath: target, pattern, recursive }, result })
+              // Cap the model-facing copy (consistent with file_read); the full
+              // listing stays in toolCallLog for export.
+              return truncateToolResult(result)
+            } catch (err) {
+              const msg = (err as Error).message || String(err)
+              emit({ stepIndex: myIdx, stepName: 'List Dir', toolName: 'list_dir', status: 'error', message: msg })
+              toolCallLog.push({ toolName: 'list_dir', args: { dirPath: target, pattern, recursive }, result: { error: msg } })
+              return `[list_dir error] ${msg}`
+            }
+          }
+        }),
         file_write: tool({
           description: `Create a new XLSX file OR modify an existing one. ` +
             `If filePath does not exist, a new workbook is created (existing-file path is auto-backed up before writing). ` +
             `For new files, reference any sheet name you want — it will be created on demand; otherwise use the existing sheet names from a prior file_read.\n` +
-            `operationsJson must be a JSON-encoded array of operations. Each operation:\n` +
+            `PASS the operations as the structured \`operations\` ARRAY (NOT a JSON string) — each item:\n` +
             `  { "sheet": "<sheet-name>", "action": "set_cell" | "set_range" | "copy_column", "params": { ... action-specific params ... } }\n` +
             `Examples of params:\n` +
             `  set_cell:   { "cell": "B2", "value": "hello" }\n` +
             `  set_range:  { "startCell": "A1", "data": [["Header1","Header2"],[1,2],[3,4]] }\n` +
             `  copy_column: { "sourceSheet": "Sheet1", "sourceCol": "B", "targetCol": "D", "startRow": 1, "endRow": 100 }\n` +
+            `Use the \`operations\` array directly — do NOT hand-encode it into a JSON string (that double-escaping is what breaks Windows paths / 换行 / 引号).\n` +
             `Always pass a complete absolute filePath. If user didn't specify a location, default to the desktop path given in the system instructions.`,
           parameters: z.object({
             filePath: z.string().describe('Absolute path to the XLSX file'),
-            operationsJson: z.string().describe('JSON string: array of operation objects. Must be valid JSON.')
+            // Preferred: structured operations — the SDK serializes this correctly,
+            // so the model never has to double-escape a JSON string by hand.
+            operations: z.array(z.object({
+              sheet: z.string(),
+              action: z.string(),
+              params: z.record(z.any())
+            })).optional().describe('Array of operation objects (preferred over operationsJson).'),
+            // Legacy fallback for models that still send a JSON string.
+            operationsJson: z.string().optional().describe('(legacy) JSON string of the operations array; prefer the structured `operations` field.')
           }),
-          execute: async ({ filePath, operationsJson }) => {
+          execute: async ({ filePath, operations: operationsArg, operationsJson }) => {
             const myIdx = stepIndex++
             // Path sandbox: only allow writing under an approved location (user
             // attachment dir, app data, or the desktop default). A brand-new file
@@ -898,19 +1117,22 @@ export async function runAgent(
             emit({ stepIndex: myIdx, stepName: 'File Write', toolName: 'file_write', status: 'running', message: path.basename(filePath) })
             let operations: Array<{ sheet: string; action: string; params: Record<string, unknown> }>
             try {
-              try {
-                operations = JSON.parse(operationsJson)
-              } catch {
-                // Most common LLM failure: unescaped " inside Chinese values
-                // (e.g. 进口美妆"代理商"). Repair stray content-quotes and retry
-                // before surfacing an error, so the model rarely needs a re-do.
-                operations = JSON.parse(repairUnescapedQuotes(operationsJson))
+              if (Array.isArray(operationsArg)) {
+                // Structured path — no string parsing, no escape bugs.
+                operations = operationsArg as Array<{ sheet: string; action: string; params: Record<string, unknown> }>
+              } else if (typeof operationsJson === 'string' && operationsJson.trim()) {
+                // Legacy string path — parse with progressive repair (unescaped
+                // quotes + bad backslash escapes), so a hand-encoded JSON rarely
+                // needs a model re-do.
+                operations = parseJsonLoose(operationsJson)
+              } else {
+                throw new Error('必须提供 operations 数组（推荐）或 operationsJson 字符串')
               }
-              if (!Array.isArray(operations)) throw new Error('operationsJson must be a JSON array')
+              if (!Array.isArray(operations)) throw new Error('operations 必须是数组')
             } catch (parseErr) {
               // Recoverable: return the error as a tool result (don't throw) so the
-              // model can fix its JSON and retry instead of the whole turn aborting.
-              const errMsg = `file_write operationsJson 解析失败：${(parseErr as Error).message}. 收到内容: ${operationsJson.slice(0, 200)}`
+              // model can fix it and retry instead of the whole turn aborting.
+              const errMsg = `file_write operations 解析失败：${(parseErr as Error).message}.`
               emit({ stepIndex: myIdx, stepName: 'File Write', toolName: 'file_write', status: 'error', message: errMsg })
               toolCallLog.push({ toolName: 'file_write', args: { filePath }, result: { error: errMsg } })
               return `[file_write error] ${errMsg}`
@@ -940,6 +1162,59 @@ export async function runAgent(
               message: result.backupPath ? `Backup: ${result.backupPath}` : undefined })
             toolCallLog.push({ toolName: 'file_write', args: { filePath, operations }, result })
             return result
+          }
+        }),
+        write_text_file: tool({
+          description: `Save arbitrary TEXT content to a file on disk — use this for HTML / Markdown / CSV / JSON / SVG / source code / .txt, anything that is NOT a spreadsheet. (For .xlsx spreadsheets use file_write instead.)\n` +
+            `Pass the COMPLETE file content in \`content\` (the full document, not a diff). The file is OVERWRITTEN wholesale (auto-backed up first), so NEVER use placeholders like "// ...rest unchanged" / "其余省略" / "(rest of the code)" — a stub will destroy the original and the write is rejected. ` +
+            `Always pass an absolute filePath with the correct extension (e.g. .html). If the user didn't specify a location, default to the desktop path given in the system instructions.`,
+          parameters: z.object({
+            filePath: z.string().describe('Absolute path including the file extension, e.g. D:/.../report.html'),
+            content: z.string().describe('The full text content to write.'),
+            append: z.boolean().optional().describe('Append instead of overwrite (default false).')
+          }),
+          execute: async ({ filePath, content, append }) => {
+            const myIdx = stepIndex++
+            if (!isApproved(filePath) && !isApproved(path.dirname(filePath))) {
+              const msg = `路径未授权：${filePath}。请写入桌面、应用数据目录，或用户已授权的位置。`
+              emit({ stepIndex: myIdx, stepName: 'Write File', toolName: 'write_text_file', status: 'error', message: msg })
+              toolCallLog.push({ toolName: 'write_text_file', args: { filePath }, result: { error: msg } })
+              return `[write_text_file error] ${msg}`
+            }
+            // Refuse a TRUNCATED stub on overwrite: writeTextFile replaces the file
+            // wholesale (after backing up), so a "…其余省略 / // rest unchanged" body
+            // would silently destroy the real content while reporting success. This
+            // is recoverable — the model just re-sends the full content (or uses
+            // append). Skip the check for append (adding a snippet is legitimate).
+            if (!append && looksTruncated(content)) {
+              const msg = `content 像是被截断或含占位符（如 "其余省略" / "// rest unchanged" / "(rest of the code)"）。` +
+                `write_text_file 会用 content 整体覆盖文件，写入残缺内容会损坏原文件，已拒绝。` +
+                `请重新传入【完整】的最终内容；若只是想追加片段，请设 append=true。`
+              emit({ stepIndex: myIdx, stepName: 'Write File', toolName: 'write_text_file', status: 'error', message: '检测到占位符/截断，已拒绝写入以防覆盖原文件' })
+              toolCallLog.push({ toolName: 'write_text_file', args: { filePath }, result: { error: msg } })
+              return `[write_text_file error] ${msg}`
+            }
+            emit({ stepIndex: myIdx, stepName: 'Write File', toolName: 'write_text_file', status: 'running', message: path.basename(filePath) })
+            let result: ReturnType<typeof writeTextFile>
+            try {
+              result = writeTextFile({ filePath, content, append })
+            } catch (writeErr) {
+              const raw = (writeErr as Error)?.message || String(writeErr)
+              const hint = /EPERM|EBUSY|EACCES/i.test(raw)
+                ? '（该文件可能正被其他程序打开占用，请关闭后重试，或改用其他文件名/路径）'
+                : ''
+              const errMsg = `write_text_file 写入失败：${raw}${hint}`
+              emit({ stepIndex: myIdx, stepName: 'Write File', toolName: 'write_text_file', status: 'error', message: errMsg })
+              toolCallLog.push({ toolName: 'write_text_file', args: { filePath }, result: { error: errMsg } })
+              return `[write_text_file error] ${errMsg}`
+            }
+            registerApproved(filePath)
+            emit({ stepIndex: myIdx, stepName: 'Write File', toolName: 'write_text_file', status: 'done',
+              message: result.backupPath ? `Backup: ${result.backupPath}` : path.basename(filePath) })
+            // result carries `path` so it's picked up by extractArtifactPaths (known-files manifest).
+            const logged = { ...result, path: filePath, bytes: content.length }
+            toolCallLog.push({ toolName: 'write_text_file', args: { filePath, append: !!append }, result: logged })
+            return logged
           }
         })
         // NOTE: gallery_save is intentionally NOT exposed as a tool. Every image
@@ -1005,7 +1280,7 @@ export async function runAgent(
       try { fs.mkdirSync(skillWorkspace, { recursive: true }) } catch { /* ignore */ }
       const skillTools = buildSkillTools({
         activeSkills: runtimeSkills,
-        cwd: skillWorkspace,
+        cwd: workingDir || skillWorkspace,
         abortSignal: abort.signal,
         includeBash,
         hooks: {
@@ -1031,6 +1306,21 @@ export async function runAgent(
     // identical call short-circuits with a corrective message instead of running.
     const repeatCounts = new Map<string, number>()
     const REPEAT_LIMIT = 3
+    // Layer 0 — progress monitor (extends the exact-args repeat guard). Track a run
+    // of CONSECUTIVE tool errors: steer the model to change approach at 3, and
+    // hard-abort the loop at 6 (via progressCtl, folded into combinedSignal) so we
+    // hand back partial work instead of grinding to MAX_STEPS on a clearly-stuck
+    // tool. Any success resets the streak. We deliberately do NOT cap per-tool call
+    // COUNT — legitimate batch work (many file_writes / web_clicks) would trip that;
+    // an uninterrupted error streak is the safe "making no progress" signal.
+    const progressCtl = new AbortController()
+    let consecutiveToolErrors = 0
+    let abortedByErrorStreak = false
+    const ERR_STREAK_STEER = 3
+    const ERR_STREAK_ABORT = 6
+    const isErrorResult = (r: unknown): boolean =>
+      (typeof r === 'string' && /^\s*\[[^\]]*error/i.test(r)) ||
+      (typeof r === 'object' && r != null && !!(r as { error?: unknown }).error)
     const guardedTools: Record<string, Tool> = {}
     for (const [name, t] of Object.entries(tools)) {
       const origExec = (t as Tool & { execute?: (a: unknown, o: unknown) => Promise<unknown> }).execute
@@ -1045,7 +1335,22 @@ export async function runAgent(
           if (n > REPEAT_LIMIT) {
             return `[${name}] 你已用相同参数调用了 ${n - 1} 次，结果不会改变。请换一种方法（不同参数 / 不同工具），或停止并直接回复用户——不要再用相同参数重试。`
           }
-          return origExec(args, opts)
+          const out = await origExec(args, opts)
+          if (isErrorResult(out)) {
+            consecutiveToolErrors++
+            if (consecutiveToolErrors >= ERR_STREAK_ABORT) {
+              abortedByErrorStreak = true
+              progressCtl.abort()
+              return out
+            }
+            if (consecutiveToolErrors === ERR_STREAK_STEER) {
+              const base = typeof out === 'string' ? out : JSON.stringify(out)
+              return base + `\n\n[系统提示] 已连续 ${consecutiveToolErrors} 次工具调用失败。请换一种【完全不同】的方法或工具，或停下来如实告诉用户当前进展和卡点——不要再重复同类失败的调用。`
+            }
+          } else {
+            consecutiveToolErrors = 0
+          }
+          return out
         }
       } as Tool
     }
@@ -1074,7 +1379,7 @@ export async function runAgent(
     const STREAM_GAP_MS = 120000
     const SILENT_WORK_MS = 240000
     const stallCtl = new AbortController()
-    const combinedSignal = AbortSignal.any([abort.signal, stallCtl.signal])
+    const combinedSignal = AbortSignal.any([abort.signal, stallCtl.signal, progressCtl.signal])
     let stalled = false
     let stallTimer: ReturnType<typeof setTimeout> | null = null
     const armStall = (ms: number = SILENT_WORK_MS): void => {
@@ -1083,43 +1388,25 @@ export async function runAgent(
     }
 
     // 扩展思考策略(B)：按设置把 Anthropic 的 thinking providerOptions 注入。auto=不动。
-    const thinkOpts = thinkingStreamOpts(providerType, settings.chatThinkingMode)
+    const thinkOpts = thinkingStreamOpts(providerType, settings.chatThinkingMode, effectiveModel)
 
+    const MAX_STEPS = 30
+    let stepCount = 0
     const baseOpts = {
       model,
       abortSignal: combinedSignal,
-      maxSteps: 30,
+      maxSteps: MAX_STEPS,
       maxRetries: 5,
       onError: ({ error }: { error: unknown }) => {
         console.error('[Agent] streamText onError', error)
         streamErr = error as Error
       },
+      // Count steps so we can tell "model finished" from "hit the step ceiling
+      // mid-task" (the latter must be surfaced, not shown as a clean completion).
+      onStepFinish: () => { stepCount++ },
       tools: guardedTools,
       ...thinkOpts
     }
-    const result = useAnthropicCache
-      ? streamText({
-          ...baseOpts,
-          // Anthropic prompt caching. A CoreSystemMessage's content MUST be a
-          // string (array content is invalid and trips the AI SDK validator —
-          // "message must be a CoreMessage"), and cacheControl rides at the
-          // MESSAGE level via providerOptions. We emit two leading system
-          // messages: the stable prefix (cached) + the volatile suffix (current
-          // time / per-turn KB, NOT cached so it never busts the cache). The
-          // Anthropic provider merges consecutive leading system messages into
-          // one system block with a cache breakpoint after the stable part.
-          messages: [
-            { role: 'system' as const, content: systemPrompt.stable, providerOptions: { anthropic: { cacheControl: { type: 'ephemeral' as const } } } },
-            ...(systemPrompt.volatile ? [{ role: 'system' as const, content: systemPrompt.volatile }] : []),
-            ...history
-          ]
-        } as Parameters<typeof streamText>[0])
-      : streamText({
-          ...baseOpts,
-          system: systemPrompt.full,
-          messages: history
-        })
-
     // Collect full response text. The assistant message id is allocated up-front
     // so streamed deltas and the final AGENT_DONE share it — the renderer can
     // render tokens live and then reconcile against the authoritative DONE.
@@ -1127,14 +1414,9 @@ export async function runAgent(
     let fullText = ''
     let chunkCount = 0
     let usage: { promptTokens?: number; completionTokens?: number } | null = null
-    console.log('[Agent] streaming started')
-    // Stream reasoning (思考) live, not just the answer. Pre-fix the loop only
-    // consumed result.textStream, which per the AI SDK carries ONLY visible
-    // answer text — so a model that thinks first (Opus 4.8) produced ZERO output
-    // for minutes, looking frozen. We now consume result.fullStream and forward
-    // reasoning deltas too, wrapped in <think>…</think> so the existing
-    // ReasoningBlock renders them live. Reasoning is NOT added to fullText, so the
-    // persisted message + history stay answer-only (no replayed thinking).
+    // Stream reasoning (思考) live, not just the answer: consume result.fullStream
+    // and forward reasoning deltas wrapped in <think>…</think>. Reasoning is NOT
+    // added to fullText, so the persisted message + history stay answer-only.
     let inReasoning = false
     const sendDelta = (delta: string): void => {
       if (!isStaleRun()) win.webContents.send(IPC.AGENT_DELTA, { sessionId, messageId: asstMsgId, delta })
@@ -1142,40 +1424,101 @@ export async function runAgent(
     const closeThink = (): void => {
       if (inReasoning) { inReasoning = false; sendDelta('</think>\n\n') }
     }
-    try {
-      armStall()
-      for await (const part of result.fullStream) {
-        if (combinedSignal.aborted) break
-        // 吐字间隙用紧窗口，其余「干活不吐字」阶段(思考/工具)给宽窗口。
-        armStall(part.type === 'text-delta' ? STREAM_GAP_MS : SILENT_WORK_MS)
-        if (part.type === 'reasoning' && part.textDelta) {
-          if (!inReasoning) { inReasoning = true; sendDelta('<think>') }
-          sendDelta(part.textDelta)
-        } else if (part.type === 'text-delta' && part.textDelta) {
-          closeThink()
-          fullText += part.textDelta
-          chunkCount++
-          sendDelta(part.textDelta)
-        } else if (part.type === 'tool-call') {
-          closeThink()
-        } else if (part.type === 'error') {
-          streamErr = part.error as Error
+    // Build a streamText pass. `extra` messages (an assistant-partial + a "continue"
+    // nudge) are appended after history for the Layer 2 one-shot continuation.
+    // Anthropic prompt caching: stable system prefix (cached) + volatile suffix
+    // (not cached) as two leading system messages; other providers use `system:`.
+    const makeStream = (extra: CoreMessage[]) => useAnthropicCache
+      ? streamText({
+          ...baseOpts,
+          messages: [
+            { role: 'system' as const, content: systemPrompt.stable, providerOptions: { anthropic: { cacheControl: { type: 'ephemeral' as const } } } },
+            ...(systemPrompt.volatile ? [{ role: 'system' as const, content: systemPrompt.volatile }] : []),
+            ...history,
+            ...extra
+          ]
+        } as Parameters<typeof streamText>[0])
+      : streamText({ ...baseOpts, system: systemPrompt.full, messages: [...history, ...extra] })
+    // Consume ONE stream pass: stream reasoning + answer deltas, accumulate
+    // fullText/chunkCount, capture errors. Mutates the shared state above so a
+    // continuation pass appends onto the same message.
+    const consumeStream = async (res: ReturnType<typeof streamText>): Promise<void> => {
+      try {
+        armStall()
+        for await (const part of res.fullStream) {
+          if (combinedSignal.aborted) break
+          // 吐字间隙用紧窗口，其余「干活不吐字」阶段(思考/工具)给宽窗口。
+          armStall(part.type === 'text-delta' ? STREAM_GAP_MS : SILENT_WORK_MS)
+          if (part.type === 'reasoning' && part.textDelta) {
+            if (!inReasoning) { inReasoning = true; sendDelta('<think>') }
+            sendDelta(part.textDelta)
+          } else if (part.type === 'text-delta' && part.textDelta) {
+            closeThink()
+            fullText += part.textDelta
+            chunkCount++
+            sendDelta(part.textDelta)
+          } else if (part.type === 'tool-call') {
+            closeThink()
+          } else if (part.type === 'error') {
+            streamErr = part.error as Error
+          }
         }
+        closeThink()
+      } catch (iterErr) {
+        console.error('[Agent] fullStream iteration threw', iterErr)
+        streamErr = iterErr as Error
+      } finally {
+        if (stallTimer) clearTimeout(stallTimer)
       }
-      closeThink()
-    } catch (iterErr) {
-      console.error('[Agent] fullStream iteration threw', iterErr)
-      streamErr = iterErr as Error
-    } finally {
-      if (stallTimer) clearTimeout(stallTimer)
     }
+    console.log('[Agent] streaming started')
+    let result = makeStream([])
+    await consumeStream(result)
     // Watchdog tripped → surface a clear error instead of a silent empty bubble.
     if (stalled && !streamErr) {
       streamErr = new Error('AI 长时间无响应（可能是模型、网络或代理异常），已自动停止。请重试，或到「设置 → 模型 / 网络代理」检查配置。')
     }
+    // Layer 0 hard-abort: many tools failed back-to-back. Surface it (routes
+    // through the streamErr branches below → partial work kept, or a clear error
+    // if nothing was produced) instead of a silent stop.
+    if (abortedByErrorStreak && !stalled && !streamErr) {
+      streamErr = new Error(`连续多次工具调用失败，已自动停止本轮以避免空转。已交付此前获得的部分结果；请调整需求或稍后再试。`)
+    }
     try { usage = await result.usage } catch (e) { console.warn('[Agent] usage await threw:', (e as Error).message) }
     let finishReasonForLog: string | undefined
     try { finishReasonForLog = await result.finishReason } catch (e) { console.warn('[Agent] finishReason await threw:', (e as Error).message) }
+
+    // Layer 2 — one-shot deterministic continuation. If the model genuinely ran
+    // out of room (finishReason='length') or hit the per-turn step ceiling while
+    // still wanting to act (tool-calls at MAX_STEPS), AUTO-continue ONCE instead of
+    // leaving a cut-off reply behind a passive "回复继续" dead-end. HARD-capped at a
+    // single extra pass; skipped on stall/error/stale or when the model paused via
+    // ask_user (which legitimately ends the turn). Output appends onto the same
+    // asstMsgId via the shared sendDelta — the renderer reconciles, no UI change.
+    const needsContinuation = (): boolean =>
+      finishReasonForLog === 'length' || (finishReasonForLog === 'tool-calls' && stepCount >= MAX_STEPS)
+    const lastTool = toolCallLog.length ? toolCallLog[toolCallLog.length - 1].toolName : undefined
+    if (needsContinuation() && fullText.trim() && !streamErr && !isStaleRun() && lastTool !== 'ask_user') {
+      const contIdx = stepIndex++
+      emit({ stepIndex: contIdx, stepName: '继续完成', toolName: 'continue', status: 'running', message: '上一段达到上限，自动接着完成…' })
+      stalled = false
+      const cont: CoreMessage[] = [
+        { role: 'assistant', content: fullText },
+        { role: 'user', content: '接着上面的内容继续完成剩余部分：从中断处往下做，不要重复已经输出过的内容，全部完成后正常收尾。' }
+      ]
+      const result2 = makeStream(cont)
+      await consumeStream(result2)
+      if (stalled && !streamErr) {
+        streamErr = new Error('AI 长时间无响应（可能是模型、网络或代理异常），已自动停止。请重试，或到「设置 → 模型 / 网络代理」检查配置。')
+      }
+      try { const u2 = await result2.usage; usage = { promptTokens: (usage?.promptTokens ?? 0) + (u2?.promptTokens ?? 0), completionTokens: (usage?.completionTokens ?? 0) + (u2?.completionTokens ?? 0) } } catch { /* keep pass-1 usage */ }
+      try { finishReasonForLog = await result2.finishReason } catch { /* keep pass-1 finishReason */ }
+      // Point `result` at the continuation pass so the later empty-response guard
+      // reads its finishReason/usage. Each streamText() call returns INDEPENDENT
+      // usage/finishReason promises, so re-awaiting result2's (already settled) is fine.
+      result = result2
+      emit({ stepIndex: contIdx, stepName: '继续完成', toolName: 'continue', status: 'done' })
+    }
     console.log('[Agent] streaming finished', {
       chunks: chunkCount,
       len: fullText.length,
@@ -1207,6 +1550,33 @@ export async function runAgent(
       if (lastAsk) fullText = String((lastAsk.args as { question?: string }).question || '请选择：')
     }
 
+    // Surface truncation / step-exhaustion so a cut-off turn isn't presented as a
+    // clean completion. finishReason was previously read only for logging — a
+    // length-truncated answer or a maxSteps-exhausted run both silently passed as done.
+    const truncatedByLength = finishReasonForLog === 'length'
+    // A NORMALLY-completed turn ends with finishReason='stop' (final step is text,
+    // no tool call) — so 'tool-calls' here means the model wanted to keep going.
+    // The `stepCount >= MAX_STEPS` gate is what makes this exhaustion-specific: a
+    // normal multi-step turn uses far fewer than MAX_STEPS, so it can't false-flag.
+    const exhaustedSteps = finishReasonForLog === 'tool-calls' && stepCount >= MAX_STEPS
+    const incomplete = truncatedByLength || exhaustedSteps
+    if (incomplete && fullText.trim()) {
+      fullText += truncatedByLength
+        ? `\n\n⚠️ 本次输出达到模型长度上限被截断，内容可能不完整。可回复"继续"让我接着输出剩余部分。`
+        : `\n\n⚠️ 任务较长，已达单轮工具步数上限（${MAX_STEPS} 步）暂停，可能尚未完成。回复"继续"我接着做剩余步骤。`
+    }
+
+    // Layer 1 — grounding reconciliation (deterministic, zero-cost). Checks the
+    // answer's action claims ("已生成文件" / "已发布" / "根据搜索结果…") against the
+    // turn's real successful tool calls. The high-precision unbacked-ACTION finding
+    // is surfaced as one soft self-check line; the lower-precision fabricated-URL
+    // finding rides in debugBundle only (telemetry) until its precision is proven.
+    const grounding = reconcileGrounding(fullText, toolCallLog)
+    if (grounding.unbackedActions.length && fullText.trim()) {
+      fullText += `\n\n⚠️ 自检：本回合未检测到与「${grounding.unbackedActions.join('、')}」对应的成功工具调用，` +
+        `若上文声称已完成该操作，可能并未真正执行——请以实际结果为准（必要时让我重做）。`
+    }
+
     if (!fullText && chunkCount === 0) {
       // Model returned nothing — try to get response metadata for a useful error
       let detail = '模型返回了空响应（0 个文本片段）。'
@@ -1232,16 +1602,19 @@ export async function runAgent(
     // Diagnostic debug bundle — included only when something looks anomalous
     // (early termination, finish_reason=error, mid-stream interrupt) so happy-
     // path exports stay clean. Surfaced through MessageMeta.debug.
+    const hasGroundingFindings = grounding.unbackedActions.length > 0 || grounding.fabricatedUrls.length > 0
     const debugAnomaly =
       !!streamErr ||
       (finishReasonForLog && finishReasonForLog !== 'stop' && finishReasonForLog !== 'tool-calls') ||
-      (chunkCount === 0)
+      (chunkCount === 0) ||
+      hasGroundingFindings
     const debugBundle = debugAnomaly ? {
       chunkCount,
       finishReason: finishReasonForLog,
       streamErr: streamErr ? ((streamErr as Error).message || String(streamErr)) : undefined,
       toolCallCount: toolCallLog.length,
-      streamMs: Date.now() - runStartTime
+      streamMs: Date.now() - runStartTime,
+      ...(hasGroundingFindings ? { grounding } : {})
     } : undefined
     const meta = JSON.stringify({
       model: effectiveModel,
@@ -1251,6 +1624,7 @@ export async function runAgent(
       inputTokens: inTok ?? undefined,
       outputTokens: outTok ?? undefined,
       costUsd: costUsd ?? undefined,
+      incomplete: incomplete || undefined,
       debug: debugBundle
     })
     dbRun(
@@ -1306,6 +1680,7 @@ export async function runAgent(
       ...(inTok != null ? { inputTokens: inTok } : {}),
       ...(outTok != null ? { outputTokens: outTok } : {}),
       ...(costUsd != null ? { costUsd } : {}),
+      ...(incomplete ? { incomplete: true } : {}),
       ...(debugBundle ? { debug: debugBundle } : {})
     }
 
@@ -1318,7 +1693,7 @@ export async function runAgent(
       ...(sessionTitle ? { sessionTitle } : {})
     })
     notifyTaskComplete(() => win, {
-      title: 'SuperStudio：回复已完成',
+      title: `${BRAND.productName}：回复已完成`,
       body: fullText.slice(0, 120) || '助手已生成回复。'
     })
     // Passive long-term memory: arm an idle timer; if this conversation then
@@ -1327,6 +1702,39 @@ export async function runAgent(
       const { scheduleIdleCapture } = await import('../services/memory')
       scheduleIdleCapture(sessionId)
     } catch { /* memory module optional */ }
+    // Layer 3 — correction learning loop. If THIS user message is correcting a
+    // lazy / under-delivered prior turn, distill a durable "delivery standard"
+    // memory so future turns recall it. Deterministic detect + evidence gate
+    // (prior turn produced no artifact / was marked incomplete); capture is one
+    // small LLM call fired-and-forgotten AFTER the reply → zero added latency.
+    try {
+      const { detectCorrection, captureCorrection } = await import('../services/memory')
+      const priorAsst = dbGet<{ content: string; tool_calls: string | null; meta: string | null }>(
+        `SELECT content, tool_calls, meta FROM messages WHERE session_id = ? AND role = 'assistant' AND id != ? ORDER BY created_at DESC LIMIT 1`,
+        [sessionId, asstMsgId]
+      )
+      if (priorAsst) {
+        const priorMeta = priorAsst.meta ? (JSON.parse(priorAsst.meta) as { incomplete?: boolean }) : null
+        const underdelivered = extractArtifactPaths(priorAsst.tool_calls).length === 0 || !!priorMeta?.incomplete
+        const { isCorrection, score } = detectCorrection(message, underdelivered)
+        if (isCorrection) {
+          const priorUser = dbGet<{ content: string }>(
+            `SELECT content FROM messages WHERE session_id = ? AND role = 'user' AND id != ? ORDER BY created_at DESC LIMIT 1`,
+            [sessionId, userMsgId]
+          )
+          // fire-and-forget; capture silently (no toast — don't rub the annoyance in)
+          void captureCorrection({
+            priorUserMsg: priorUser?.content || '',
+            priorAssistantMsg: priorAsst.content || '',
+            correctionMsg: message,
+            scopeKey: null,
+            confidence: score,
+            providerId: effectiveProviderId,
+            modelId: effectiveModel,
+          }).catch(() => {/* best-effort */})
+        }
+      }
+    } catch { /* best-effort; never disturb the reply path */ }
   } catch (err: unknown) {
     console.error('[Agent] error', err)
     if (isStaleRun()) {
@@ -1369,10 +1777,19 @@ function extractArtifactPaths(toolCallsJson: string | null): string[] {
     const calls = JSON.parse(toolCallsJson) as Array<{ toolName?: string; args?: Record<string, unknown>; result?: unknown }>
     const paths: string[] = []
     for (const c of calls) {
-      const r = c.result as { path?: string; images?: Array<{ path?: string }> } | undefined
-      if (r?.path) paths.push(r.path)
-      if (Array.isArray(r?.images)) for (const img of r.images) if (img?.path) paths.push(img.path)
-      if (c.toolName === 'file_write' && typeof c.args?.filePath === 'string') paths.push(c.args.filePath)
+      const r = c.result as { path?: string; images?: Array<{ path?: string }>; error?: unknown; modified?: string; created?: boolean } | undefined
+      // Only count calls that ACTUALLY SUCCEEDED. A failed/aborted call (result
+      // carries `error`, or never ran) must NOT be remembered as a produced
+      // artifact — that false "已生成文件" was exactly what trained the model to
+      // claim success it never achieved.
+      if (!r || r.error) continue
+      if (r.path) paths.push(r.path)
+      if (Array.isArray(r.images)) for (const img of r.images) if (img?.path) paths.push(img.path)
+      // file_write success result is { modified, created } (no error). Only a
+      // successful write counts its filePath as produced.
+      if (c.toolName === 'file_write' && typeof c.args?.filePath === 'string' && (r.modified || r.created)) {
+        paths.push(c.args.filePath as string)
+      }
     }
     return paths
   } catch { return [] }
@@ -1400,10 +1817,14 @@ async function buildMessageHistory(
   // stable "known files" reference across turns.
   const knownPaths = new Set<string>()
   const history = priorRows.map(r => {
-    let content = r.content
+    const content = r.content
+    // Collect produced-file paths for the manifest below, but do NOT splice a
+    // "[本回合已生成文件: …]" line back into the assistant's own message text:
+    // the model would see its past self "announcing success" and learn to emit
+    // that stamp even on turns where it did nothing (the fabrication we hit).
+    // Path memory is preserved purely via the manifest (knownPaths) instead.
     const arts = extractArtifactPaths(r.tool_calls)
     for (const p of arts) knownPaths.add(p)
-    if (arts.length) content += `\n\n[本回合已生成文件: ${arts.join(' , ')}]`
     if (r.attachments) {
       try {
         const atts = JSON.parse(r.attachments) as Array<{ path?: string }>
@@ -1489,12 +1910,12 @@ async function buildMessageHistory(
   return [...budgetedHistory, { role: 'user' as const, content: userContent }]
 }
 
-function buildSystemPrompt(kbContext: string, mcpTools: McpTool[] = [], skills: InstalledSkill[] = [], scheduledContext = false): { stable: string; volatile: string; full: string } {
+function buildSystemPrompt(kbContext: string, mcpTools: McpTool[] = [], skills: InstalledSkill[] = [], scheduledContext = false, workingDir = ''): { stable: string; volatile: string; full: string } {
   const desktop = (() => {
     try { return app.getPath('desktop') } catch { return '' }
   })()
 
-  const base = `You are SuperStudio, a powerful AI productivity assistant. You can generate images, create videos, search the web, analyze files, and manipulate Excel data. Always be helpful and proactive. When a task requires multiple steps, execute them all without asking for confirmation between steps.\nAlways reply in the user's language — default to 简体中文 unless the user writes in another language, in which case match it.`
+  const base = `You are ${BRAND.productName}, a powerful AI productivity assistant. You can generate images, create videos, search the web, analyze files, and manipulate Excel data. Always be helpful and proactive. When a task requires multiple steps, execute them all without asking for confirmation between steps.\nAlways reply in the user's language — default to 简体中文 unless the user writes in another language, in which case match it.`
 
   // Prompt-injection hardening. Tool results (web pages, files, KB chunks, MCP
   // payloads) are UNTRUSTED DATA — a poisoned page/doc must not be able to
@@ -1516,7 +1937,27 @@ function buildSystemPrompt(kbContext: string, mcpTools: McpTool[] = [], skills: 
     `- 【严禁】在没有实际调用工具的情况下声称或描述你"已搜索 / 已打开 / 已获取数据 / 已滚动加载更多 / 已整理 / 已输出表格 / 已生成 Excel"等——那是凭空捏造，绝对禁止。\n` +
     `- 不要只回一句"好的，我来做…"然后停笔；要做就在本回合内【立刻开始调用工具】，一步步真正完成，不要在步骤之间反问或停下。\n` +
     `- 表格 / 清单 / 统计结果里的每一条都必须来自工具的真实返回；不要编造账号、ID、粉丝数、城市、链接或引用。\n` +
+    `- 写文件【铁律】：只有当你在【本回合】真实调用了 file_write 且其返回结果成功（包含 modified/created、没有 error）时，才可以说"已生成/已写入/已保存文件"。若本回合没有这样的成功调用，【绝对不许】声称文件已生成（哪怕上一回合写过、哪怕你"打算"写）——要么现在就真的调用 file_write，要么如实说"尚未写入"。同理不要凭空输出形如"[本回合已生成文件: …]"的字样，那是系统记账、不是你来写的。\n` +
+    `- 被要求"重新生成/重做"时，必须重新【真实调用】对应工具产出新结果，不能只用文字复述一遍就当作完成。\n` +
     `- 若工具失败、需要登录、或拿不到足够数据，就【如实说明】并交付你已真实获得的部分结果——绝不用编造来凑数或假装完成。`
+
+  // Anti-laziness / staleness: the sibling failure to fabrication. The model
+  // tends to TRUST an earlier tool result (or its own past summary) as if it were
+  // still current — so it "can't see" a file the user added after an earlier
+  // list_dir, answers from a stale page, or reuses a file's pre-edit contents.
+  // Tool results are point-in-time snapshots of MUTABLE external state; force a
+  // re-fetch whenever the task depends on what's true *now*. (Cross-turn history
+  // doesn't even replay raw tool results — the staleness is the model leaning on
+  // its own earlier prose — so this principle is the main lever, reinforced by the
+  // live working-directory snapshot injected per turn.)
+  const freshnessSection =
+    `## 实时状态 —— 不许拿过期快照充数（CRITICAL）\n` +
+    `工具返回的内容是【调用那一刻】外部世界的快照。文件、目录、网页、后台数据都会随时间变化；对话历史里更早的工具结果、以及你自己之前的转述，都可能已经过期。\n` +
+    `- 当任务依赖某个【可变状态】的最新情况时，就【现在重新调用对应工具】取最新结果，绝不要凭"我上次看到…/历史里列过…/我之前说过…"作答。\n` +
+    `- 这些场景必须重新取数、不得复用旧结果：「这个目录现在有哪些文件」→ 重新 list_dir；「文件现在的内容/数据」→ 重新 file_read；「页面现在显示什么」→ 重新 web_snapshot / web_open；用户说"我刚新增/修改/删除了…"→ 一定重新读取确认，而不是沿用旧印象。\n` +
+    `- 你自己刚写完/改完一个文件后，若后续步骤要基于它的【最新内容】继续，请重新 file_read 它，别用写之前的旧记忆。\n` +
+    `- 唯一例外：用户明确问的是「过去/那时/上一版」的情况，才可引用历史快照；其余一律以"现在重新取到的"为准。\n` +
+    `- 一句话：宁可多调一次工具确认最新状态，也不要图省事拿可能过期的旧数据回答。`
 
   // The model has no inherent sense of "now" — left unanchored it falls back to
   // its training-cutoff year (e.g. 2025) and bakes that into web_search queries,
@@ -1543,14 +1984,30 @@ function buildSystemPrompt(kbContext: string, mcpTools: McpTool[] = [], skills: 
     `- DO describe what you generated in natural language (subject, style, key params used). Tell the user it has been saved to the gallery if relevant.\n` +
     `- For multiple generated images in one turn, describe each by index/role (e.g. "第一张是…，第二张是…").`
 
+  // When the conversation has a pinned working directory it becomes the default
+  // save location AND a discoverable workspace (list_dir); otherwise fall back to
+  // the desktop. `defaultLoc` keeps the later prose lines consistent with whichever
+  // root is active.
+  const workingDirFwd = workingDir.replace(/\\/g, '/')
+  const defaultLoc = workingDir ? '上面的工作目录' : '桌面'
   const filesystemSection =
     `## File system conventions\n` +
-    (desktop
-      ? `- User desktop directory (absolute path): ${desktop}\n` +
-        `- When the user asks you to save / export / create a file and does NOT specify a directory, default to the desktop above (e.g. "${desktop.replace(/\\/g, '/')}/<filename>.xlsx"). Pick a descriptive Chinese filename matching the task.\n`
-      : `- When saving files, always use absolute paths.\n`) +
-    `- The file_write tool both CREATES new .xlsx files and modifies existing ones — passing a path that does not exist yet will create the file (sheets you reference are lazily created). No need to ask the user where to put it if they didn't specify; just default to the desktop.\n` +
-    `- For new spreadsheets, build the header row with file_write "set_range" (operation type), then fill data rows. Always include a clear header row.`
+    (workingDir
+      ? `- 本会话的工作目录（绝对路径）: ${workingDirFwd}\n` +
+        `- 这是当前任务的工作区：用户没指定目录时，读 / 写 / 导出 / 新建文件都默认放到这个工作目录下（例如 "${workingDirFwd}/<文件名>.xlsx"）。文件名取贴合任务的简体中文名。\n` +
+        `- 本提示末尾「工作目录当前内容」是该目录此刻的实时快照（每轮刷新），判断有哪些文件以它为准；它没列出的子目录用 list_dir 查看。\n` +
+        `- list_dir 的结果是「调用那一刻」的快照：用户可能随时新增/删除文件，所以【不要】复用对话历史里更早的 list_dir 结果，需要最新状态就重新调用 list_dir。要读取已存在的文件时先确认确切路径再 file_read，不要凭空猜路径。\n` +
+        `- 工作目录及其所有子目录都已授权可读写。\n`
+      : desktop
+        ? `- User desktop directory (absolute path): ${desktop}\n` +
+          `- When the user asks you to save / export / create a file and does NOT specify a directory, default to the desktop above (e.g. "${desktop.replace(/\\/g, '/')}/<filename>.xlsx"). Pick a descriptive Chinese filename matching the task.\n`
+        : `- When saving files, always use absolute paths.\n`) +
+    `- Two write tools, pick by file type:\n` +
+    `    · 表格(.xlsx) → file_write（按单元格 operations 写）。它既能新建也能改已有文件，引用的 sheet 会按需创建；新表先用 set_range 写表头行再填数据。\n` +
+    `    · 其它一切文本文件（.html / .md / .csv / .json / .svg / 源代码 / .txt …）→ write_text_file，把完整内容放进 content 一次写入。\n` +
+    `- 用户要"做一个网页/HTML/报告/Markdown/导出文本"时，直接用 write_text_file 把文件【真的存到本地】（默认存到${defaultLoc}），不要只把内容贴进对话让用户自己另存。需要时再把保存路径告诉用户。\n` +
+    `- 不存在的路径会自动创建；已存在的文件写入前会自动备份。若用户没指定目录就默认存到${defaultLoc}，不必反问。\n` +
+    `- 写文件必须给【完整内容】：write_text_file 会用 content 整体覆盖文件，所以严禁用 "…"、"其余省略"、"其余保持不变"、"// rest unchanged" 之类占位符替代正文——那会把原文件覆盖成残缺版。改已有文件就把【整份】最终内容写进 content（系统会校验并拒绝明显截断的写入）。`
 
   const askUserSection =
     `## 让用户做选择 —— ask_user\n` +
@@ -1577,8 +2034,8 @@ function buildSystemPrompt(kbContext: string, mcpTools: McpTool[] = [], skills: 
   // Anthropic). VOLATILE sections (current time, per-turn KB) are appended after
   // the cache breakpoint so they don't bust the cache every turn.
   const sections: string[] = scheduledContext
-    ? [base, securitySection, noFabricationSection, scheduledSection, displaySection, filesystemSection]
-    : [base, securitySection, noFabricationSection, displaySection, filesystemSection, askUserSection]
+    ? [base, securitySection, noFabricationSection, freshnessSection, scheduledSection, displaySection, filesystemSection]
+    : [base, securitySection, noFabricationSection, freshnessSection, displaySection, filesystemSection, askUserSection]
 
   if (mcpTools.length) {
     // Group MCP tools by server name for readability
@@ -1645,6 +2102,36 @@ function buildSystemPrompt(kbContext: string, mcpTools: McpTool[] = [], skills: 
   const volatileSections: string[] = [dateSection]
   if (kbContext) {
     volatileSections.push(`## 长期记忆（你对该用户/项目已知的事，应主动运用）\n<untrusted_content source="memory">\n${kbContext}\n</untrusted_content>`)
+  }
+  // Live working-directory snapshot — recomputed every turn and placed in the
+  // VOLATILE (non-cached) suffix. This is the fix for "the model can't see files
+  // the user added after an earlier list_dir": instead of relying on the model to
+  // re-call list_dir (it tends to reuse the stale listing sitting in tool history),
+  // the current top-level contents are injected fresh each turn, so newly
+  // added/removed files always show up. Top-level only + capped so it can't blow
+  // the context; deeper folders are reached via list_dir on demand.
+  if (workingDir) {
+    const fmtSize = (n: number): string =>
+      n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`
+    let snap: string
+    try {
+      const { entries, truncated } = listDir({ dirPath: workingDir, recursive: false, limit: 120 })
+      snap = entries.length
+        ? entries.map(e => e.type === 'dir'
+            ? `  ${e.name}/`
+            : `  ${e.name}${typeof e.size === 'number' ? `  (${fmtSize(e.size)})` : ''}`).join('\n') +
+          (truncated ? '\n  …（顶层条目过多已截断，用 list_dir 看全部）' : '')
+        : '  （目录当前为空）'
+    } catch {
+      snap = '  （无法读取目录内容）'
+    }
+    volatileSections.push(
+      `## 工作目录当前内容（实时快照 · 每轮自动刷新）\n` +
+      `${workingDirFwd}/\n${snap}\n\n` +
+      `以上是该工作目录【此刻】的真实顶层内容（已随本回合刷新）。判断"有哪些文件"一律以这份快照为准，` +
+      `【不要】沿用对话历史里更早的 list_dir 结果——用户可能在两轮之间新增/删除了文件，旧列表已过时。` +
+      `需要查看子目录、或按 pattern 过滤时再调用 list_dir（其结果同样是调用那一刻的快照）。`
+    )
   }
   const volatile = volatileSections.join('\n\n')
   return { stable, volatile, full: `${stable}\n\n${volatile}` }
@@ -1746,7 +2233,7 @@ async function runDirectImageGeneration(opts: {
       ...(sessionTitle ? { sessionTitle } : {})
     })
     notifyTaskComplete(() => win, {
-      title: 'SuperStudio：图片已生成',
+      title: `${BRAND.productName}：图片已生成`,
       body: replyText.slice(0, 120) || '图片生成完成。'
     })
   } catch (err) {

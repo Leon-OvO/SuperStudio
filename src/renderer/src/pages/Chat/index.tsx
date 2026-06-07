@@ -24,7 +24,7 @@ export function ChatPage() {
     setSessions, setActiveSession, addSession, removeSession, updateSessionTitle,
     setMessages, addMessage, upsertMessage, appendStreamDelta, removeMessage, removeMessagesFrom, updateMessageContent,
     startRun, stopRun, updateStep,
-    setSessionModel, setComputerMode
+    setSessionModel, setComputerMode, setSessionWorkingDir
   } = useChatStore()
 
   // "Running" from the active session's point of view — used to gate sending /
@@ -228,6 +228,17 @@ export function ChatPage() {
       setSessionModel(session.id, defaultModelRef.current.providerId, defaultModelRef.current.model)
     }
     return session.id
+  }
+
+  // Pin / clear this conversation's working directory. Lazily creates a session
+  // if there's none yet (same pattern as handleSend) so the user can set it on a
+  // brand-new chat. Persisted in the main process (which validates the path) and
+  // mirrored into the store so the chip + next run pick it up immediately.
+  async function handleSetWorkingDir(dir: string) {
+    const sid = await ensureSession()
+    const res = await window.api.setSessionWorkingDir(sid, dir)
+    if (res?.ok) setSessionWorkingDir(sid, res.workingDir ?? dir)
+    else toast.error(res?.error || '设置工作目录失败')
   }
 
   async function handleSelectSession(id: string) {
@@ -476,6 +487,8 @@ export function ChatPage() {
           computerMode={computerMode}
           onComputerModeChange={setComputerMode}
           computerUseEnabled={computerUseEnabled}
+          workingDir={activeSession?.workingDir || ''}
+          onSetWorkingDir={handleSetWorkingDir}
           providerId={currentOverride?.providerId || ''}
           model={currentOverride?.model || ''}
           onModelChange={(p, m) => activeSessionId && setSessionModel(activeSessionId, p, m)}

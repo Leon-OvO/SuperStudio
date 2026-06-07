@@ -19,9 +19,13 @@ vi.mock('ai', async (importOriginal) => {
   return {
     ...actual,
     streamText: vi.fn(() => {
-      async function* gen() { for (const c of streamScript.chunks) yield c }
+      // The engine consumes result.fullStream (so it can forward reasoning + tool
+      // events, not just answer text), yielding parts shaped { type, textDelta }.
+      async function* full() { for (const c of streamScript.chunks) yield { type: 'text-delta', textDelta: c } }
+      async function* text() { for (const c of streamScript.chunks) yield c }
       return {
-        textStream: gen(),
+        fullStream: full(),
+        textStream: text(),
         usage: Promise.resolve(streamScript.usage ?? {}),
         finishReason: Promise.resolve(streamScript.finishReason ?? 'stop')
       }
@@ -51,7 +55,7 @@ vi.mock('../services/store', () => ({
   getProviders: () => [{ id: 'p1', name: 'OpenAI', type: 'openai', apiKey: 'k', models: ['gpt-4o'] }]
 }))
 
-vi.mock('../services/llm', () => ({ createLLMClient: () => ({}) }))
+vi.mock('../services/llm', () => ({ createLLMClient: () => ({}), thinkingStreamOpts: () => ({}), effectiveProtocol: () => 'openai' }))
 vi.mock('../services/mcp', () => ({ mcpManager: { listAllTools: async () => [], callTool: async () => ({ text: '' }) } }))
 vi.mock('../services/memory', () => ({ recallForChat: () => '' }))
 vi.mock('../services/skills-db', () => ({ getActiveSkillsForScenario: () => [] }))
@@ -111,5 +115,18 @@ describe('runAgent orchestration', () => {
     const err = lastSend(IPC.AGENT_ERROR)
     expect(err).toBeTruthy()
     expect(String(err!.error)).toContain('默认模型')
+  })
+
+  it('Layer 2: auto-continues ONCE when the first pass is length-truncated', async () => {
+    // finishReason='length' → needsContinuation() fires; the mock yields the same
+    // chunk again on the second streamText() call, so the text appears TWICE
+    // (proving the continuation pass ran) and the result is still capped to ONE retry.
+    streamScript = { chunks: ['part'], finishReason: 'length', usage: { promptTokens: 5, completionTokens: 5 } }
+    await runAgent({ sessionId: 's4', message: 'write a long doc' }, fakeWin())
+    const done = lastSend(IPC.AGENT_DONE)
+    expect(done).toBeTruthy()
+    expect((String(done!.content).match(/part/g) || []).length).toBe(2) // pass1 + one continuation
+    expect(String(done!.content)).toContain('截断')                     // still length-truncated → user-visible marker
+    expect((done!.meta as Record<string, unknown>).incomplete).toBe(true)
   })
 })

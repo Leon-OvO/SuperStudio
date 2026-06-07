@@ -6,6 +6,7 @@ import { initDb } from './db/sqlite'
 import { registerIpcHandlers } from './ipc'
 import { installFetchLogger } from './debug-fetch'
 import { IPC } from '../../src/shared/ipc-types'
+import { FLAVOR } from '../../src/shared/flavor'
 import type { ShellOpenTarget } from './services/system-integration'
 
 installFetchLogger()
@@ -402,6 +403,21 @@ app.whenReady().then(async () => {
   const { getSettings: readSettings } = await import('./services/store')
   const startupSettings = readSettings()
   await initDb(startupSettings.dataDirectory || undefined)
+
+  // Inject proprietary seam implementations (remote control, talent pool,
+  // supercode account) BEFORE registering IPC — the auth provider's handlers are
+  // registered inside registerIpcHandlers(). Guarded by flavor: the DWork
+  // deliverable runs on the seam BYOK/noop defaults. This block +
+  // services/providers/ move to the private overlay at the repo split.
+  if (FLAVOR === 'superstudio') {
+    try {
+      const { registerProprietaryProviders } = await import('./services/providers/register-proprietary')
+      registerProprietaryProviders()
+    } catch (e) {
+      console.warn('[startup] proprietary providers registration failed:', (e as Error).message)
+    }
+  }
+
   registerIpcHandlers()
 
   // Apply outbound proxy. Both session-level proxy (BrowserWindow + net.fetch)
@@ -450,10 +466,11 @@ app.whenReady().then(async () => {
     console.warn('[startup] vibe approved-root bootstrap failed:', (e as Error).message)
   }
 
-  // Attempt to restore existing auth session silently
+  // Attempt to restore existing auth session silently (via the AuthProvider
+  // seam — supercode restores its token; BYOK resolves as logged-in instantly).
   try {
-    const { tryRestoreSession } = await import('./ipc/auth')
-    await tryRestoreSession()
+    const { getAuthProvider } = await import('./services/auth-provider')
+    await getAuthProvider().restore()
   } catch (e) {
     console.warn('[startup] session restore failed:', (e as Error).message)
   }
@@ -492,8 +509,9 @@ app.whenReady().then(async () => {
   const { initTray } = await import('./services/tray')
   initTray(() => mainWindow)
 
-  // Background update check (GitHub). Silent unless a new version is found —
-  // then the renderer's UpdateNotifier listener shows a toast.
+  // Background update check. Silent unless a new version is found — then the
+  // renderer's UpdateNotifier listener shows a toast. No-op when no remote
+  // control source is injected (deliverable default).
   try {
     const { scheduleStartupCheck } = await import('./services/updater')
     scheduleStartupCheck(() => mainWindow)

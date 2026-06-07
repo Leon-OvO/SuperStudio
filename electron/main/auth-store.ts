@@ -5,7 +5,7 @@
 
 import Store from 'electron-store'
 import { safeStorage } from 'electron'
-import { SuperCodeUser } from '../../src/shared/ipc-types'
+import { AccountUser } from '../../src/shared/ipc-types'
 
 export interface RawKeyEntry {
   id: number
@@ -29,7 +29,7 @@ export interface KeyMeta {
 interface AuthSchema {
   accessToken: string    // encrypted
   refreshToken: string   // encrypted
-  user: SuperCodeUser | null
+  user: AccountUser | null
   // Legacy single-key fields (kept for migration compatibility)
   keyId: number | null
   keyValue: string       // encrypted
@@ -104,12 +104,12 @@ export function getRefreshToken(): string {
 
 // --- User -----------------------------------------------------------------
 
-export function storeUser(user: SuperCodeUser): void {
+export function storeUser(user: AccountUser): void {
   getStore().set('user', user)
 }
 
-export function getUser(): SuperCodeUser | null {
-  return getStore().get('user') as SuperCodeUser | null
+export function getUser(): AccountUser | null {
+  return getStore().get('user') as AccountUser | null
 }
 
 // --- Multi-key storage ----------------------------------------------------

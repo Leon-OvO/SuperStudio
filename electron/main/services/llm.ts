@@ -75,19 +75,15 @@ export function isClaudeModel(modelId: string): boolean {
   return /claude/i.test(modelId)
 }
 
-function hostOf(url: string | undefined): string {
-  if (!url) return ''
-  try { return new URL(url).host.toLowerCase() } catch { return '' }
-}
-
 /** Whether this provider's endpoint is known to ALSO speak Anthropic-native
- *  /v1/messages, so we can safely auto-route Claude models there. We only trust
- *  the SuperCode gateway — this app's own backend, the very endpoint Claude Code
- *  talks to natively. Arbitrary OpenAI-compatible relays are left on
- *  /chat/completions, since blindly switching them to /v1/messages would 404. */
+ *  /v1/messages, so we can safely auto-route Claude models there. This is a
+ *  declared capability (`anthropicNative`) — set by whichever layer configured
+ *  the provider and knows its endpoint. Core never infers it from a brand/host
+ *  string. Arbitrary OpenAI-compatible endpoints stay on /chat/completions,
+ *  since blindly switching them to /v1/messages would 404. */
 function relaySpeaksAnthropic(provider: ProviderConfig): boolean {
   if (!provider.baseUrl) return false
-  return provider.source === 'supercode' || /(^|\.)supercode\.help$/.test(hostOf(provider.baseUrl))
+  return provider.anthropicNative === true
 }
 
 /** The wire protocol actually used for (provider, model). Auto-upgrades Claude
@@ -150,7 +146,7 @@ export function buildModel(provider: ProviderConfig, modelId: string): LanguageM
     }
     case 'custom': {
       // Same as 'openai' — most modern OpenAI-compatible proxies (OpenRouter,
-      // Together, Groq, SuperCode gateway, etc.) honor `stream_options` and
+      // Together, Groq, aggregator gateways, etc.) honor `stream_options` and
       // need it on to return usage. If a downstream proxy chokes on the field,
       // it'd need a per-provider opt-out — add one then.
       const client = createOpenAI({
@@ -162,9 +158,9 @@ export function buildModel(provider: ProviderConfig, modelId: string): LanguageM
       return client(modelId)
     }
     case 'anthropic': {
-      // baseURL lets users point at an Anthropic-native relay (e.g. supercode's
-      // /v1/messages — the same endpoint Claude Code uses, with SSE ping
-      // keepalives) instead of only api.anthropic.com. Empty → SDK default.
+      // baseURL lets users point at an Anthropic-native gateway that serves
+      // /v1/messages (with SSE ping keepalives) instead of only
+      // api.anthropic.com. Empty → SDK default.
       return buildAnthropicModel(provider, modelId)
     }
     case 'gemini': {
@@ -194,10 +190,27 @@ type ThinkStreamOpts = Pick<Parameters<typeof streamText>[0], 'providerOptions' 
 
 export function thinkingStreamOpts(
   providerType: string | undefined,
-  mode: ThinkingMode | undefined
+  mode: ThinkingMode | undefined,
+  model?: string
 ): ThinkStreamOpts {
   if (providerType !== 'anthropic') return {}
-  if (mode === 'fast') return { providerOptions: { anthropic: { thinking: { type: 'disabled' } } } }
-  if (mode === 'deep') return { providerOptions: { anthropic: { thinking: { type: 'enabled', budgetTokens: 8000 } } }, maxTokens: 24000 }
-  return {}
+  // Output-token ceiling. Many turns truncate long writes (HTML/report/code) at a
+  // small provider default; raise it — but ONLY for models we KNOW accept a large
+  // cap (Opus-4 / Sonnet-4). Allowlist not denylist: a too-high max_tokens ERRORS
+  // (Claude 3.x / Haiku cap at 4k-8k), so anything else keeps provider defaults =
+  // zero regression. 24000 is the value the deep branch already shipped on these
+  // models (proven-safe, well under their real cap) — big lift over the ~4k default
+  // without risking rejection. Anthropic-scoped; other providers' truncation is
+  // surfaced via the finishReason='length' marker instead.
+  const big = /(?:opus|sonnet)-4/i.test(model || '')
+  const cap = big ? 24000 : undefined
+  if (mode === 'fast') {
+    return { providerOptions: { anthropic: { thinking: { type: 'disabled' } } }, ...(cap ? { maxTokens: cap } : {}) }
+  }
+  if (mode === 'deep') {
+    // maxTokens MUST exceed budgetTokens or Anthropic errors; keep the old 24000
+    // floor for legacy models, 32000 for capable ones so thinking never eats the answer.
+    return { providerOptions: { anthropic: { thinking: { type: 'enabled', budgetTokens: 8000 } } }, maxTokens: cap ?? 24000 }
+  }
+  return cap ? { maxTokens: cap } : {} // auto
 }

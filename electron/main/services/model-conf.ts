@@ -1,11 +1,13 @@
 /**
- * Remote model.conf — GitHub-hosted recommended default models.
+ * Remote model.conf — recommended default models from an injected source.
  *
- * The maintainer publishes a `model.conf` (JSON) at the project repo to steer
- * what new clients default to (chat / image / video / embedding model NAMES).
- * Providers are NOT part of the file — providerIds are install-local UUIDs, so
- * the client keeps resolving which logged-in provider serves the recommended
- * model exactly as before (that logic is unchanged).
+ * A RemoteControlSource (see remote-control-source.ts) may provide a `model.conf`
+ * (JSON) that steers what new clients default to (chat / image / video /
+ * embedding model NAMES). Providers are NOT part of the file — providerIds are
+ * install-local UUIDs, so the client keeps resolving which provider serves the
+ * recommended model exactly as before (that logic is unchanged). Where the conf
+ * comes from (or whether there is one at all) is the source's concern: the
+ * deliverable default source returns null and built-in defaults stand.
  *
  * "Managed default" policy: a default is overwritten from model.conf ONLY when
  * the user hasn't diverged from the value we last applied (tracked in
@@ -13,21 +15,14 @@
  * Settings, that field stops being touched. So model.conf controls defaults for
  * anyone still on a recommended value, and never clobbers a manual choice.
  *
- * Failure is silent and non-fatal — offline, 404 (file not published yet), or a
- * malformed file all just leave the built-in defaults in place.
+ * Failure is silent and non-fatal — offline, no source, or a malformed file all
+ * just leave the built-in defaults in place.
  */
 
 import { BrowserWindow } from 'electron'
 import { IPC, type RemoteModelConf } from '../../../src/shared/ipc-types'
 import { getSettings, saveSettings } from './store'
-
-const GH_OWNER = 'Leon-OvO'
-const GH_REPO = 'SuperStudio'
-// raw.githubusercontent.com needs a concrete ref (no HEAD), so try the common
-// default branches in order. The first that returns the file wins.
-const RAW_URLS = ['main', 'master'].map(
-  (branch) => `https://raw.githubusercontent.com/${GH_OWNER}/${GH_REPO}/${branch}/model.conf`
-)
+import { getRemoteControlSource } from './remote-control-source'
 
 const MANAGED_KEYS = [
   'defaultChatModel',
@@ -37,8 +32,9 @@ const MANAGED_KEYS = [
 ] as const
 
 /** Tolerant JSON parse for a hand-edited conf: strips whole-line `#` / `//`
- *  comments and a trailing comma before `}`/`]` so annotations don't break it. */
-function parseConf(text: string): RemoteModelConf {
+ *  comments and a trailing comma before `}`/`]` so annotations don't break it.
+ *  Exported so a RemoteControlSource implementation can reuse the exact format. */
+export function parseConf(text: string): RemoteModelConf {
   const stripped = text
     .split('\n')
     .filter((line) => {
@@ -56,22 +52,6 @@ function parseConf(text: string): RemoteModelConf {
   return out
 }
 
-async function fetchRemoteConf(): Promise<RemoteModelConf | null> {
-  for (const url of RAW_URLS) {
-    try {
-      const res = await fetch(url, {
-        headers: { 'User-Agent': `SuperStudio`, 'Cache-Control': 'no-cache' },
-      })
-      if (res.status === 404) continue // not on this branch — try the next
-      if (!res.ok) continue
-      return parseConf(await res.text())
-    } catch {
-      // Network error / parse error → try next URL, then give up silently.
-    }
-  }
-  return null
-}
-
 export interface ModelConfSyncResult {
   ok: boolean
   /** Field names whose default model was actually updated this run. */
@@ -85,7 +65,7 @@ export interface ModelConfSyncResult {
  * can re-read settings without waiting for a focus event.
  */
 export async function syncModelConf(getWin?: () => BrowserWindow | null): Promise<ModelConfSyncResult> {
-  const remote = await fetchRemoteConf()
+  const remote = await getRemoteControlSource().fetchModelConf()
   if (!remote) return { ok: false, applied: [], error: 'model.conf unavailable' }
 
   const settings = getSettings()

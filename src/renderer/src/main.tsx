@@ -3,6 +3,10 @@ import ReactDOM from 'react-dom/client'
 import App from './App'
 import { ErrorBoundary } from './components/ui/ErrorBoundary'
 import './assets/globals.css'
+// Registers account-only screens (login / account tab / dashboard) into the UI
+// seam at module load. Core ships a no-op stub here; the proprietary overlay
+// overwrites it. Must run before App renders so the login gate sees them.
+import './lib/register-account-ui'
 
 // Catch uncaught async errors too — they don't propagate to React boundaries.
 // Mirror to the local error log so users can find them in Settings → 关于.

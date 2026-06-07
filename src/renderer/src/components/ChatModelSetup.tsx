@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Sparkles, Loader2, RefreshCw, Info, MessageSquareText } from 'lucide-react'
 import type { AppSettings, ProviderConfig } from '../../../shared/ipc-types'
 import { Select } from './ui/Select'
+import { BRAND_LINKS } from '@shared/brand-links'
 
 interface Props {
   /** Called after a default chat model has been saved (or the user opted to skip). */
@@ -86,7 +87,7 @@ export function ChatModelSetup({ onDone }: Props): JSX.Element {
   }
 
   const planLabel = (p: ProviderConfig) =>
-    p.source === 'supercode' && p.platform ? `${p.platform} · ${p.name}` : p.name
+    p.platform ? `${p.platform} · ${p.name}` : p.name
 
   const hasProviders = providers.length > 0
 
@@ -114,8 +115,8 @@ export function ChatModelSetup({ onDone }: Props): JSX.Element {
               <div className="flex items-start gap-2 text-xs text-foreground/80">
                 <Info size={14} className="text-amber-500 shrink-0 mt-0.5" />
                 <div className="space-y-1">
-                  <p className="font-medium text-foreground">尚无可用的 Token Plan</p>
-                  <p>登录 SuperCode 账号后会自动同步官方 Token Plan，或在「设置 → 账号」中手动添加 OpenAI / Anthropic / Gemini 等第三方 Key。</p>
+                  <p className="font-medium text-foreground">尚无可用的模型</p>
+                  <p>{BRAND_LINKS.accountHintZh || '在「设置 → API 提供商」中添加 OpenAI / Anthropic / Gemini 等兼容 OpenAI 协议的 Key，即可开始使用。'}</p>
                 </div>
               </div>
             </div>
