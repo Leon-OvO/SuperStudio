@@ -92,6 +92,12 @@ let win: BrowserWindow | null = null
 let browseSession: Session | null = null
 let mutex: Promise<unknown> = Promise.resolve()
 let idleTimer: NodeJS.Timeout | null = null
+// The visibility the user configured (searchBrowserVisible), captured on every
+// web_open. Automation ops (snapshot/click/fill/upload) reuse the window
+// web_open left behind and MUST honor this: a non-login read/automation in
+// hidden mode must never pop the window into view. The genuine "need a human"
+// moments (login wall, manual-publish fallback) override it via surfaceWindow().
+let preferredVisible = false
 // Consecutive 发布/存草稿 clicks that failed because the publish bar isn't
 // findable in the DOM (lazy-mount / not rendered). After a couple of these we
 // surface the (otherwise inactive) window so the user can finish with one
@@ -915,6 +921,11 @@ export async function openPage(
     throw new Error(`web_open 仅支持 http(s) 网址，收到：${url.slice(0, 120)}`)
   }
 
+  // Remember the user's 显示/不显示 choice so the automation ops that reuse this
+  // window (web_snapshot/click/fill/upload) don't force it visible behind the
+  // user's back when they opted into hidden mode.
+  preferredVisible = !!opts.browserVisible
+
   // A call is starting — cancel any pending idle teardown.
   if (idleTimer) { clearTimeout(idleTimer); idleTimer = null }
   try {
@@ -1001,8 +1012,13 @@ function requireWindow(): { w: BrowserWindow; wc: WebContents } {
   if (!win || win.isDestroyed()) {
     throw new Error('请先用 web_open 打开目标页面')
   }
-  // Keep it visible so the user can handle captcha / 2FA / sliders.
-  if (!win.isVisible()) { try { win.showInactive() } catch { /* gone */ } }
+  // Honor the user's 不显示浏览器 setting: only auto-surface the window for
+  // automation when web_open opened it visibly. In hidden mode a non-login
+  // snapshot/click/fill/upload stays hidden — the genuine "need a human" moments
+  // (login wall, manual-publish fallback) call surfaceWindow() to override this
+  // regardless of the setting, so captcha / 2FA / sliders are still reachable
+  // when they actually block the flow.
+  if (preferredVisible && !win.isVisible()) { try { win.showInactive() } catch { /* gone */ } }
   return { w: win, wc: win.webContents }
 }
 
