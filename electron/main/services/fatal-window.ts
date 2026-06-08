@@ -1,5 +1,6 @@
 import { BrowserWindow, shell, app } from 'electron'
 import path from 'path'
+import { BRAND } from '../../../src/shared/brand'
 
 /**
  * Panic window. Shown when main-process startup throws, the renderer fails
@@ -93,7 +94,7 @@ function buildHtml(opts: FatalErrorOptions): string {
   ${ctxRows ? `<div class="meta"><table>${ctxRows}</table></div>` : ''}
   <pre>${escape(message)}${stack ? '\n\n' + escape(stack) : ''}</pre>
   <div class="actions">
-    <button class="primary" onclick="location.hash='#restart'">重启 SuperStudio</button>
+    <button class="primary" onclick="location.hash='#restart'">重启 ${BRAND.displayName}</button>
     <button onclick="location.hash='#open-logs'">打开日志文件夹</button>
     <button onclick="location.hash='#copy'" id="copyBtn">复制错误详情</button>
     <button onclick="location.hash='#quit'">退出</button>

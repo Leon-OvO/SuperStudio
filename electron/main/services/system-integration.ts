@@ -1,5 +1,6 @@
 import { app } from 'electron'
 import { execFile } from 'child_process'
+import { BRAND } from '../../../src/shared/brand'
 import { promisify } from 'util'
 import fs from 'fs'
 import path from 'path'
@@ -53,8 +54,11 @@ export function getAutoLaunchState(): boolean {
 //   Directory\Background           empty space inside an open folder
 // ---------------------------------------------------------------------------
 
-const SHELL_KEY_NAME = 'SuperStudio'
-const SHELL_MENU_LABEL = '用 SuperStudio 打开'
+// Flavor-namespaced so DWork's Explorer entry doesn't collide with SuperStudio's
+// HKCU key (both used to write the same 'SuperStudio' subkey and clobber each
+// other's menu entry on install/uninstall).
+const SHELL_KEY_NAME = BRAND.productName
+const SHELL_MENU_LABEL = `用 ${BRAND.displayName} 打开`
 
 interface RegLocation {
   /** Registry key path under HKCU */

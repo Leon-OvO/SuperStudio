@@ -7,6 +7,7 @@ import { registerIpcHandlers } from './ipc'
 import { installFetchLogger } from './debug-fetch'
 import { IPC } from '../../src/shared/ipc-types'
 import { FLAVOR } from '../../src/shared/flavor'
+import { BRAND } from '../../src/shared/brand'
 import type { ShellOpenTarget } from './services/system-integration'
 
 installFetchLogger()
@@ -112,7 +113,7 @@ function createWindow(): void {
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'hidden',
     // Windows + Linux: explicitly set the window/taskbar icon so dev mode also
     // shows it. macOS reads the icon from the .app bundle's Info.plist instead.
-    ...(process.platform !== 'darwin' ? { icon: path.join(__dirname, '../../build/icon.png') } : {}),
+    ...(process.platform !== 'darwin' ? { icon: path.join(__dirname, BRAND.id === 'dwork' ? '../../build/dwork/icon.png' : '../../build/icon.png') } : {}),
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.js'),
       sandbox: false,
@@ -269,7 +270,7 @@ app.whenReady().then(async () => {
   }
   startupBegun = true
 
-  electronApp.setAppUserModelId('com.superstudio.app')
+  electronApp.setAppUserModelId(BRAND.appId)
 
   // Startup watchdog — if init hangs (e.g. initDb on an unreachable data
   // directory, or a SQLite file locked by a lingering process) the primary

@@ -1,6 +1,7 @@
 import { ipcMain, dialog, BrowserWindow } from 'electron'
 import fs from 'fs'
 import { IPC } from '../../../src/shared/ipc-types'
+import { BRAND } from '../../../src/shared/brand'
 import { getSettings, saveSettings, getProviders, saveProvider, deleteProvider, getMcpServers, saveMcpServer, deleteMcpServer, BUILTIN_MODEL_DEFAULTS } from '../services/store'
 import type { McpServerConfig, ProviderConfig } from '../../../src/shared/ipc-types'
 import { getProviderKeyRecovery } from '../services/key-store'
@@ -249,7 +250,7 @@ export function settingsHandlers(): void {
       mcpServers?: McpServerConfig[]
     }
     if (!data || typeof data !== 'object' || (data.version !== 1)) {
-      return { canceled: false, error: '不是 SuperStudio 配置导出文件（缺少 version=1）' }
+      return { canceled: false, error: `不是 ${BRAND.displayName} 配置导出文件（缺少 version=1）` }
     }
 
     // 'replace' = nuke local list first; 'merge' = keep existing IDs and only

@@ -1,5 +1,6 @@
 import { BrowserWindow, Notification } from 'electron'
 import { randomUUID } from 'crypto'
+import { BRAND } from '../../../src/shared/brand'
 import { dbAll, dbGet, dbRun } from '../db/sqlite'
 import { computeNextFireAt } from './scheduler-time'
 import { runAgent } from '../agent/engine'
@@ -361,7 +362,7 @@ function notifyAutoPause(taskName: string): void {
   if (!Notification.isSupported()) return
   try {
     const n = new Notification({
-      title: 'SuperStudio · 定时任务已暂停',
+      title: `${BRAND.displayName} · 定时任务已暂停`,
       body: `任务「${taskName}」已自动暂停（连续失败 5 次），点击查看原因`,
       silent: false
     })
@@ -382,7 +383,7 @@ function notifyRunDone(taskName: string, taskId: string): void {
   if (!Notification.isSupported()) return
   try {
     const n = new Notification({
-      title: 'SuperStudio · 定时任务完成',
+      title: `${BRAND.displayName} · 定时任务完成`,
       body: `任务「${taskName}」已完成，点击查看结果`,
       silent: false
     })

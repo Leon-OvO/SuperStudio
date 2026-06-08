@@ -16,6 +16,7 @@
 
 import { BrowserWindow, session, Session, WebContents, shell } from 'electron'
 import fs from 'fs'
+import { BRAND } from '../../../src/shared/brand'
 
 const NAV_TIMEOUT_MS = 20_000
 /** Max time to wait for a client-rendered page (SPA) to paint its content
@@ -666,7 +667,7 @@ const CHROME_JS = `(() => {
     logo.textContent = '\\u2726'
     var name = document.createElement('div')
     Object.assign(name.style, { fontSize: '13px', fontWeight: '600', color: '#1e1e2e', letterSpacing: '.2px', whiteSpace: 'nowrap' })
-    name.textContent = 'SuperStudio'
+    name.textContent = '${BRAND.displayName}'
     brand.appendChild(logo); brand.appendChild(name)
 
     var urlEl = document.createElement('div')

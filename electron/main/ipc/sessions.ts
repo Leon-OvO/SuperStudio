@@ -2,6 +2,7 @@ import { ipcMain, dialog, BrowserWindow } from 'electron'
 import fs from 'fs'
 import path from 'path'
 import { IPC } from '../../../src/shared/ipc-types'
+import { BRAND } from '../../../src/shared/brand'
 import { dbRun, dbAll, dbGet } from '../db/sqlite'
 import { randomUUID } from 'crypto'
 
@@ -274,7 +275,7 @@ export function sessionHandlers(): void {
       }>
     }
     if (!data || typeof data !== 'object' || data.version !== 1) {
-      return { canceled: false, error: '不是 SuperStudio 对话导出文件（缺少 version=1）' }
+      return { canceled: false, error: `不是 ${BRAND.displayName} 对话导出文件（缺少 version=1）` }
     }
 
     if (strategy === 'replace') {
