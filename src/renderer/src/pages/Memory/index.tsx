@@ -1,11 +1,12 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import {
   Plus, Trash2, Pin, PinOff, Archive, ArchiveRestore, Search, Eye, Edit3,
-  User, FolderGit2, History, Sparkles, Brain, X, ShieldCheck
+  User, FolderGit2, History, Sparkles, Brain, X, ShieldCheck, Upload, Loader2
 } from 'lucide-react'
 import { cn, formatDate } from '../../lib/utils'
 import { renderMarkdown } from '../../lib/markdown'
 import { useConfirmDialog } from '../../components/ui/ConfirmDialog'
+import { toast } from '../../components/ui/Toast'
 
 type MemoryKind = 'profile' | 'project' | 'episode' | 'skill' | 'correction'
 
@@ -39,6 +40,7 @@ export function MemoryPage() {
   const [query, setQuery] = useState('')
   const [active, setActive] = useState<Memory | null>(null)
   const [autoCapture, setAutoCapture] = useState(true)
+  const [importing, setImporting] = useState(false)
   const dlg = useConfirmDialog()
 
   const load = useCallback(async () => {
@@ -79,6 +81,29 @@ export function MemoryPage() {
     const next = !autoCapture
     setAutoCapture(next)
     await window.api.setSettings({ memoryAutoCapture: next })
+  }
+
+  // Import external memory assets (.json / .jsonl / .md). Multi-select supported.
+  async function importMems() {
+    const paths = (await window.api.openFileDialog({
+      properties: ['openFile', 'multiSelections'],
+      filters: [{ name: 'Memory', extensions: ['json', 'jsonl', 'md'] }],
+    })) as string[] | undefined
+    if (!paths?.length) return
+    setImporting(true)
+    try {
+      const r = await window.api.importMemories(paths)
+      if (r.imported) {
+        toast.success(`已导入 ${r.imported} 条记忆${r.skipped ? `（跳过 ${r.skipped}）` : ''}`)
+        await load()
+      } else {
+        toast.error(r.errors.length ? '导入失败：' + r.errors[0] : `未导入（跳过 ${r.skipped} 条：重复或格式不符）`)
+      }
+    } catch (e) {
+      toast.error('导入失败：' + (e as Error).message)
+    } finally {
+      setImporting(false)
+    }
   }
 
   return (
@@ -132,11 +157,21 @@ export function MemoryPage() {
               className="flex-1 bg-transparent text-xs outline-none"
             />
           </div>
-          {!showArchived && (
-            <button onClick={createMemory} className="w-full flex items-center justify-center gap-1 px-2 py-1 rounded text-xs bg-primary/10 hover:bg-primary/20">
-              <Plus size={12} /> 新建{KINDS.find(k => k.id === activeKind)?.label}
+          <div className="flex gap-1.5">
+            {!showArchived && (
+              <button onClick={createMemory} className="flex-1 flex items-center justify-center gap-1 px-2 py-1 rounded text-xs bg-primary/10 hover:bg-primary/20">
+                <Plus size={12} /> 新建{KINDS.find(k => k.id === activeKind)?.label}
+              </button>
+            )}
+            <button
+              onClick={importMems}
+              disabled={importing}
+              title="导入外部记忆资产（.json / .jsonl / .md，可多选）"
+              className={cn('flex items-center justify-center gap-1 px-2 py-1 rounded text-xs border border-border hover:bg-accent disabled:opacity-50', showArchived && 'flex-1')}
+            >
+              {importing ? <Loader2 size={12} className="animate-spin" /> : <Upload size={12} />} 导入
             </button>
-          )}
+          </div>
         </div>
         <div className="flex-1 overflow-y-auto p-2 space-y-1">
           {visible.length === 0 ? (

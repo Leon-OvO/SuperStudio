@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Search, X, UserPlus, Trash2, Cpu, Loader2, BadgeCheck, Sparkles,
+  Search, X, UserPlus, Trash2, Cpu, Loader2, BadgeCheck, Sparkles, Upload, FolderOpen,
   Users, UserCheck, CheckCircle2, Coins, Wallet, Gauge, Flame,
   Building2, Workflow, Armchair, Store,
   Code2, Palette, ClipboardList, Megaphone, ShieldCheck, Brain, Gamepad2, Puzzle,
@@ -50,6 +50,9 @@ export function Market({ hiredSoulIds, onHire }: { hiredSoulIds: Set<string>; on
   const [loading, setLoading] = useState(false)
   const [hiring, setHiring] = useState<string | null>(null)
   const [preview, setPreview] = useState<TalentEntry | null>(null)
+  const [importing, setImporting] = useState(false)
+  const [dragOver, setDragOver] = useState(false)
+  const [refreshKey, setRefreshKey] = useState(0)
   // 面试试聊（不落库）
   const [chat, setChat] = useState<Array<{ role: 'user' | 'assistant'; content: string }>>([])
   const [chatInput, setChatInput] = useState('')
@@ -60,7 +63,48 @@ export function Market({ hiredSoulIds, onHire }: { hiredSoulIds: Set<string>; on
     setLoading(true)
     window.api.browseTalent({ dept: deptFilter, keyword: applied, page, pageSize: PAGE_SIZE })
       .then((r: TalentBrowseResult) => setData(r)).catch(() => {}).finally(() => setLoading(false))
-  }, [deptFilter, applied, page])
+  }, [deptFilter, applied, page, refreshKey])
+
+  // 导入外部 soul.md（OpenClaw/Hermes 等）→ 人才市场。按钮选 .md 文件，或把整个
+  // souls 文件夹拖进来批量导入；导入的人才进入市场，与内置一样可面试/录用/删除。
+  async function importPaths(rawPaths: string[]) {
+    const paths = [...new Set(rawPaths)]
+    if (!paths.length) return
+    setImporting(true)
+    let ins = 0, skip = 0
+    try {
+      for (const p of paths) {
+        try { const r = await window.api.importLocalTalent(p); ins += r.inserted; skip += r.skipped }
+        catch (e) { toast.error('导入失败：' + (e as Error).message) }
+      }
+      if (ins) { toast.success(`已导入 ${ins} 个 soul${skip ? `（跳过 ${skip}）` : ''}`); setRefreshKey(k => k + 1) }
+      else if (skip) toast.error(`未导入（跳过 ${skip} 个：无名称/空内容）`)
+    } finally { setImporting(false) }
+  }
+  async function importSoul() {
+    const paths = await window.api.openFileDialog({
+      properties: ['openFile', 'multiSelections'],
+      filters: [{ name: 'Soul', extensions: ['md'] }],
+    }) as string[] | undefined
+    if (paths?.length) await importPaths(paths)
+  }
+  async function removeImported(e: TalentEntry) {
+    try { await window.api.deleteUserSoul(e.id); toast.success(`已删除「${e.name}」`); setRefreshKey(k => k + 1) }
+    catch (err) { toast.error('删除失败：' + (err as Error).message) }
+  }
+  const handleDragOver = (e: React.DragEvent) => {
+    if (!Array.from(e.dataTransfer.types).includes('Files')) return
+    e.preventDefault(); setDragOver(true)
+  }
+  const handleDragLeave = (e: React.DragEvent) => {
+    if (e.currentTarget.contains(e.relatedTarget as Node | null)) return
+    setDragOver(false)
+  }
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault(); setDragOver(false)
+    const paths = Array.from(e.dataTransfer.files).map(f => window.api.getPathForFile(f)).filter((p): p is string => !!p)
+    if (paths.length) void importPaths(paths)
+  }
 
   const totalPages = Math.max(1, Math.ceil(data.total / PAGE_SIZE))
   const chips = ['all', ...Object.keys(DEPT)]
@@ -88,7 +132,14 @@ export function Market({ hiredSoulIds, onHire }: { hiredSoulIds: Set<string>; on
   }
 
   return (
-    <div>
+    <div className="relative" onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={handleDrop}>
+      {dragOver && (
+        <div className="absolute inset-1 z-30 flex items-center justify-center rounded-xl bg-primary/[0.06] border-2 border-dashed border-primary/50 pointer-events-none">
+          <span className="flex items-center gap-2 text-sm font-medium text-primary">
+            <FolderOpen size={16} /> 松手导入 soul.md（单个文件或整个 souls 文件夹）
+          </span>
+        </div>
+      )}
       <div className="flex items-center gap-2 mb-3 flex-wrap">
         <div className="flex gap-1.5 flex-wrap">
           {chips.map(d => (
@@ -105,6 +156,14 @@ export function Market({ hiredSoulIds, onHire }: { hiredSoulIds: Set<string>; on
             className="h-7 pl-6 pr-7 w-52 text-xs rounded-md border border-border bg-card focus:outline-none focus:ring-1 focus:ring-primary/40" />
           {keyword && <button onClick={() => setKeyword('')} className="absolute right-1 top-1/2 -translate-y-1/2 text-muted-foreground/70 hover:text-foreground"><X size={11} /></button>}
         </div>
+        <button
+          onClick={importSoul}
+          disabled={importing}
+          title="导入外部 soul.md（可多选 .md 文件；或把整个 souls 文件夹拖到此处批量导入）"
+          className="flex items-center gap-1 h-7 px-2.5 text-xs rounded-md border border-border bg-card hover:bg-accent text-foreground transition-colors disabled:opacity-50 shrink-0"
+        >
+          {importing ? <Loader2 size={12} className="animate-spin" /> : <Upload size={12} />} 导入 soul
+        </button>
       </div>
 
       {loading ? <div className="text-center text-muted-foreground text-sm py-10"><Loader2 size={16} className="animate-spin inline" /> 加载人才中…</div>
@@ -115,11 +174,20 @@ export function Market({ hiredSoulIds, onHire }: { hiredSoulIds: Set<string>; on
             const d = dept(e.dept)
             const hired = hiredSoulIds.has(e.id)
             return (
-              <div key={e.id} className="rounded-xl border border-border bg-card p-3.5 hover:border-border/60 transition-colors">
+              <div key={e.id} className="relative rounded-xl border border-border bg-card p-3.5 hover:border-border/60 transition-colors">
+                {e.imported && (
+                  <button onClick={() => removeImported(e)} title="删除这个导入的人才"
+                    className="absolute top-2 right-2 p-1 rounded text-muted-foreground/60 hover:text-rose-400 hover:bg-rose-500/10">
+                    <Trash2 size={12} />
+                  </button>
+                )}
                 <div className="flex items-center gap-3">
                   <div className="w-10 h-10 rounded-xl grid place-items-center text-xl border border-border" style={{ background: d.color + '22' }}>{d.emoji}</div>
                   <div className="min-w-0">
-                    <div className="font-medium text-sm truncate">{e.name}</div>
+                    <div className="font-medium text-sm truncate flex items-center gap-1.5">
+                      {e.name}
+                      {e.imported && <span className="text-[9px] px-1 py-0.5 rounded bg-primary/15 text-primary font-normal shrink-0">导入</span>}
+                    </div>
                     <div className="text-[11px]" style={{ color: d.color }}>● {d.label}</div>
                   </div>
                 </div>

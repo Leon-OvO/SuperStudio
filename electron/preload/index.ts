@@ -202,6 +202,8 @@ const api = {
   setMemoryPinned: (id: string, pinned: boolean) => ipcRenderer.invoke(IPC.MEMORY_SET_PINNED, { id, pinned }),
   archiveMemory: (id: string, archived: boolean) => ipcRenderer.invoke(IPC.MEMORY_ARCHIVE, { id, archived }),
   captureSessionMemory: (sessionId: string) => ipcRenderer.invoke(IPC.MEMORY_CAPTURE_SESSION, sessionId),
+  importMemories: (paths: string[]) =>
+    ipcRenderer.invoke(IPC.MEMORY_IMPORT, paths) as Promise<{ imported: number; skipped: number; errors: string[] }>,
   onMemoryCaptured: (cb: (info: { count: number; memories: unknown[] }) => void) => {
     const listener = (_e: unknown, info: { count: number; memories: unknown[] }) => cb(info)
     ipcRenderer.on(IPC.MEMORY_CAPTURED, listener)
@@ -252,6 +254,9 @@ const api = {
   getTalentSoul: (id: string) => ipcRenderer.invoke(IPC.TALENT_GET, id),
   tryTalent: (soulId: string, messages: Array<{ role: 'user' | 'assistant'; content: string }>) =>
     ipcRenderer.invoke(IPC.TALENT_TRY, { soulId, messages }),
+  importLocalTalent: (sourcePath: string) =>
+    ipcRenderer.invoke(IPC.TALENT_IMPORT_LOCAL, sourcePath) as Promise<{ inserted: number; skipped: number; total: number }>,
+  deleteUserSoul: (id: string) => ipcRenderer.invoke(IPC.TALENT_DELETE_USER, id),
 
   // --- AI company employees ---
   listEmployees: () => ipcRenderer.invoke(IPC.EMP_LIST),

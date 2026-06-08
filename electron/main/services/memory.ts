@@ -1,4 +1,7 @@
 import { randomUUID } from 'crypto'
+import fs from 'fs'
+import path from 'path'
+import { parse as parseYaml } from 'yaml'
 import { generateText } from 'ai'
 import { dbAll, dbRun } from '../db/sqlite'
 import { getSettings } from './store'
@@ -112,6 +115,99 @@ export function setMemoryPinned(id: string, pinned: boolean): void {
 
 export function setMemoryStatus(id: string, status: 'active' | 'archived'): void {
   dbRun(`UPDATE memories SET status = ?, updated_at = ? WHERE id = ?`, [status, Date.now(), id])
+}
+
+// --- Import external memory assets --------------------------------------
+//
+// Bring in memory assets from external agents (e.g. an OpenClaw/Hermes export).
+// Three on-disk shapes are accepted:
+//   .json   — an array of memory objects, or { memories: [...] }, or one object
+//   .jsonl  — one memory object per line
+//   .md     — a single memory; optional YAML frontmatter (kind/title/tags/scope),
+//             the body becomes the content (no frontmatter → title from the first
+//             heading or filename, kind defaults to 'skill')
+// Each candidate is validated (kind enum + non-empty title/content) and deduped
+// by (kind, scopeKey, title) before saveMemory, reusing the capture-time rules.
+
+const VALID_KINDS: MemoryKind[] = ['profile', 'project', 'episode', 'skill', 'correction']
+
+function toTags(v: unknown): string[] {
+  if (Array.isArray(v)) return v.map(String).map(s => s.trim()).filter(Boolean)
+  if (typeof v === 'string') return v.split(/[、,，]/).map(s => s.trim()).filter(Boolean)
+  return []
+}
+
+function coerceMemory(o: unknown): MemoryInput | null {
+  if (!o || typeof o !== 'object') return null
+  const r = o as Record<string, unknown>
+  const kind = String(r.kind ?? '') as MemoryKind
+  return {
+    kind,
+    scopeKey: (r.scopeKey ?? r.scope_key ?? null) as string | null,
+    title: String(r.title ?? '').trim(),
+    content: String(r.content ?? '').trim(),
+    tags: toTags(r.tags),
+    pinned: !!r.pinned,
+    confidence: typeof r.confidence === 'number' ? r.confidence : undefined,
+  }
+}
+
+function parseMemoryJson(raw: string, ext: string): MemoryInput[] {
+  if (ext === '.jsonl') {
+    return raw.split(/\r?\n/).map(l => l.trim()).filter(Boolean)
+      .map(l => { try { return coerceMemory(JSON.parse(l)) } catch { return null } })
+      .filter((m): m is MemoryInput => !!m)
+  }
+  const parsed = JSON.parse(raw) as unknown
+  const arr = Array.isArray(parsed)
+    ? parsed
+    : (parsed && typeof parsed === 'object' && Array.isArray((parsed as Record<string, unknown>).memories))
+      ? (parsed as Record<string, unknown>).memories as unknown[]
+      : [parsed]
+  return arr.map(coerceMemory).filter((m): m is MemoryInput => !!m)
+}
+
+function mdToMemory(raw: string, fileName: string): MemoryInput {
+  let fm: Record<string, unknown> = {}
+  let body = raw.trim()
+  const m = raw.match(/^\s*---\s*\r?\n([\s\S]*?)\r?\n---\s*\r?\n?/)
+  if (m) {
+    try { fm = (parseYaml(m[1]) as Record<string, unknown>) || {} } catch { fm = {} }
+    body = raw.slice(m[0].length).trim()
+  }
+  const kindRaw = String(fm.kind ?? '')
+  const kind = (VALID_KINDS as string[]).includes(kindRaw) ? (kindRaw as MemoryKind) : 'skill'
+  const heading = body.match(/^#{1,3}\s+(.+?)\s*$/m)
+  const title = String(fm.title || heading?.[1] || fileName.replace(/\.[^.]+$/, '')).trim()
+  return { kind, scopeKey: (fm.scope ?? fm.scopeKey ?? null) as string | null, title, content: body, tags: toTags(fm.tags) }
+}
+
+export function importMemories(opts: { paths: string[] }): { imported: number; skipped: number; errors: string[] } {
+  let imported = 0
+  let skipped = 0
+  const errors: string[] = []
+  for (const p of opts.paths || []) {
+    const base = path.basename(p)
+    try {
+      const raw = fs.readFileSync(p, 'utf8')
+      const ext = path.extname(p).toLowerCase()
+      const items = ext === '.md' ? [mdToMemory(raw, base)] : parseMemoryJson(raw, ext)
+      for (const it of items) {
+        if (!it || !VALID_KINDS.includes(it.kind) || !it.title?.trim() || !it.content?.trim()) { skipped++; continue }
+        if (isDuplicate(it.kind, it.scopeKey ?? null, it.title)) { skipped++; continue }
+        saveMemory({
+          ...it,
+          title: it.title.slice(0, 80),
+          content: it.content.slice(0, 2000),
+          source: it.source || `import:${base}`,
+        })
+        imported++
+      }
+    } catch (e) {
+      errors.push(`${base}: ${(e as Error).message}`)
+    }
+  }
+  return { imported, skipped, errors }
 }
 
 // --- Recall (lightweight, read-only) ------------------------------------

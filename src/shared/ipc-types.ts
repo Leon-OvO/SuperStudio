@@ -71,6 +71,7 @@ export const IPC = {
   MEMORY_ARCHIVE: 'memory:archive',
   MEMORY_CAPTURE_SESSION: 'memory:capture-session', // renderer → main: 手动从一个会话提炼记忆
   MEMORY_CAPTURED: 'memory:captured',               // main → renderer (event): 自动/手动捕获产出
+  MEMORY_IMPORT: 'memory:import',                    // renderer → main: 导入外部记忆资产(.json/.jsonl/.md)
 
   // Computer Use arming confirmation (in-app styled dialog via round-trip)
   COMPUTER_USE_CONFIRM: 'computer-use:confirm',           // main → renderer: ask permission { id }
@@ -208,6 +209,8 @@ export const IPC = {
   TALENT_BROWSE: 'talent:browse',
   TALENT_GET: 'talent:get',
   TALENT_TRY: 'talent:try',     // 面试试聊：用候选 soul 人格临时对话一轮（不落库）
+  TALENT_IMPORT_LOCAL: 'talent:import-local', // 导入外部 soul.md（单文件/目录）→ user_souls
+  TALENT_DELETE_USER: 'talent:delete-user',   // 删除一个用户导入的 soul
 
   // AI company employees (hired souls)
   EMP_LIST: 'emp:list',
@@ -921,6 +924,9 @@ export interface TalentEntry {
   /** Recommended model family from the soul frontmatter (opus/sonnet/haiku/…). */
   recModel: string
   systemPrompt: string  // the soul persona body
+  /** True for souls the user imported from an external soul.md (user_souls table),
+   *  vs the bundled encrypted catalog. Drives the "导入" badge + delete affordance. */
+  imported?: boolean
 }
 
 export interface TalentBrowseResult {

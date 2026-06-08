@@ -169,6 +169,25 @@ function createTables(): void {
     );
     CREATE INDEX IF NOT EXISTS idx_employees_company ON employees(company_id);
 
+    -- AI Company: user-imported souls. The bundled persona catalog ships as an
+    -- encrypted read-only bundle; THIS table holds personas the user imported
+    -- from external soul.md files (plain text, the user's own assets). The
+    -- talent source merges these into the in-memory catalog so they appear in
+    -- the market and can be hired exactly like bundled souls. Columns mirror
+    -- TalentEntry; tools is a JSON string[].
+    CREATE TABLE IF NOT EXISTS user_souls (
+      id            TEXT PRIMARY KEY,                 -- local/<name>-<hash>
+      source        TEXT NOT NULL DEFAULT 'imported',
+      name          TEXT NOT NULL,
+      description   TEXT NOT NULL DEFAULT '',
+      dept          TEXT NOT NULL DEFAULT 'engineering',
+      tools         TEXT NOT NULL DEFAULT '[]',       -- JSON string[]
+      rec_model     TEXT NOT NULL DEFAULT '',
+      system_prompt TEXT NOT NULL DEFAULT '',
+      origin_path   TEXT,
+      imported_at   INTEGER NOT NULL
+    );
+
     -- Skills: installed prompt + tool-whitelist bundles. Per design:
     -- skill = a reusable persona/preset that combines a system-prompt fragment
     -- with an optional tool whitelist, optionally scoped to specific scenarios

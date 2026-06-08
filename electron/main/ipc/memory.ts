@@ -4,7 +4,7 @@ import { dbAll } from '../db/sqlite'
 import { getMainWindow } from '../index'
 import {
   listMemories, saveMemory, deleteMemory, setMemoryPinned, setMemoryStatus,
-  captureFromTranscript, type MemoryInput, type MemoryKind
+  captureFromTranscript, importMemories, type MemoryInput, type MemoryKind
 } from '../services/memory'
 
 /** Build a compact transcript from a chat session's messages for capture. */
@@ -27,6 +27,10 @@ export function memoryHandlers(): void {
   ipcMain.handle(IPC.MEMORY_SAVE, (_e, input: MemoryInput) => saveMemory(input))
 
   ipcMain.handle(IPC.MEMORY_DELETE, (_e, id: string) => { deleteMemory(id); return { ok: true } })
+
+  // Import external memory assets (.json/.jsonl/.md). Paths come from
+  // openFileDialog (already session-approved); we read them in-process.
+  ipcMain.handle(IPC.MEMORY_IMPORT, (_e, paths: string[]) => importMemories({ paths: paths || [] }))
 
   ipcMain.handle(IPC.MEMORY_SET_PINNED, (_e, args: { id: string; pinned: boolean }) => {
     setMemoryPinned(args.id, args.pinned)
