@@ -180,7 +180,15 @@ export function importLocalSkillBundle(sourcePath: string): ImportedBundle {
   let st: fs.Stats
   try { st = fs.statSync(sourcePath) }
   catch { throw new Error('所选路径不存在或无法访问') }
-  let srcDir = st.isFile() ? path.dirname(sourcePath) : sourcePath
+
+  // A single picked/dropped FILE → import just that file as a one-file skill.
+  // We must NOT walk its parent directory: a loose SKILL.md often sits in
+  // Downloads / Desktop / a project folder with GBs of unrelated files, which is
+  // exactly what used to trip the 20 MB bundle cap ("技能包过大"). To bring along
+  // bundled scripts/resources, the user selects (or drops) the FOLDER instead.
+  if (st.isFile()) return importSingleFileSkill(sourcePath)
+
+  let srcDir = sourcePath
 
   let rel = listLocalBundleFiles(srcDir).files
   if (!rel.length) throw new Error('所选文件夹为空')
@@ -214,6 +222,26 @@ export function importLocalSkillBundle(sourcePath: string): ImportedBundle {
     written.push(r)
   }
   return { id, name: baseName, installPath: dir, files: written, skillMd }
+}
+
+/**
+ * Import a single picked/dropped markdown file as a one-file skill. The file is
+ * copied into the bundle as SKILL.md (so findSkillMd + load_skill pick it up).
+ * No parent-directory walk — see importLocalSkillBundle for why.
+ */
+function importSingleFileSkill(filePath: string): ImportedBundle {
+  const stat = fs.statSync(filePath)
+  if (stat.size > MAX_FILE_SIZE) throw new Error(`文件过大 (${(stat.size / 1024 / 1024).toFixed(1)} MB)`)
+  const content = fs.readFileSync(filePath, 'utf8')
+  const { name } = parseSkillMd(content)
+  const baseName = (name.trim() || path.basename(filePath).replace(/\.[^.]+$/, '')).trim() || 'skill'
+  const id = 'local-' + sanitizeId(baseName).toLowerCase()
+
+  const dir = skillDir(id)
+  fs.rmSync(dir, { recursive: true, force: true })
+  fs.mkdirSync(dir, { recursive: true })
+  fs.writeFileSync(path.join(dir, 'SKILL.md'), content, 'utf8')
+  return { id, name: baseName, installPath: dir, files: ['SKILL.md'], skillMd: content }
 }
 
 /** Locate the manifest file: SKILL.md (exact) → case-insensitive skill.md → README.md. */

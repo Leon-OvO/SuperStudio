@@ -85,6 +85,22 @@ export default function App() {
     return () => { off?.() }
   }, [cuConfirm])
 
+  // Local script execution: each new (command, cwd) asks for confirmation. Gated
+  // additionally by the off-by-default localScriptsEnabled setting.
+  useEffect(() => {
+    const off = window.api.onLocalScriptConfirm?.(async (req) => {
+      const ok = await cuConfirm.confirm({
+        title: '允许 AI 在本机执行脚本 / 命令？',
+        message: `命令：${req.command}\n目录：${req.cwd}\n\n这会在你的电脑上真实执行，仅在你信任该任务时允许。`,
+        tone: 'danger',
+        confirmLabel: '允许执行',
+        cancelLabel: '取消',
+      })
+      window.api.respondLocalScriptConfirm?.(req.id, ok)
+    })
+    return () => { off?.() }
+  }, [cuConfirm])
+
   // Long-term memory captured anywhere (chat archive / company delivery / manual)
   // → surface a single app-wide toast so "越用越聪明" is visible regardless of page.
   useEffect(() => {

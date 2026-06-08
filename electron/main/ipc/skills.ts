@@ -8,6 +8,7 @@ import {
 } from '../services/skills-db'
 import { fetchRegistry, fetchManifest, ensureBundledInstalled, type RegistryEntry, type FetchedRegistry, type BrowseParams } from '../services/skills-registry'
 import { downloadSkillBundle, importLocalSkillBundle, parseSkillMd, readSkillResource } from '../services/skill-files'
+import { discoverLocalSkills } from '../services/skill-discover'
 
 export function skillsHandlers(): void {
   // First-run seed of the builtin registry source + the bundled skill set
@@ -68,6 +69,12 @@ export function skillsHandlers(): void {
       sourceUrl: 'local',
       suggestedScenarios: ['chat', 'vibe']
     })
+  })
+
+  // Auto-discover importable local skill bundles (~/.claude/skills, the open
+  // project's .claude/skills, and a custom folder). Read-only scan.
+  ipcMain.handle(IPC.SKILLS_DISCOVER_LOCAL, (_e, args?: { projectPath?: string }) => {
+    return discoverLocalSkills(args?.projectPath)
   })
 
   ipcMain.handle(IPC.SKILLS_UNINSTALL, (_e, id: string) => {

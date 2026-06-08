@@ -8,6 +8,8 @@ import { createLLMClient, thinkingStreamOpts, effectiveProtocol } from '../servi
 import { getSettings, getProviders, getSshConnections } from '../services/store'
 import { sshExec, resolveSshConnection } from '../services/ssh-service'
 import { confirmSshExec } from '../services/ssh-guard'
+import { runShell } from '../services/shell'
+import { confirmRunScript } from '../services/local-script-guard'
 import { generateImage } from '../services/image'
 import { generateVideo } from '../services/video'
 import { readFile, writeFile, writeTextFile, listDir } from '../services/fileops'
@@ -21,6 +23,7 @@ import { mcpManager, type McpTool } from '../services/mcp'
 import { getActiveSkillsForScenario, type InstalledSkill } from '../services/skills-db'
 import { buildSkillTools } from './skill-tools'
 import { notifyTaskComplete } from '../services/tray'
+import os from 'os'
 import { dbRun, dbAll, dbGet } from '../db/sqlite'
 import { computeCost, modelContextWindow } from '../services/model-pricing'
 import { isApproved, isEnumerableDir, registerApproved, registerApprovedRoot, invalidateDbCache } from '../services/path-allow'
@@ -1272,6 +1275,47 @@ export async function runAgent(
             emit({ stepIndex: myIdx, stepName: 'SSH', toolName: 'ssh_exec', status: 'error', message: msg })
             toolCallLog.push({ toolName: 'ssh_exec', args: { connection, command }, result: { error: msg } })
             return `[ssh_exec error] ${msg}`
+          }
+        }
+      })
+    }
+
+    // run_script — execute a local command / script (python/.bat/.sh/node …) on
+    // the user's machine. OFF unless `localScriptsEnabled` is set; even then EACH
+    // new (command, cwd) is confirmed by the user via a dialog.
+    if (settings.localScriptsEnabled) {
+      allTools.run_script = tool({
+        description:
+          '在本机执行一条命令 / 运行本地脚本（如 `python x.py`、`x.bat`、`bash x.sh`、`node x.js`，走系统 shell）。' +
+          '真实执行、非口头描述；返回 { code, stdout, stderr, timedOut }。默认工作目录是用户主目录，' +
+          '可用 cwd 指定，或在命令里用 `cd /path && 命令`。受用户设置开关管控，且每条新命令都会弹窗请用户确认；' +
+          '危险/不可逆操作（删除、格式化、改系统配置等）执行前应在回复里先向用户说明。',
+        parameters: z.object({
+          command: z.string().describe('要执行的命令 / 脚本调用'),
+          cwd: z.string().nullable().optional().describe('工作目录绝对路径；省略则用用户主目录'),
+        }),
+        execute: async ({ command, cwd }) => {
+          const myIdx = stepIndex++
+          const dir = (cwd && cwd.trim()) ? cwd.trim() : os.homedir()
+          emit({ stepIndex: myIdx, stepName: '脚本', toolName: 'run_script', status: 'running', message: command.slice(0, 80) })
+          const allowed = await confirmRunScript(command, dir)
+          if (!allowed) {
+            const msg = '已取消：用户未授权执行该本地命令。'
+            emit({ stepIndex: myIdx, stepName: '脚本', toolName: 'run_script', status: 'error', message: msg })
+            toolCallLog.push({ toolName: 'run_script', args: { command, cwd: dir }, result: { error: msg } })
+            return `[run_script error] ${msg}`
+          }
+          try {
+            const r = await runShell(command, dir, abort.signal, settings.localScriptsTimeoutMs ?? 300_000)
+            const result = { code: r.code, stdout: r.stdout, stderr: r.stderr, timedOut: r.timedOut }
+            emit({ stepIndex: myIdx, stepName: '脚本', toolName: 'run_script', status: r.code === 0 ? 'done' : 'error', message: `exit ${r.code}${r.timedOut ? ' (timeout)' : ''}` })
+            toolCallLog.push({ toolName: 'run_script', args: { command, cwd: dir }, result })
+            return result
+          } catch (e) {
+            const msg = (e as Error).message || String(e)
+            emit({ stepIndex: myIdx, stepName: '脚本', toolName: 'run_script', status: 'error', message: msg })
+            toolCallLog.push({ toolName: 'run_script', args: { command, cwd: dir }, result: { error: msg } })
+            return `[run_script error] ${msg}`
           }
         }
       })

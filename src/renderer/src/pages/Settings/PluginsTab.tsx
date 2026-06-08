@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { Monitor, ToggleLeft, ToggleRight, type LucideIcon } from 'lucide-react'
+import { Monitor, Terminal, ToggleLeft, ToggleRight, type LucideIcon } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import type { AppSettings } from '../../../../shared/ipc-types'
 
@@ -16,6 +16,7 @@ interface Props {
  */
 export function PluginsTab({ settings, onSave }: Props) {
   const computerOn = settings.computerUseEnabled === true
+  const scriptsOn = settings.localScriptsEnabled === true
 
   return (
     <div className="space-y-4 max-w-2xl">
@@ -61,6 +62,23 @@ export function PluginsTab({ settings, onSave }: Props) {
               </span>
             </label>
           </div>
+        )}
+      </PluginCard>
+
+      <PluginCard
+        icon={Terminal}
+        name="本地脚本执行（run_script）"
+        desc="让 AI 在本机运行命令 / 脚本（python、.bat、.sh、node 等，走系统 shell）。启用后对话 AI 会多出一个「运行脚本」工具。"
+        enabled={scriptsOn}
+        danger
+        onToggle={() => onSave({ ...settings, localScriptsEnabled: !scriptsOn })}
+      >
+        {scriptsOn && (
+          <p className="text-xs text-foreground/70 leading-relaxed">
+            ⚠️ 高危能力：开启后 AI 可在你的电脑上<b>真实执行任意命令</b>。
+            为安全起见，每条<b>新命令</b>执行前都会弹窗请你确认（相同命令在本次运行内不再重复询问）；
+            危险/不可逆操作请谨慎放行。仅在你信任该任务时开启。
+          </p>
         )}
       </PluginCard>
     </div>

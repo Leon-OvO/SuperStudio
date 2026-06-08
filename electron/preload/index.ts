@@ -65,6 +65,18 @@ const api = {
   vibeTaskToggle: (args: { taskId: string; status: 'pending' | 'done' | 'skipped' }) =>
     ipcRenderer.invoke(IPC.VIBE_TASK_TOGGLE, args),
   vibeMessageList: (requestId: string) => ipcRenderer.invoke(IPC.VIBE_MESSAGE_LIST, requestId),
+  // --- Git review layer ---
+  vibeGitStatus: (projectPath: string) => ipcRenderer.invoke(IPC.VIBE_GIT_STATUS, projectPath),
+  vibeGitDiff: (projectPath: string, path: string) => ipcRenderer.invoke(IPC.VIBE_GIT_DIFF, { projectPath, path }),
+  vibeGitStage: (projectPath: string, path: string) => ipcRenderer.invoke(IPC.VIBE_GIT_STAGE, { projectPath, path }),
+  vibeGitUnstage: (projectPath: string, path: string) => ipcRenderer.invoke(IPC.VIBE_GIT_UNSTAGE, { projectPath, path }),
+  vibeGitRevertFile: (projectPath: string, path: string) => ipcRenderer.invoke(IPC.VIBE_GIT_REVERT_FILE, { projectPath, path }),
+  vibeGitRevertHunk: (projectPath: string, path: string, hunkIndex: number) => ipcRenderer.invoke(IPC.VIBE_GIT_REVERT_HUNK, { projectPath, path, hunkIndex }),
+  vibeGitStageHunk: (projectPath: string, path: string, hunkIndex: number) => ipcRenderer.invoke(IPC.VIBE_GIT_STAGE_HUNK, { projectPath, path, hunkIndex }),
+  vibeGitCommit: (projectPath: string, message: string, paths?: string[]) => ipcRenderer.invoke(IPC.VIBE_GIT_COMMIT, { projectPath, message, paths }),
+  vibeGitLog: (projectPath: string, limit?: number) => ipcRenderer.invoke(IPC.VIBE_GIT_LOG, { projectPath, limit }),
+  vibeGitInit: (projectPath: string) => ipcRenderer.invoke(IPC.VIBE_GIT_INIT, projectPath),
+  vibeGitRollback: (projectPath: string, checkpointId?: string) => ipcRenderer.invoke(IPC.VIBE_GIT_ROLLBACK, { projectPath, checkpointId }),
   onVibeProgress: (cb: (event: unknown) => void) => {
     const listener = (_e: unknown, data: unknown) => cb(data)
     ipcRenderer.on(IPC.VIBE_PROGRESS, listener)
@@ -279,6 +291,14 @@ const api = {
   },
   respondSshExecConfirm: (id: string, ok: boolean) => ipcRenderer.send(IPC.SSH_EXEC_CONFIRM_REPLY, { id, ok }),
 
+  // --- Local script execution gate (run_script tool) ---
+  onLocalScriptConfirm: (cb: (req: { id: string; command: string; cwd: string }) => void) => {
+    const listener = (_e: unknown, req: { id: string; command: string; cwd: string }) => cb(req)
+    ipcRenderer.on(IPC.LOCAL_SCRIPT_CONFIRM, listener)
+    return () => ipcRenderer.removeListener(IPC.LOCAL_SCRIPT_CONFIRM, listener)
+  },
+  respondLocalScriptConfirm: (id: string, ok: boolean) => ipcRenderer.send(IPC.LOCAL_SCRIPT_CONFIRM_REPLY, { id, ok }),
+
   // --- Remote model.conf (managed default models from GitHub) ---
   syncModelConf: () => ipcRenderer.invoke(IPC.MODEL_CONF_SYNC) as Promise<{
     ok: boolean
@@ -339,6 +359,7 @@ const api = {
   listSkills: () => ipcRenderer.invoke(IPC.SKILLS_LIST),
   installSkill: (args: { sourceUrl: string; entry: unknown }) => ipcRenderer.invoke(IPC.SKILLS_INSTALL, args),
   importLocalSkill: (sourcePath: string) => ipcRenderer.invoke(IPC.SKILLS_IMPORT_LOCAL, sourcePath),
+  discoverLocalSkills: (projectPath?: string) => ipcRenderer.invoke(IPC.SKILLS_DISCOVER_LOCAL, { projectPath }),
   uninstallSkill: (id: string) => ipcRenderer.invoke(IPC.SKILLS_UNINSTALL, id),
   setSkillEnabled: (args: { id: string; enabled: boolean }) => ipcRenderer.invoke(IPC.SKILLS_SET_ENABLED, args),
   setSkillScenarios: (args: { id: string; scenarios: ('chat' | 'vibe' | 'video')[] }) =>
@@ -386,6 +407,13 @@ const api = {
   triggerScheduledTaskNow: (id: string) => ipcRenderer.invoke(IPC.SCHEDULER_TRIGGER_NOW, id) as Promise<{ ok: boolean }>,
   listScheduledTaskRuns: (taskId: string, limit?: number) =>
     ipcRenderer.invoke(IPC.SCHEDULER_LIST_RUNS, taskId, limit) as Promise<ScheduledTaskRun[]>,
+  previewScheduledNext: (scheduleKind: string, scheduleValue: unknown) =>
+    ipcRenderer.invoke(IPC.SCHEDULER_PREVIEW_NEXT, { scheduleKind, scheduleValue }) as Promise<{ nextFireAt: number } | { error: string }>,
+  onScheduledRunStarted: (cb: (event: { taskId: string; sessionId: string | null }) => void) => {
+    const listener = (_e: unknown, data: { taskId: string; sessionId: string | null }) => cb(data)
+    ipcRenderer.on(IPC.SCHEDULER_RUN_STARTED, listener)
+    return () => ipcRenderer.removeListener(IPC.SCHEDULER_RUN_STARTED, listener)
+  },
   onScheduledRunCompleted: (cb: (event: ScheduledRunCompletedEvent) => void) => {
     const listener = (_e: unknown, data: ScheduledRunCompletedEvent) => cb(data)
     ipcRenderer.on(IPC.SCHEDULER_RUN_COMPLETED, listener)

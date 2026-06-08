@@ -11,8 +11,10 @@ import { useConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { useInputDialog } from '../../components/ui/InputDialog'
 import type {
   InstalledSkillInfo, SkillSourceInfo, SkillRegistryEntryInfo,
-  FetchedRegistryInfo, SkillScenario
+  FetchedRegistryInfo, SkillScenario, DiscoveredSkillInfo
 } from '../../../../shared/ipc-types'
+import { useVibeStore } from '../Vibe/store'
+import { DiscoverDialog } from './DiscoverDialog'
 
 type Tab = 'installed' | 'browse' | 'sources'
 
@@ -76,9 +78,29 @@ export function SkillsPage() {
   const [keyword, setKeyword] = useState('')
   const [appliedKeyword, setAppliedKeyword] = useState('')
 
+  // Local skill auto-discovery (~/.claude/skills, project .claude/skills, custom).
+  const projectPath = useVibeStore(s => s.projectPath)
+  const [discovered, setDiscovered] = useState<DiscoveredSkillInfo[]>([])
+  const [discoverOpen, setDiscoverOpen] = useState(false)
+  const [discoverDismissed, setDiscoverDismissed] = useState(
+    () => sessionStorage.getItem('skills-discover-dismissed') === '1'
+  )
+
   const t = useT()
   const dlg = useConfirmDialog()
   const inputDlg = useInputDialog()
+
+  async function runDiscover() {
+    try {
+      const d = await window.api.discoverLocalSkills?.(projectPath ?? undefined) as DiscoveredSkillInfo[] | undefined
+      setDiscovered(d ?? [])
+    } catch { setDiscovered([]) }
+  }
+  const pendingDiscover = discovered.filter(d => !d.alreadyImported)
+  function dismissDiscover() {
+    setDiscoverDismissed(true)
+    sessionStorage.setItem('skills-discover-dismissed', '1')
+  }
 
   async function refreshInstalled() {
     const list = await window.api.listSkills()
@@ -125,6 +147,13 @@ export function SkillsPage() {
     refreshInstalled()
     refreshSources()
   }, [])
+
+  // Re-scan for importable local skills whenever the page mounts or the open
+  // project changes (project .claude/skills may differ).
+  useEffect(() => {
+    runDiscover()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectPath])
 
   // ---- installed actions ----
 
@@ -226,8 +255,35 @@ export function SkillsPage() {
   }
 
   async function importLocal() {
-    const paths = await window.api.openFileDialog({ properties: ['openDirectory', 'multiSelections'] })
+    // Allow picking a folder (bundle) OR a single SKILL.md file. On Windows a
+    // dialog can't mix openFile+openDirectory (directory wins) — single files
+    // there go through drag-and-drop, which the importer now handles correctly.
+    const paths = await window.api.openFileDialog({
+      properties: ['openFile', 'openDirectory', 'multiSelections'],
+      filters: [{ name: 'Skill', extensions: ['md'] }]
+    })
     if (paths?.length) await importLocalFromPaths(paths)
+  }
+
+  // Import the user-selected discovered skills, then refresh both lists.
+  async function importDiscovered(paths: string[]) {
+    await importLocalFromPaths(paths)
+    await runDiscover()
+  }
+
+  // "+ 添加扫描目录": pick a folder, persist it as the custom discover dir, re-scan.
+  async function addScanDir() {
+    const picked = await window.api.openFileDialog({ properties: ['openDirectory'] })
+    const dir = picked?.[0]
+    if (!dir) return
+    try {
+      const s = await window.api.getSettings()
+      await window.api.setSettings({ ...s, skillDiscoverDir: dir })
+      await runDiscover()
+      toast.success('已添加扫描目录')
+    } catch (e) {
+      toast.error('添加失败：' + (e as Error).message)
+    }
   }
 
   // ---- sources actions ----
@@ -318,6 +374,25 @@ export function SkillsPage() {
       </header>
 
       <div className="flex-1 overflow-y-auto scrollbar-prominent">
+        {tab === 'installed' && pendingDiscover.length > 0 && !discoverDismissed && (
+          <div className="max-w-4xl mx-auto px-6 pt-4">
+            <div className="flex items-center gap-2.5 rounded-lg border border-primary/30 bg-primary/[0.06] px-3 py-2 text-xs">
+              <Search size={14} className="text-primary shrink-0" />
+              <span className="flex-1 text-foreground/90">
+                在本机发现 <b className="text-primary">{pendingDiscover.length}</b> 个可导入的本地技能（来自 Claude Code / 项目）。
+              </span>
+              <button
+                onClick={() => setDiscoverOpen(true)}
+                className="shrink-0 px-2.5 py-1 rounded-md bg-primary text-primary-foreground font-medium hover:opacity-90"
+              >
+                查看并导入
+              </button>
+              <button onClick={dismissDiscover} className="shrink-0 p-0.5 rounded text-muted-foreground/60 hover:text-foreground" title="本次会话不再提示">
+                <X size={13} />
+              </button>
+            </div>
+          </div>
+        )}
         {tab === 'installed' && (
           <InstalledTab
             list={installed}
@@ -358,6 +433,14 @@ export function SkillsPage() {
 
       {dlg.element}
       {inputDlg.element}
+      {discoverOpen && (
+        <DiscoverDialog
+          discovered={discovered}
+          onClose={() => setDiscoverOpen(false)}
+          onImport={async (paths) => { setDiscoverOpen(false); await importDiscovered(paths) }}
+          onAddScanDir={addScanDir}
+        />
+      )}
     </div>
   )
 }
@@ -465,7 +548,7 @@ function InstalledTab({
       {dragOver && (
         <div className="absolute inset-2 z-20 flex items-center justify-center rounded-xl bg-primary/[0.06] border-2 border-dashed border-primary/50 pointer-events-none">
           <span className="flex items-center gap-2 text-sm font-medium text-primary">
-            <FolderOpen size={16} /> 松手导入技能文件夹（需包含 SKILL.md）
+            <FolderOpen size={16} /> 松手导入技能（文件夹需含 SKILL.md，也可拖入单个 SKILL.md 文件）
           </span>
         </div>
       )}

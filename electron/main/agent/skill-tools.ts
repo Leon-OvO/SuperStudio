@@ -108,8 +108,10 @@ export function buildSkillTools(opts: BuildSkillToolsOpts): Record<string, Tool>
   if (includeBash) {
     tools.bash = tool({
       description:
-        'Run a shell command — used to execute skill-bundled scripts. ' +
-        'Captures stdout+stderr, 120s timeout. ' +
+        'Run a shell command — used to execute skill-bundled scripts. Runs ' +
+        'through the OS shell, so python / .bat / .sh / node scripts all work ' +
+        '(e.g. `python "<basePath>/scripts/x.py"`, `node "<basePath>/x.js"`, or ' +
+        'a `.bat`/`.sh` by absolute path). Captures stdout+stderr, 120s timeout. ' +
         `Working directory: ${cwd}. Reference skill scripts by absolute path ` +
         '(use the basePath returned by load_skill).',
       parameters: z.object({
