@@ -189,6 +189,18 @@ export const IPC = {
   VIBE_TASK_LIST: 'vibe:task-list',
   VIBE_TASK_TOGGLE: 'vibe:task-toggle',
   VIBE_MESSAGE_LIST: 'vibe:message-list',
+  // ---- Git review layer (P0: status/diff/stage/revert/commit + checkpoint rollback) ----
+  VIBE_GIT_STATUS: 'vibe:git-status',
+  VIBE_GIT_DIFF: 'vibe:git-diff',
+  VIBE_GIT_STAGE: 'vibe:git-stage',
+  VIBE_GIT_UNSTAGE: 'vibe:git-unstage',
+  VIBE_GIT_REVERT_FILE: 'vibe:git-revert-file',
+  VIBE_GIT_REVERT_HUNK: 'vibe:git-revert-hunk',
+  VIBE_GIT_STAGE_HUNK: 'vibe:git-stage-hunk',
+  VIBE_GIT_COMMIT: 'vibe:git-commit',
+  VIBE_GIT_LOG: 'vibe:git-log',
+  VIBE_GIT_INIT: 'vibe:git-init',
+  VIBE_GIT_ROLLBACK: 'vibe:git-rollback',
 
   // Skills (reusable prompt + tool-whitelist bundles)
   SKILLS_LIST: 'skills:list',
@@ -204,6 +216,7 @@ export const IPC = {
   SKILLS_SET_ALLOW_SCRIPTS: 'skills:set-allow-scripts',
   SKILLS_READ_FILE: 'skills:read-file',
   SKILLS_IMPORT_LOCAL: 'skills:import-local',
+  SKILLS_DISCOVER_LOCAL: 'skills:discover-local',   // scan ~/.claude/skills etc. for importable bundles
 
   // Talent pool (encrypted bundled catalog of agent personas / "招募人才")
   TALENT_BROWSE: 'talent:browse',
@@ -228,6 +241,9 @@ export const IPC = {
   SSH_IMPORT: 'ssh:import',                       // import a MobaXterm .mxtsessions export
   SSH_EXEC_CONFIRM: 'ssh:exec-confirm',           // main → renderer: ask before a remote exec { id, host, command }
   SSH_EXEC_CONFIRM_REPLY: 'ssh:exec-confirm-reply', // renderer → main: { id, ok }
+  // Local script execution gate (run_script tool)
+  LOCAL_SCRIPT_CONFIRM: 'local-script:confirm',       // main → renderer: ask before running a local command { id, command, cwd }
+  LOCAL_SCRIPT_CONFIRM_REPLY: 'local-script:confirm-reply', // renderer → main: { id, ok }
 
   // Terminal (PTY-backed shell in Vibe page)
   TERMINAL_CREATE: 'terminal:create',
@@ -246,6 +262,8 @@ export const IPC = {
   SCHEDULER_SET_ENABLED: 'scheduler:set-enabled',
   SCHEDULER_TRIGGER_NOW: 'scheduler:trigger-now',
   SCHEDULER_LIST_RUNS: 'scheduler:list-runs',
+  SCHEDULER_PREVIEW_NEXT: 'scheduler:preview-next',     // compute the next-fire time for a (kind,value) — live form preview
+  SCHEDULER_RUN_STARTED: 'scheduler:run-started',       // main → renderer (event): a task run began
   SCHEDULER_RUN_COMPLETED: 'scheduler:run-completed',   // main → renderer (event)
   SCHEDULER_FOCUS_TASK: 'scheduler:focus-task',         // main → renderer: notification click → open task detail
 
@@ -443,6 +461,19 @@ export interface AppSettings {
    *  decomposing a 新需求 — no need to manually click 执行剩余任务. */
   vibeAutoApply: boolean
 
+  /** Timeout (ms) for the Build page's `code_bash` / `code_test` tools. Defaults
+   *  to 300_000 (5 min) so install/build/test commands fit; the old hard-coded
+   *  30s truncated them. */
+  vibeBashTimeoutMs?: number
+
+  /** Master switch for the chat agent's `run_script` tool (run local python/bat/
+   *  sh/node scripts). Default off; even when on, each run prompts for confirmation. */
+  localScriptsEnabled?: boolean
+  /** Timeout (ms) for `run_script`. Default 300_000 (5 min). */
+  localScriptsTimeoutMs?: number
+  /** Extra folder to scan for importable local skill bundles (auto-discovery). */
+  skillDiscoverDir?: string
+
   /** Launch SuperStudio at OS login. Default false — opt-in. */
   autoLaunch: boolean
   /** Register the "用 SuperStudio 打开" Windows Explorer right-click entry
@@ -624,6 +655,31 @@ export interface RecentProject {
   lastOpenedAt: number
 }
 
+// Git review layer (Vibe) — mirrors electron/main/services/git-service.ts
+export interface GitFileChange {
+  path: string
+  index: string
+  working: string
+  kind: 'M' | 'A' | 'D' | 'R' | 'C' | 'U' | '?'
+  staged: boolean
+}
+export interface GitStatusInfo {
+  gitAvailable: boolean
+  isRepo: boolean
+  root: string
+  files: GitFileChange[]
+  hasCheckpoint: boolean
+}
+export interface GitDiffInfo {
+  path: string
+  original: string
+  modified: string
+  patch: string
+  hunkCount: number
+  binary: boolean
+}
+export interface GitCommitInfo { hash: string; message: string; date: string; author: string }
+
 // Skills — reusable prompt + tool-whitelist bundles
 export type SkillScenario = 'chat' | 'vibe' | 'video'
 
@@ -675,6 +731,16 @@ export interface SkillSourceInfo {
   enabled: boolean
   builtin: boolean
   addedAt: number
+}
+
+/** A skill bundle found on disk by auto-discovery (mirrors skill-discover.ts). */
+export interface DiscoveredSkillInfo {
+  name: string
+  description: string
+  path: string
+  source: 'claude' | 'project' | 'custom'
+  fileCount: number
+  alreadyImported: boolean
 }
 
 export interface SkillRegistryEntryInfo {
@@ -776,13 +842,15 @@ export interface Session {
 }
 
 // Scheduled prompts
-export type ScheduleKind = 'daily' | 'weekly' | 'monthly'
+export type ScheduleKind = 'daily' | 'weekly' | 'monthly' | 'interval' | 'once'
 
 /** Discriminated union mirroring schedule_kind. Time is always "HH:MM" local. */
 export type ScheduleValue =
   | { time: string }                                    // daily
   | { days: number[]; time: string }                    // weekly — days: 0=Sun..6=Sat
   | { day: number; time: string }                       // monthly — day: 1..31, skip months without it
+  | { everyMinutes: number }                            // interval — every N minutes
+  | { date: string; time: string }                      // once — date: "YYYY-MM-DD" local, fires once then auto-pauses
 
 export type ScheduledRunStatus = 'success' | 'failed' | 'aborted_no_window'
 
@@ -848,6 +916,12 @@ export interface ScheduledTaskInput {
   webhookBotId?: string | null
   computerMode?: boolean
   enabled?: boolean
+}
+
+/** Event payload pushed from main to renderer when a scheduled run begins. */
+export interface ScheduledRunStartedEvent {
+  taskId: string
+  sessionId: string | null
 }
 
 /** Event payload pushed from main to renderer right after a scheduled run finishes. */

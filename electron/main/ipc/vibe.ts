@@ -59,6 +59,8 @@ import { classifyVibeIntent } from '../agent/classify'
 import { agentRunSemaphore } from '../agent/semaphore'
 import { topologicalLevels } from '../agent/pure'
 import { runShell } from '../services/shell'
+import * as gitSvc from '../services/git-service'
+import { parseTestOutput, type TestFramework } from '../agent/test-parse'
 import { getSshConnections } from '../services/store'
 import { sshExec, resolveSshConnection } from '../services/ssh-service'
 import { confirmSshExec } from '../services/ssh-guard'
@@ -260,6 +262,9 @@ function buildVibeTools(
   abortSignal: AbortSignal
 ) {
   const truncate = (s: string, n = 200) => s.length > n ? s.slice(0, n) + '…' : s
+  // Configurable shell timeout (default 5 min) so install/build/test commands
+  // fit — the old hard-coded 30s truncated them.
+  const bashTimeout = getSettings().vibeBashTimeoutMs ?? 300_000
 
   return {
     code_read: tool({
@@ -415,18 +420,61 @@ function buildVibeTools(
       }
     }),
     code_bash: tool({
-      description: 'Run shell command in project root. Captures stdout+stderr. 30s timeout. Use sparingly.',
+      description: `Run shell command in project root. Captures stdout+stderr. Timeout ${Math.round(bashTimeout / 1000)}s (configurable). Use for install / build / run; for tests prefer code_test.`,
       parameters: z.object({ command: z.string() }),
       execute: async ({ command }) => {
         emit({ type: 'tool_use', toolName: 'code_bash', toolArgsPreview: truncate(command, 80) })
         try {
-          const result = await runShell(command, projectRoot, abortSignal)
+          const result = await runShell(command, projectRoot, abortSignal, bashTimeout)
           const summary = `exit ${result.code}${result.timedOut ? ' (timed out)' : ''}, ${result.stdout.length + result.stderr.length} bytes`
           emit({ type: 'tool_result', toolName: 'code_bash', toolResultPreview: summary, isError: result.code !== 0 })
           return result
         } catch (e) {
           const msg = (e as Error).message
           emit({ type: 'tool_result', toolName: 'code_bash', toolResultPreview: msg, isError: true })
+          return { error: msg }
+        }
+      }
+    }),
+    code_test: tool({
+      description: 'Run the project test suite and get a STRUCTURED result (parses jest / vitest / pytest). Prefer this over code_bash for tests/自测/验收: on failure it returns the failing test names + messages so you can fix the code and call code_test again to verify. Auto-detects the command from package.json "test" / installed runner / pytest when `command` is omitted.',
+      parameters: z.object({
+        command: z.string().nullable().optional().describe('Test command, e.g. "npm test" or "pytest -q". Omit to auto-detect.'),
+        framework: z.enum(['jest', 'vitest', 'pytest', 'auto']).nullable().optional().describe('Force the output parser; default auto-detect.'),
+      }),
+      execute: async ({ command, framework }) => {
+        const cmd = (command && command.trim()) || detectTestCommand(projectRoot)
+        if (!cmd) {
+          const msg = '未找到测试命令（package.json 无 test 脚本、未装 vitest/jest、也无 pytest）。请显式传 command。'
+          emit({ type: 'tool_result', toolName: 'code_test', toolResultPreview: msg, isError: true })
+          return { error: msg }
+        }
+        emit({ type: 'tool_use', toolName: 'code_test', toolArgsPreview: truncate(cmd, 80) })
+        try {
+          const result = await runShell(cmd, projectRoot, abortSignal, bashTimeout)
+          const combined = `${result.stdout}\n${result.stderr}`
+          const parsed = parseTestOutput(combined, (framework ?? 'auto') as TestFramework | 'auto')
+          // Trust the parsed failure count when we have it; otherwise fall back
+          // to the process exit code (a runner we couldn't parse).
+          const ok = parsed.ok != null ? (parsed.ok && result.code === 0) : result.code === 0
+          const summary = parsed.total != null
+            ? `${ok ? '通过' : '失败'} · ${parsed.passed ?? '?'}/${parsed.total}${parsed.failed ? ` (${parsed.failed} failed)` : ''}`
+            : `exit ${result.code}${result.timedOut ? ' (timed out)' : ''}`
+          emit({ type: 'tool_result', toolName: 'code_test', toolResultPreview: summary, isError: !ok })
+          return {
+            ok,
+            command: cmd,
+            framework: parsed.framework,
+            passed: parsed.passed, failed: parsed.failed, total: parsed.total,
+            failures: parsed.failures.slice(0, 20),
+            exitCode: result.code,
+            timedOut: result.timedOut,
+            // Tail of raw output so the model can read context the parser missed.
+            output: tailLines(combined, 120),
+          }
+        } catch (e) {
+          const msg = (e as Error).message
+          emit({ type: 'tool_result', toolName: 'code_test', toolResultPreview: msg, isError: true })
           return { error: msg }
         }
       }
@@ -483,6 +531,39 @@ function buildReadOnlyVibeTools(
     code_glob: all.code_glob,
     code_grep: all.code_grep,
   }
+}
+
+/** Best-effort: figure out how to run a project's tests. Prefers an explicit
+ *  package.json "test" script, else an installed runner, else pytest. */
+function detectTestCommand(root: string): string | null {
+  try {
+    const pkgPath = path.join(root, 'package.json')
+    if (fs.existsSync(pkgPath)) {
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'))
+      const test = pkg.scripts?.test
+      if (typeof test === 'string' && test.trim() && !/no test specified/i.test(test)) {
+        return 'npm test --silent'
+      }
+      const deps = { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) }
+      if (deps.vitest) return 'npx vitest run'
+      if (deps.jest) return 'npx jest'
+    }
+  } catch { /* unreadable package.json */ }
+  if (
+    fs.existsSync(path.join(root, 'pytest.ini')) ||
+    fs.existsSync(path.join(root, 'pyproject.toml')) ||
+    fs.existsSync(path.join(root, 'tests')) ||
+    fs.existsSync(path.join(root, 'conftest.py'))
+  ) {
+    return 'pytest -q'
+  }
+  return null
+}
+
+/** Keep only the last `n` lines of a (possibly huge) test log. */
+function tailLines(s: string, n: number): string {
+  const lines = s.split('\n')
+  return lines.length <= n ? s : lines.slice(-n).join('\n')
 }
 
 function globToRegex(glob: string): RegExp {
@@ -603,7 +684,8 @@ You have FULL tools available — use them when the user's question would benefi
 - code_grep(pattern, glob?) — search file contents
 - code_write(path, content) — create / overwrite a file
 - code_edit(path, oldString, newString) — surgical replace (exact-match once)
-- code_bash(command) — shell command (30s timeout)
+- code_bash(command) — shell command (configurable timeout, default 5 min)
+- code_test(command?, framework?) — run tests; returns a structured pass/fail summary
 
 When to use tools:
 - User asks about code/structure/files → read or grep before answering
@@ -642,6 +724,7 @@ You have FULL tools:
 - code_write — create new files (rarely needed for bug fix)
 - code_edit — surgical patch (preferred — exact string replacement)
 - code_bash — run shell commands when needed (e.g. reproduce the bug, check logs)
+- code_test — run the test suite to confirm the fix (returns failing tests on failure)
 
 Workflow:
 1. Read the user's report carefully — what's broken, what's expected
@@ -677,7 +760,7 @@ Your job: produce a JSON object matching the schema you are asked for. The schem
 - **默认并行**：deps 默认留空。多个任务会被并发执行，所以只有当任务 B 真正需要任务 A 的产出/结果才能开始时，才在 B.deps 里写上 A 的 key。
 - **不要把无关任务强行串成一条线**：营销文案和后端接口通常互不依赖，就不要让它们互相 deps（否则白白丧失并行、拖慢交付）。
 - 典型真实依赖：数据模型/接口契约 → 用其的前端；设计稿/组件 → 引用它的页面；功能实现 → 针对它的自测/验收。
-- 最后的自测/验收任务（dept: qa）通常 deps 上前面所有实现类任务。
+- 最后的自测/验收任务（dept: qa）通常 deps 上前面所有实现类任务；验收时优先用 code_test 跑测试（失败会返回具体失败用例，便于修复后重跑）。
 - 严禁循环依赖（A 依赖 B、B 又依赖 A）。
 
 Guidelines:
@@ -724,12 +807,15 @@ Tools available (paths must stay inside the project root):
 - code_edit(path, oldString, newString) — replace exact string (must match exactly once)
 - code_glob(pattern) — list files matching glob
 - code_grep(pattern, glob?) — search file contents
-- code_bash(command) — run shell command (30s timeout)
+- code_bash(command) — run shell command (configurable timeout, default 5 min)
+- code_test(command?, framework?) — run tests; returns failing test names+messages on failure
 
 Workflow:
 1. Use code_glob/code_grep/code_read to explore relevant files first
 2. Make the change (prefer code_edit for surgical edits; code_write only for new files)
-3. Briefly confirm what you did
+3. If this task is 自测/验收 (or you changed testable code), run code_test — if it
+   fails, fix the code and run code_test again until it passes
+4. Briefly confirm what you did
 
 Do NOT:
 - Add unrequested features or "improvements"
@@ -887,9 +973,12 @@ export function vibeHandlers(): void {
     if (fs.existsSync(full)) throw new Error(`已存在同名文件夹：${full}`)
     fs.mkdirSync(full, { recursive: true })
     fs.writeFileSync(path.join(full, 'index.html'), BLANK_HTML(name), 'utf8')
+    fs.writeFileSync(path.join(full, '.gitignore'), 'node_modules/\ndist/\n.DS_Store\n', 'utf8')
     addRecentProject(full)
     registerApprovedRoot(full)
     upsertProject(full)
+    // Init a repo so the change-review / checkpoint features work out of the box.
+    try { await gitSvc.gitInit(full) } catch { /* best-effort; non-fatal */ }
     return { path: full }
   })
 
@@ -1008,6 +1097,38 @@ export function vibeHandlers(): void {
     return listMessages(requestId).map(toMessageInfo)
   })
 
+  // ----- Git review layer -------------------------------------------------
+  // All operate on a project ROOT and reuse the project allow-list. They
+  // delegate to git-service (which itself degrades gracefully when git is
+  // missing or the folder isn't a repo).
+  function assertGitRoot(projectPath: string): string {
+    const abs = path.resolve(projectPath)
+    if (!isAllowedProjectPath(abs)) throw new Error('Project path not allowed')
+    return abs
+  }
+  ipcMain.handle(IPC.VIBE_GIT_STATUS, async (_e, projectPath: string) =>
+    gitSvc.gitStatus(assertGitRoot(projectPath)))
+  ipcMain.handle(IPC.VIBE_GIT_DIFF, async (_e, a: { projectPath: string; path: string }) =>
+    gitSvc.gitDiffFile(assertGitRoot(a.projectPath), a.path))
+  ipcMain.handle(IPC.VIBE_GIT_STAGE, async (_e, a: { projectPath: string; path: string }) =>
+    gitSvc.stageFile(assertGitRoot(a.projectPath), a.path))
+  ipcMain.handle(IPC.VIBE_GIT_UNSTAGE, async (_e, a: { projectPath: string; path: string }) =>
+    gitSvc.unstageFile(assertGitRoot(a.projectPath), a.path))
+  ipcMain.handle(IPC.VIBE_GIT_REVERT_FILE, async (_e, a: { projectPath: string; path: string }) =>
+    gitSvc.revertFile(assertGitRoot(a.projectPath), a.path))
+  ipcMain.handle(IPC.VIBE_GIT_REVERT_HUNK, async (_e, a: { projectPath: string; path: string; hunkIndex: number }) =>
+    gitSvc.revertHunk(assertGitRoot(a.projectPath), a.path, a.hunkIndex))
+  ipcMain.handle(IPC.VIBE_GIT_STAGE_HUNK, async (_e, a: { projectPath: string; path: string; hunkIndex: number }) =>
+    gitSvc.stageHunk(assertGitRoot(a.projectPath), a.path, a.hunkIndex))
+  ipcMain.handle(IPC.VIBE_GIT_COMMIT, async (_e, a: { projectPath: string; message: string; paths?: string[] }) =>
+    gitSvc.commit(assertGitRoot(a.projectPath), a.message, a.paths))
+  ipcMain.handle(IPC.VIBE_GIT_LOG, async (_e, a: { projectPath: string; limit?: number }) =>
+    gitSvc.gitLog(assertGitRoot(a.projectPath), a.limit ?? 20))
+  ipcMain.handle(IPC.VIBE_GIT_INIT, async (_e, projectPath: string) =>
+    gitSvc.gitInit(assertGitRoot(projectPath)))
+  ipcMain.handle(IPC.VIBE_GIT_ROLLBACK, async (_e, a: { projectPath: string; checkpointId?: string }) =>
+    gitSvc.rollbackToCheckpoint(assertGitRoot(a.projectPath), a.checkpointId))
+
   // ----- CHAT / EXPLORE / BUGFIX (free-form agent loops) -----------------
   // All three follow the same shape: one request per conversation, optional
   // resume via requestId, streamed text + tool events persisted to vibe_messages.
@@ -1071,6 +1192,12 @@ export function vibeHandlers(): void {
 
     ;(async () => {
       try {
+        // Snapshot the worktree before a writing run so "roll back to before
+        // this run" can undo everything (read-only explore skips it). Silent —
+        // the 「更改」 panel surfaces the rollback affordance.
+        if (opts.kind !== 'explore') {
+          await gitSvc.createCheckpoint(projectPath).catch(() => null)
+        }
         const model = createLLMClient(modelInfo.providerId, modelInfo.modelId)
         const toolEmit = (e: Omit<VibeProgressEvent, 'projectPath'>) => {
           emit(e)
@@ -1726,6 +1853,10 @@ export function vibeHandlers(): void {
 
     ;(async () => {
       try {
+        // Snapshot the worktree before the (parallel, autonomous) apply run so
+        // the whole batch can be rolled back from the 「更改」 panel.
+        const cp = await gitSvc.createCheckpoint(projectPath).catch(() => null)
+        if (cp) emit({ type: 'system', text: '已创建改动前快照（可在「更改」面板一键回滚）' })
         updateRequestStatus(request.id, 'applying')
 
         // Re-apply semantics: retry the whole unfinished branch as a unit. Reset

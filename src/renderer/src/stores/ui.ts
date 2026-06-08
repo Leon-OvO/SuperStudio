@@ -16,7 +16,7 @@ export const SKIN_IS_DARK: Record<Skin, boolean> = {
   terminal: true,
   dwork: false
 }
-type VibeActivity = 'requests' | 'files'
+type VibeActivity = 'requests' | 'files' | 'changes'
 
 export interface PendingChatAttachment {
   name: string

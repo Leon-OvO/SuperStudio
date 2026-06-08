@@ -8,6 +8,7 @@ import { NoProjectLanding } from './NoProjectLanding'
 import { ActivityBar } from './ActivityBar'
 import { RequestList } from './Sidebar/RequestList'
 import { FileExplorer } from './Sidebar/FileExplorer'
+import { ChangesList } from './Sidebar/ChangesList'
 import { EditorTabs } from './Editor/EditorTabs'
 import { PreviewPane } from './PreviewPane'
 import { NewProjectDialog } from './NewProjectDialog'
@@ -17,7 +18,7 @@ import { SidebarResizer } from './SidebarResizer'
 import type {
   FileTreeNode, RecentProject, VibeProgressEvent,
   VibeRequestInfo, VibeTaskInfo, VibeMessageInfo, VibeProjectInfo, ProviderConfig,
-  ShellOpenTarget
+  ShellOpenTarget, GitStatusInfo
 } from '../../../../shared/ipc-types'
 
 // The Vibe IDE itself (editor / terminal / requests). Wrapped by WorkbenchPage
@@ -33,6 +34,10 @@ export function VibeWorkbench() {
   const setVibeSidebarOpen = useUIStore(u => u.setVibeSidebarOpen)
   const [newProjectOpen, setNewProjectOpen] = useState(false)
   const [providerLabel, setProviderLabel] = useState<string | null>(null)
+  // Git review layer: changed-files status (for the 「更改」 panel) + a token that
+  // forces open diff tabs to re-fetch after a run / mutation completes.
+  const [gitStatus, setGitStatus] = useState<GitStatusInfo | null>(null)
+  const [gitRefreshToken, setGitRefreshToken] = useState(0)
 
   // Resolve providerId+modelId to "ProviderName · modelId" for the status bar.
   // Pulls the provider list once and re-renders the label whenever the
@@ -111,6 +116,12 @@ export function VibeWorkbench() {
     if (treeRefreshTimer.current) clearTimeout(treeRefreshTimer.current)
     treeRefreshTimer.current = setTimeout(() => { refreshTree() }, 400)
   }
+  // Same debounce for the git "更改" panel — the agent can touch many files fast.
+  const gitRefreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  function scheduleGitRefresh() {
+    if (gitRefreshTimer.current) clearTimeout(gitRefreshTimer.current)
+    gitRefreshTimer.current = setTimeout(() => { loadGitStatus() }, 500)
+  }
 
   useEffect(() => {
     const offProgress = window.api.onVibeProgress?.((data: unknown) => {
@@ -124,6 +135,7 @@ export function VibeWorkbench() {
         (e.toolName === 'code_write' || e.toolName === 'code_edit')
       ) {
         scheduleTreeRefresh()
+        scheduleGitRefresh()
       }
       // PROPOSE done — open the new request as a tab
       if (e.type === 'request_ready' && e.requestId) {
@@ -145,6 +157,7 @@ export function VibeWorkbench() {
       s.setStreamingTask(null)
       await refreshTree()
       await loadRequests()
+      void gitRefreshAll()
       if (d.requestId) {
         await loadMessagesAndTasks(d.requestId)
         // Auto-apply takes over the same requestId — open its tab so user sees execution live
@@ -167,6 +180,13 @@ export function VibeWorkbench() {
       offError?.()
     }
   }, [s.projectPath, s.activeRequestId])
+
+  // Load git status when the user opens the 「更改」 panel (it's otherwise kept
+  // fresh by the write / done hooks above).
+  useEffect(() => {
+    if (vibeActivity === 'changes' && s.projectPath) loadGitStatus()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vibeActivity, s.projectPath])
 
   // ───────────── Helpers ─────────────
   // NOTE: these read projectPath from the store via getState() rather than the
@@ -193,6 +213,55 @@ export function VibeWorkbench() {
     s.setRequests(rs ?? [])
   }
 
+  // ── Git review layer ───────────────────────────────────────────────────
+  async function loadGitStatus() {
+    const pp = useVibeStore.getState().projectPath
+    if (!pp) { setGitStatus(null); s.setChangesCount(0); return }
+    try {
+      const st = await window.api.vibeGitStatus?.(pp) as GitStatusInfo | undefined
+      setGitStatus(st ?? null)
+      s.setChangesCount(st?.files.length ?? 0)
+    } catch {
+      setGitStatus(null); s.setChangesCount(0)
+    }
+  }
+  /** Refresh the changes panel + force open diff tabs to reload. */
+  async function gitRefreshAll() {
+    await loadGitStatus()
+    setGitRefreshToken(t => t + 1)
+  }
+  /** Called by the diff editor after its own stage/revert — refresh sidebar,
+   *  tree and preview (a revert changes files on disk) without double-reloading
+   *  the diff tab (it already reloaded itself). */
+  async function handleGitMutate() {
+    await loadGitStatus()
+    await refreshTree()
+    s.bumpPreview()
+  }
+  function handleOpenDiff(filePath: string) { s.openDiffTab(filePath) }
+  async function handleGitStage(p: string) { await window.api.vibeGitStage?.(s.projectPath!, p); await loadGitStatus() }
+  async function handleGitUnstage(p: string) { await window.api.vibeGitUnstage?.(s.projectPath!, p); await loadGitStatus() }
+  async function handleGitRevertFile(p: string) {
+    const r = await window.api.vibeGitRevertFile?.(s.projectPath!, p) as { error?: string } | undefined
+    if (r?.error) s.setErrorBanner('还原失败：' + r.error)
+    await gitRefreshAll(); await refreshTree(); s.bumpPreview()
+  }
+  async function handleGitCommit(message: string) {
+    const r = await window.api.vibeGitCommit?.(s.projectPath!, message) as { error?: string } | undefined
+    if (r?.error) s.setErrorBanner('提交失败：' + r.error)
+    await gitRefreshAll()
+  }
+  async function handleGitRollback() {
+    const r = await window.api.vibeGitRollback?.(s.projectPath!) as { error?: string } | undefined
+    if (r?.error) s.setErrorBanner('回滚失败：' + r.error)
+    await gitRefreshAll(); await refreshTree(); s.bumpPreview()
+  }
+  async function handleGitInit() {
+    const r = await window.api.vibeGitInit?.(s.projectPath!) as { error?: string } | undefined
+    if (r?.error) s.setErrorBanner('启用版本快照失败：' + r.error)
+    await gitRefreshAll()
+  }
+
   async function loadMessagesAndTasks(requestId: string) {
     const [ts, ms] = await Promise.all([
       window.api.vibeTaskList?.(requestId) as Promise<VibeTaskInfo[] | undefined>,
@@ -215,6 +284,7 @@ export function VibeWorkbench() {
     }
     await refreshTree()
     await loadRequests()
+    await loadGitStatus()
   }
 
   // OS shell: Explorer right-click "用 SuperStudio 打开" parks the requested
@@ -556,6 +626,19 @@ export function VibeWorkbench() {
                   onRefresh={refreshTree}
                 />
               )}
+              {vibeActivity === 'changes' && (
+                <ChangesList
+                  status={gitStatus}
+                  onOpenDiff={handleOpenDiff}
+                  onStage={handleGitStage}
+                  onUnstage={handleGitUnstage}
+                  onRevertFile={handleGitRevertFile}
+                  onCommit={handleGitCommit}
+                  onRollback={handleGitRollback}
+                  onInit={handleGitInit}
+                  onRefresh={loadGitStatus}
+                />
+              )}
             </div>
             <SidebarResizer />
           </>
@@ -605,6 +688,8 @@ export function VibeWorkbench() {
               onToggleTaskStatus={handleToggleTaskStatus}
               onReassignTask={handleReassignTask}
               hasProject={!!s.projectPath}
+              gitRefreshToken={gitRefreshToken}
+              onGitMutate={handleGitMutate}
             />
           </div>
           {s.showTerminal && s.projectPath && (

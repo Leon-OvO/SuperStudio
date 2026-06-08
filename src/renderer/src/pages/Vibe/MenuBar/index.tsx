@@ -38,11 +38,11 @@ interface Props {
 
   // View menu state
   sidebarOpen: boolean
-  sidebarActivity: 'requests' | 'files'
+  sidebarActivity: 'requests' | 'files' | 'changes'
   showTerminal: boolean
   showPreview: boolean
   onToggleSidebar: () => void
-  onShowActivity: (a: 'requests' | 'files') => void
+  onShowActivity: (a: 'requests' | 'files' | 'changes') => void
   onToggleTerminal: () => void
   onTogglePreview: () => void
 

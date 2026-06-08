@@ -1,7 +1,8 @@
 import { useState } from 'react'
-import { X, FileText, Circle, ListChecks, Save } from 'lucide-react'
+import { X, FileText, Circle, ListChecks, Save, GitCompare } from 'lucide-react'
 import { cn } from '../../../lib/utils'
 import { MonacoFileEditor } from './MonacoFileEditor'
+import { MonacoDiffEditor } from './MonacoDiffEditor'
 import { RequestTabContent } from '../Workflow/RequestTabContent'
 import { EmptyStateHero } from './EmptyStateHero'
 import { TabContextMenu } from './TabContextMenu'
@@ -44,6 +45,10 @@ interface Props {
   onReassignTask: (taskId: string, employeeId: string | null) => void
 
   hasProject: boolean
+
+  // For diff tabs (git review)
+  gitRefreshToken?: number
+  onGitMutate?: () => void
 }
 
 export function EditorTabs({
@@ -52,9 +57,19 @@ export function EditorTabs({
   onCloseOthers, onCloseToRight, onCloseAll, onSaveAll, onReorder, onRevealInSidebar, projectPath,
   requests, tasks, messages, streamingTaskId, running,
   onRun, onApply, onStop, onToggleTaskStatus, onReassignTask,
-  hasProject
+  hasProject, gitRefreshToken, onGitMutate
 }: Props) {
   const active = tabs.find(t => t.key === activeTabKey)
+
+  // Tab label / title / icon — unified across file / request / diff kinds.
+  const tabLabel = (tab: OpenTab): string =>
+    tab.kind === 'file' ? (tab.path.split(/[\\/]/).pop() ?? tab.path)
+      : tab.kind === 'diff' ? (tab.path.split(/[\\/]/).pop() ?? tab.path)
+        : (requests.find(r => r.id === tab.requestId)?.title ?? '对话')
+  const tabTitle = (tab: OpenTab): string =>
+    tab.kind === 'file' ? tab.path
+      : tab.kind === 'diff' ? `差异: ${tab.path}`
+        : `对话: ${tabLabel(tab)}`
   const [ctxMenu, setCtxMenu] = useState<{ tab: OpenTab; x: number; y: number } | null>(null)
   // Drag-and-drop state.
   //   draggingKey  — the tab currently being dragged (used to fade it).
@@ -175,9 +190,7 @@ export function EditorTabs({
           <div className="flex items-stretch border-b border-border bg-card/50 shrink-0">
             <div className="flex items-stretch overflow-x-auto flex-1 min-w-0" {...stripDropProps()}>
               {tabs.map(tab => {
-                const label = tab.kind === 'file'
-                  ? tab.path.split(/[\\/]/).pop() ?? tab.path
-                  : (requests.find(r => r.id === tab.requestId)?.title ?? '对话')
+                const label = tabLabel(tab)
                 const isDirty = tab.kind === 'file' && tab.dirty
                 const showLeftBar = dropTarget?.key === tab.key && dropTarget.side === 'left'
                 const showRightBar = dropTarget?.key === tab.key && dropTarget.side === 'right'
@@ -193,13 +206,10 @@ export function EditorTabs({
                       'text-muted-foreground hover:text-foreground hover:bg-accent/30',
                       isDragging && 'opacity-50'
                     )}
-                    title={tab.kind === 'file' ? tab.path : `对话: ${label}`}
+                    title={tabTitle(tab)}
                   >
                     {showLeftBar && <DropIndicator side="left" />}
-                    {tab.kind === 'file'
-                      ? <FileText size={11} className="shrink-0 text-muted-foreground/70" />
-                      : <ListChecks size={11} className="shrink-0 text-primary" />
-                    }
+                    <TabIcon tab={tab} />
                     <span className={cn('truncate max-w-[200px]', isDirty && 'italic')}>{label}</span>
                     {isDirty
                       ? <Circle size={6} className="fill-primary text-primary shrink-0" />
@@ -240,9 +250,7 @@ export function EditorTabs({
        <div className="flex items-stretch overflow-x-auto flex-1 min-w-0" {...stripDropProps()}>
         {tabs.map(tab => {
           const isActive = tab.key === activeTabKey
-          const label = tab.kind === 'file'
-            ? tab.path.split(/[\\/]/).pop() ?? tab.path
-            : (requests.find(r => r.id === tab.requestId)?.title ?? '对话')
+          const label = tabLabel(tab)
           const isDirty = tab.kind === 'file' && tab.dirty
           const showLeftBar = dropTarget?.key === tab.key && dropTarget.side === 'left'
           const showRightBar = dropTarget?.key === tab.key && dropTarget.side === 'right'
@@ -260,13 +268,10 @@ export function EditorTabs({
                   : 'text-muted-foreground hover:text-foreground hover:bg-accent/30',
                 isDragging && 'opacity-50'
               )}
-              title={tab.kind === 'file' ? tab.path : `对话: ${label}`}
+              title={tabTitle(tab)}
             >
               {showLeftBar && <DropIndicator side="left" />}
-              {tab.kind === 'file'
-                ? <FileText size={11} className="shrink-0 text-muted-foreground/70" />
-                : <ListChecks size={11} className="shrink-0 text-primary" />
-              }
+              <TabIcon tab={tab} />
               <span className={cn('truncate max-w-[200px]', isDirty && 'italic')}>
                 {label}
               </span>
@@ -327,10 +332,25 @@ export function EditorTabs({
             onToggleTaskStatus={onToggleTaskStatus}
             onReassignTask={onReassignTask}
           />
+        ) : active?.kind === 'diff' ? (
+          <MonacoDiffEditor
+            projectPath={projectPath ?? ''}
+            filePath={active.path}
+            isDark={isDark}
+            refreshToken={gitRefreshToken}
+            onAfterMutate={onGitMutate}
+          />
         ) : null}
       </div>
     </div>
   )
+}
+
+/** Tab icon by kind: file / git-diff / request. */
+function TabIcon({ tab }: { tab: OpenTab }) {
+  if (tab.kind === 'file') return <FileText size={11} className="shrink-0 text-muted-foreground/70" />
+  if (tab.kind === 'diff') return <GitCompare size={11} className="shrink-0 text-amber-500" />
+  return <ListChecks size={11} className="shrink-0 text-primary" />
 }
 
 /**

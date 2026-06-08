@@ -8,9 +8,11 @@ import type {
 export type OpenTab =
   | { kind: 'file'; key: string; path: string; content: string; diskContent: string; dirty: boolean }
   | { kind: 'request'; key: string; requestId: string }
+  | { kind: 'diff'; key: string; path: string }
 
 export function fileTabKey(p: string): string { return `file:${p}` }
 export function requestTabKey(id: string): string { return `request:${id}` }
+export function diffTabKey(p: string): string { return `diff:${p}` }
 
 interface VibeState {
   // Current project
@@ -43,6 +45,8 @@ interface VibeState {
   previewToken: number
   running: 'propose' | 'apply' | 'explore' | 'chat' | 'bugfix' | null
   errorBanner: string | null
+  /** Number of changed files (git status) — drives the 「更改」 activity-bar badge. */
+  changesCount: number
 
   // Status bar fields — populated by MonacoFileEditor on focus / cursor move.
   cursorLine: number
@@ -68,10 +72,14 @@ interface VibeState {
   applyProgressEvent: (e: VibeProgressEvent) => void
   setRunning: (r: 'propose' | 'apply' | 'explore' | 'chat' | 'bugfix' | null) => void
   setErrorBanner: (s: string | null) => void
+  setChangesCount: (n: number) => void
 
   // Tab mutators
   openFileTab: (path: string, content: string) => void
   openRequestTab: (requestId: string) => void
+  /** Open (or focus) a read-only diff tab for `path` — content is fetched by the
+   *  diff editor itself via the git IPC. */
+  openDiffTab: (path: string) => void
   switchTab: (key: string) => void
   closeTab: (key: string) => void
   /** Close every tab except the one identified by `key`. VS Code parity. */
@@ -127,6 +135,7 @@ const initial = {
   previewToken: 0,
   running: null as 'propose' | 'apply' | 'explore' | 'chat' | 'bugfix' | null,
   errorBanner: null as string | null,
+  changesCount: 0,
   cursorLine: 0,
   cursorCol: 0,
   cursorLanguage: '',
@@ -214,6 +223,7 @@ export const useVibeStore = create<VibeState>((set, get) => ({
 
   setRunning: (r) => set({ running: r }),
   setErrorBanner: (s) => set({ errorBanner: s }),
+  setChangesCount: (n) => set({ changesCount: n }),
 
   openFileTab: (filePath, content) => {
     const s = get()
@@ -227,6 +237,15 @@ export const useVibeStore = create<VibeState>((set, get) => ({
       kind: 'file', key, path: filePath,
       content, diskContent: content, dirty: false
     }
+    set({ openTabs: [...s.openTabs, newTab], activeTabKey: key })
+  },
+
+  openDiffTab: (filePath) => {
+    const s = get()
+    const key = diffTabKey(filePath)
+    const existing = s.openTabs.find(t => t.key === key)
+    if (existing) { set({ activeTabKey: key }); return }
+    const newTab: OpenTab = { kind: 'diff', key, path: filePath }
     set({ openTabs: [...s.openTabs, newTab], activeTabKey: key })
   },
 
