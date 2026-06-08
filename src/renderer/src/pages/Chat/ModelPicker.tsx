@@ -93,6 +93,7 @@ export function ModelPicker({ providerId, model, onChange, autoRoute }: Props & 
       options={options}
       placement="top"
       popoverWidth={280}
+      searchable
       title="切换提供商和模型"
       trigger={({ open }) => (
         <span

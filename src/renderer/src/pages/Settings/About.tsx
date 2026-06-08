@@ -1,9 +1,14 @@
 import { useEffect, useState } from 'react'
-import { Loader2, RefreshCw, Zap, ExternalLink, Database, Download, Upload, FileWarning, Trash2, Copy, RotateCcw } from 'lucide-react'
+import { Loader2, RefreshCw, Zap, ExternalLink, Database, Download, Upload, FileWarning, Trash2, Copy, RotateCcw, FlaskConical } from 'lucide-react'
 import { useT } from '../../lib/i18n'
 import { useConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { toast } from '../../components/ui/Toast'
 import { BRAND_LINKS } from '../../../../shared/brand-links'
+
+// Dev mode: electron-vite serves the renderer from http://localhost in dev
+// (loadURL) and from file:// in packaged builds (loadFile). Used to gate
+// dev-only tools so they never ship.
+const IS_DEV = typeof location !== 'undefined' && location.protocol === 'http:'
 
 interface Props {
   onExportData: () => void
@@ -146,6 +151,8 @@ export function About({
       <ErrorLogSection />
 
       <ResetSection />
+
+      {IS_DEV && <DevSection />}
     </div>
   )
 }
@@ -269,6 +276,48 @@ function ResetSection() {
   )
 }
 
+
+/** Dev-only helper to repeatedly test the first-run onboarding. Hidden in
+ *  packaged builds (import.meta.env.DEV is false). Clears providers + settings
+ *  but PRESERVES the data directory, so onboarding lands straight on the
+ *  API-key/model screen without re-doing (or relocating) the data folder. */
+function DevSection() {
+  const [busy, setBusy] = useState(false)
+
+  async function redoOnboarding() {
+    setBusy(true)
+    try {
+      const cur = await window.api.getSettings() as { dataDirectory?: string }
+      await window.api.resetAllSettings?.()
+      // restore the data dir so the data-directory step stays skipped (and the
+      // dev DB isn't relocated); only the API-key + model step re-appears.
+      if (cur?.dataDirectory) await window.api.setSettings({ dataDirectory: cur.dataDirectory })
+      window.location.reload()
+    } catch (e) {
+      toast.error('重走引导失败：' + (e as Error).message)
+      setBusy(false)
+    }
+  }
+
+  return (
+    <section className="space-y-3 border-t border-border pt-5">
+      <h3 className="text-sm font-medium flex items-center gap-1.5 text-amber-600">
+        <FlaskConical size={13} /> 开发工具
+      </h3>
+      <p className="text-xs text-muted-foreground/80 leading-relaxed">
+        仅开发模式可见(打包版本不显示)。「重走引导」会清空所有提供商与应用设置(<strong className="text-foreground">保留数据目录、不影响对话记录</strong>)并重载,用于反复测试首次安装引导的「填 API Key + 选模型」一屏。
+      </p>
+      <button
+        onClick={redoOnboarding}
+        disabled={busy}
+        className="flex items-center gap-2 px-4 py-2 rounded-md border border-amber-500/40 text-amber-600 text-sm hover:bg-amber-500/5 transition-colors disabled:opacity-50"
+      >
+        {busy ? <Loader2 size={14} className="animate-spin" /> : <RotateCcw size={14} />}
+        重走引导（重置 Provider + 设置并重载）
+      </button>
+    </section>
+  )
+}
 
 interface LogEntry {
   ts: number

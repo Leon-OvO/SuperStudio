@@ -1,0 +1,59 @@
+import fs from 'fs'
+import path from 'path'
+import { app } from 'electron'
+
+/**
+ * Auto-pick a data directory for DWork's first run so the user isn't asked to
+ * choose one during onboarding. Strategy: among the available drive roots, pick
+ * the one with the MOST free space and create `<root>/DWorkData` there. Falls
+ * back through other drives on permission/read-only failure, and finally to the
+ * app's userData dir so startup never breaks.
+ */
+
+const FOLDER = 'DWorkData'
+
+function freeBytes(p: string): number {
+  try {
+    const s = fs.statfsSync(p) as { bavail: number; bsize: number }
+    return Number(s.bavail) * Number(s.bsize)
+  } catch {
+    return -1
+  }
+}
+
+/** Candidate filesystem roots to host the data folder. */
+function candidateRoots(): string[] {
+  if (process.platform === 'win32') {
+    const roots: string[] = []
+    for (let c = 'C'.charCodeAt(0); c <= 'Z'.charCodeAt(0); c++) {
+      const r = `${String.fromCharCode(c)}:\\`
+      try { if (fs.existsSync(r)) roots.push(r) } catch { /* ignore */ }
+    }
+    return roots
+  }
+  // mac/linux: prefer the user's home, then the fs root.
+  return [app.getPath('home'), '/']
+}
+
+/** Pick the freest writable drive root and ensure `<root>/DWorkData` exists. */
+export function autoPickDataDir(): string {
+  const ranked = candidateRoots()
+    .map(root => ({ root, free: freeBytes(root) }))
+    .filter(d => d.free >= 0)
+    .sort((a, b) => b.free - a.free)
+
+  for (const d of ranked) {
+    const target = path.join(d.root, FOLDER)
+    try {
+      fs.mkdirSync(target, { recursive: true })
+      // Confirm it's actually writable (some roots reject writes despite mkdir).
+      fs.accessSync(target, fs.constants.W_OK)
+      return target
+    } catch { /* try the next drive */ }
+  }
+
+  // Last resort: app userData (always writable).
+  const fallback = path.join(app.getPath('userData'), FOLDER)
+  fs.mkdirSync(fallback, { recursive: true })
+  return fallback
+}

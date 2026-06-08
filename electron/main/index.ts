@@ -405,9 +405,23 @@ app.whenReady().then(async () => {
   }
 
   // Read data directory from store (electron-store is independent of SQLite, safe to read early)
-  const { getSettings: readSettings } = await import('./services/store')
+  const { getSettings: readSettings, saveSettings: writeSettings } = await import('./services/store')
   const startupSettings = readSettings()
-  await initDb(startupSettings.dataDirectory || undefined)
+  let dataDir = startupSettings.dataDirectory
+  // DWork: auto-provision the data directory on first run (freest drive root →
+  // <root>/DWorkData) so onboarding never asks the user to choose one. Done
+  // BEFORE initDb so the DB lands in the right place with no restart needed.
+  if (!dataDir && FLAVOR === 'dwork') {
+    try {
+      const { autoPickDataDir } = await import('./services/data-dir')
+      dataDir = autoPickDataDir()
+      writeSettings({ dataDirectory: dataDir })
+      console.log('[startup] DWork auto data directory:', dataDir)
+    } catch (e) {
+      console.warn('[startup] auto data dir failed, falling back to userData:', (e as Error).message)
+    }
+  }
+  await initDb(dataDir || undefined)
 
   // Inject proprietary seam implementations (remote control, talent pool,
   // supercode account) BEFORE registering IPC — the auth provider's handlers are
