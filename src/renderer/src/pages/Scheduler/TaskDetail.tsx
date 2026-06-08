@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { ArrowLeft, Play, Pencil, Trash2, CheckCircle2, XCircle, MoonStar, MessageSquare, History, Info } from 'lucide-react'
+import { Fragment, useEffect, useState } from 'react'
+import { ArrowLeft, Play, Pencil, Trash2, CheckCircle2, XCircle, MoonStar, MessageSquare, History, Info, Loader2, ChevronRight } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { toast } from '../../components/ui/Toast'
 import { useConfirmDialog } from '../../components/ui/ConfirmDialog'
@@ -25,6 +25,8 @@ export function TaskDetail({ taskId, onBack, onEdit }: Props) {
   const [loading, setLoading] = useState(true)
   const [tab, setTab] = useState<Tab>('chat')
   const [editorSrc, setEditorSrc] = useState<string | null>(null)
+  const [isRunning, setIsRunning] = useState(false)
+  const [expandedRunId, setExpandedRunId] = useState<string | null>(null)
   const clearUnread = useScheduledNotifications(s => s.clear)
   const dlg = useConfirmDialog()
 
@@ -54,22 +56,28 @@ export function TaskDetail({ taskId, onBack, onEdit }: Props) {
   useEffect(() => { clearUnread(taskId) }, [taskId, clearUnread])
 
   useEffect(() => {
-    const off = window.api.onScheduledRunCompleted(e => {
+    const offStart = window.api.onScheduledRunStarted?.(e => {
+      if (e.taskId === taskId) setIsRunning(true)
+    })
+    const offDone = window.api.onScheduledRunCompleted(e => {
       if (e.taskId === taskId) {
+        setIsRunning(false)
         refresh()
         // Re-clear because the just-arrived run would mark us unread again.
         clearUnread(taskId)
       }
     })
-    return off
+    return () => { offStart?.(); offDone() }
   }, [taskId, clearUnread])
 
   async function handleTrigger() {
     if (!task) return
+    setIsRunning(true) // optimistic — cleared by RUN_COMPLETED (or on error)
     try {
       await window.api.triggerScheduledTaskNow(task.id)
       toast.success('已触发')
     } catch (e) {
+      setIsRunning(false)
       toast.error('触发失败：' + ((e as Error).message ?? '未知错误'))
     }
   }
@@ -112,7 +120,11 @@ export function TaskDetail({ taskId, onBack, onEdit }: Props) {
             <p className="text-[11px] text-muted-foreground mt-0.5">
               {scheduleLabel(task.scheduleKind, task.scheduleValue)}
               {' · '}
-              {task.enabled ? `下次：${formatTimestamp(task.nextFireAt)}` : '已暂停'}
+              {isRunning
+                ? '运行中…'
+                : task.enabled
+                  ? `下次：${formatTimestamp(task.nextFireAt)}`
+                  : (task.scheduleKind === 'once' && task.lastFiredAt ? '已完成（仅一次）' : '已暂停')}
             </p>
           </div>
         </div>
@@ -168,6 +180,12 @@ export function TaskDetail({ taskId, onBack, onEdit }: Props) {
             // MessageList's root uses flex-1 — give it a flex column parent so
             // it actually stretches and its inner overflow-y-auto can scroll.
             <div className="flex flex-col h-full min-h-0">
+              {isRunning && (
+                <div className="shrink-0 flex items-center gap-2 px-6 py-2 bg-primary/[0.06] border-b border-primary/20 text-xs text-primary">
+                  <Loader2 size={13} className="animate-spin" />
+                  正在运行…完成后结果会自动出现在下面。
+                </div>
+              )}
               <MessageList
                 messages={messages}
                 sessionId={task.sessionId}
@@ -193,6 +211,7 @@ export function TaskDetail({ taskId, onBack, onEdit }: Props) {
                 <table className="w-full text-xs">
                   <thead className="bg-muted/40 text-muted-foreground">
                     <tr>
+                      <th className="text-left px-3 py-2 font-medium w-5"></th>
                       <th className="text-left px-3 py-2 font-medium">时间</th>
                       <th className="text-left px-3 py-2 font-medium">状态</th>
                       <th className="text-right px-3 py-2 font-medium">耗时</th>
@@ -200,20 +219,44 @@ export function TaskDetail({ taskId, onBack, onEdit }: Props) {
                     </tr>
                   </thead>
                   <tbody>
-                    {runs.map(run => (
-                      <tr key={run.id} className="border-t border-border">
-                        <td className="px-3 py-2 tabular-nums text-foreground/90">{formatTimestamp(run.firedAt)}</td>
-                        <td className="px-3 py-2">
-                          <StatusBadge status={run.status} error={run.error} />
-                        </td>
-                        <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
-                          {run.durationMs != null ? `${(run.durationMs / 1000).toFixed(1)}s` : '—'}
-                        </td>
-                        <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
-                          {run.cost != null ? formatCostUsd(run.cost) : '—'}
-                        </td>
-                      </tr>
-                    ))}
+                    {runs.map(run => {
+                      const jumpable = run.status === 'success' && !!run.messageId
+                      const expandable = run.status === 'failed' && !!run.error
+                      const actionable = jumpable || expandable
+                      const expanded = expandedRunId === run.id
+                      return (
+                        <Fragment key={run.id}>
+                          <tr
+                            className={cn('border-t border-border', actionable && 'cursor-pointer hover:bg-muted/30')}
+                            onClick={() => {
+                              if (jumpable) setTab('chat')
+                              else if (expandable) setExpandedRunId(prev => prev === run.id ? null : run.id)
+                            }}
+                            title={jumpable ? '查看本次结果' : expandable ? '点击展开错误' : undefined}
+                          >
+                            <td className="px-3 py-2 text-muted-foreground/60">
+                              {actionable && <ChevronRight size={12} className={cn('transition-transform', expanded && 'rotate-90')} />}
+                            </td>
+                            <td className="px-3 py-2 tabular-nums text-foreground/90">{formatTimestamp(run.firedAt)}</td>
+                            <td className="px-3 py-2"><StatusBadge status={run.status} error={run.error} /></td>
+                            <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
+                              {run.durationMs != null ? `${(run.durationMs / 1000).toFixed(1)}s` : '—'}
+                            </td>
+                            <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
+                              {run.cost != null ? formatCostUsd(run.cost) : '—'}
+                            </td>
+                          </tr>
+                          {expandable && expanded && (
+                            <tr className="border-t border-border bg-destructive/[0.04]">
+                              <td />
+                              <td colSpan={4} className="px-3 py-2 text-[11px] text-destructive whitespace-pre-wrap break-all leading-relaxed">
+                                {run.error}
+                              </td>
+                            </tr>
+                          )}
+                        </Fragment>
+                      )
+                    })}
                   </tbody>
                 </table>
               </div>

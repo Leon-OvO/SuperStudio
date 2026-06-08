@@ -10,6 +10,7 @@ import {
   type ScheduledRunStatus,
   type ScheduleKind,
   type ScheduleValue,
+  type ScheduledRunStartedEvent,
   type ScheduledRunCompletedEvent
 } from '../../../src/shared/ipc-types'
 
@@ -124,6 +125,11 @@ function catchUpOnStartup(): void {
       executeTask(row, { isManual: false }).catch(e =>
         console.error('[scheduler] catch-up executeTask threw for', row.id, e)
       )
+    } else if (row.schedule_kind === 'once') {
+      // One-shot missed by >24h → just disable; rescheduling a "once" would
+      // re-yield the same past instant and fire on every tick.
+      console.log('[scheduler] disabling missed (>24h) one-shot task', row.id)
+      dbRun(`UPDATE scheduled_tasks SET enabled = 0, updated_at = ? WHERE id = ?`, [now, row.id])
     } else {
       // > 24h overdue → skip, just push forward to the next future occurrence
       // so the user doesn't get an avalanche after returning from vacation.
@@ -146,6 +152,15 @@ function catchUpOnStartup(): void {
 async function executeTask(row: TaskRow, opts: { isManual: boolean }): Promise<void> {
   if (inFlight.has(row.id)) return
   inFlight.add(row.id)
+  // Tell the renderer a run started so the list / detail can show a live
+  // "running" indicator (the renderer otherwise only learns about completion).
+  try {
+    const w = BrowserWindow.getAllWindows()[0]
+    if (w && !w.isDestroyed()) {
+      const payload: ScheduledRunStartedEvent = { taskId: row.id, sessionId: row.session_id }
+      w.webContents.send(IPC.SCHEDULER_RUN_STARTED, payload)
+    }
+  } catch { /* best-effort */ }
   const startedAt = Date.now()
   let status: ScheduledRunStatus = 'success'
   let errorText: string | null = null
@@ -229,22 +244,33 @@ async function executeTask(row: TaskRow, opts: { isManual: boolean }): Promise<v
     // Update task counters / schedule (skip for manual runs).
     if (!opts.isManual) {
       try {
-        const next = computeNextFireAt(
-          row.schedule_kind as ScheduleKind,
-          JSON.parse(row.schedule_value) as ScheduleValue,
-          new Date(finishedAt)
-        )
         const newConsec = status === 'success' ? 0 : row.consecutive_failures + 1
-        const shouldPause = newConsec >= FAILURE_THRESHOLD
-        dbRun(
-          `UPDATE scheduled_tasks
-           SET last_fired_at = ?, next_fire_at = ?, consecutive_failures = ?, enabled = ?, updated_at = ?
-           WHERE id = ?`,
-          [finishedAt, next, newConsec, shouldPause ? 0 : row.enabled, finishedAt, row.id]
-        )
-        if (shouldPause) {
-          console.warn('[scheduler] auto-pausing task after 5 failures:', row.id)
-          notifyAutoPause(row.name)
+        if (row.schedule_kind === 'once') {
+          // One-shot: it fired (success OR failure) → auto-pause, never reschedule
+          // (computeNextFireAt would return the same past instant → infinite loop).
+          dbRun(
+            `UPDATE scheduled_tasks
+             SET last_fired_at = ?, consecutive_failures = ?, enabled = 0, updated_at = ?
+             WHERE id = ?`,
+            [finishedAt, newConsec, finishedAt, row.id]
+          )
+        } else {
+          const next = computeNextFireAt(
+            row.schedule_kind as ScheduleKind,
+            JSON.parse(row.schedule_value) as ScheduleValue,
+            new Date(finishedAt)
+          )
+          const shouldPause = newConsec >= FAILURE_THRESHOLD
+          dbRun(
+            `UPDATE scheduled_tasks
+             SET last_fired_at = ?, next_fire_at = ?, consecutive_failures = ?, enabled = ?, updated_at = ?
+             WHERE id = ?`,
+            [finishedAt, next, newConsec, shouldPause ? 0 : row.enabled, finishedAt, row.id]
+          )
+          if (shouldPause) {
+            console.warn('[scheduler] auto-pausing task after 5 failures:', row.id)
+            notifyAutoPause(row.name)
+          }
         }
       } catch (e) {
         console.error('[scheduler] failed to advance next_fire_at:', e)

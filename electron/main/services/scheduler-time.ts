@@ -67,7 +67,33 @@ export function computeNextFireAt(
     throw new Error('monthly schedule: no occurrence found in 24 months (bug)')
   }
 
+  if (kind === 'interval') {
+    const v = value as { everyMinutes: number }
+    const n = Number(v.everyMinutes)
+    if (!Number.isFinite(n) || n < 1) throw new Error(`interval everyMinutes must be >= 1, got ${v.everyMinutes}`)
+    // Anchored to `from` (now / last run / catch-up baseline) → fire N minutes later.
+    return from.getTime() + Math.round(n) * 60_000
+  }
+
+  if (kind === 'once') {
+    const v = value as { date: string; time: string }
+    // Fixed wall-clock instant in local time. May be in the past relative to
+    // `from` (the caller — create/update — rejects past instants; the scheduler
+    // fires then auto-pauses).
+    return parseLocalDateTime(v.date, v.time)
+  }
+
   throw new Error(`unknown schedule kind: ${kind}`)
+}
+
+/** Parse "YYYY-MM-DD" + "HH:MM" as a LOCAL-time unix-ms instant. */
+function parseLocalDateTime(date: string, time: string): number {
+  const dm = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date?.trim() ?? '')
+  if (!dm) throw new Error(`invalid date format, expected "YYYY-MM-DD", got "${date}"`)
+  const [h, mi] = parseHHMM(time)
+  const y = Number(dm[1]); const mo = Number(dm[2]); const d = Number(dm[3])
+  if (mo < 1 || mo > 12 || d < 1 || d > 31) throw new Error(`invalid date: ${date}`)
+  return new Date(y, mo - 1, d, h, mi, 0, 0).getTime()
 }
 
 function parseHHMM(time: string): [number, number] {
@@ -94,11 +120,10 @@ function nextOccurrenceForToday(from: Date, h: number, m: number, allowEqual: bo
 export function validateScheduleValue(kind: ScheduleKind, value: unknown): string | null {
   if (typeof value !== 'object' || value === null) return 'schedule_value must be an object'
   const v = value as Record<string, unknown>
-  if (typeof v.time !== 'string' || !/^(\d{1,2}):(\d{2})$/.test(v.time)) {
-    return 'time must be "HH:MM"'
-  }
-  if (kind === 'daily') return null
+  const timeOk = typeof v.time === 'string' && /^(\d{1,2}):(\d{2})$/.test(v.time)
+  if (kind === 'daily') return timeOk ? null : 'time must be "HH:MM"'
   if (kind === 'weekly') {
+    if (!timeOk) return 'time must be "HH:MM"'
     if (!Array.isArray(v.days)) return 'weekly.days must be an array'
     if (v.days.length === 0) return 'weekly.days requires at least one day'
     for (const d of v.days) {
@@ -109,9 +134,21 @@ export function validateScheduleValue(kind: ScheduleKind, value: unknown): strin
     return null
   }
   if (kind === 'monthly') {
+    if (!timeOk) return 'time must be "HH:MM"'
     if (!Number.isInteger(v.day) || (v.day as number) < 1 || (v.day as number) > 31) {
       return 'monthly.day must be 1..31'
     }
+    return null
+  }
+  if (kind === 'interval') {
+    const n = v.everyMinutes
+    if (!Number.isInteger(n) || (n as number) < 1) return 'interval.everyMinutes must be an integer >= 1'
+    if ((n as number) > 7 * 24 * 60) return 'interval.everyMinutes too large (max 7 days)'
+    return null
+  }
+  if (kind === 'once') {
+    if (!timeOk) return 'time must be "HH:MM"'
+    if (typeof v.date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(v.date)) return 'once.date must be "YYYY-MM-DD"'
     return null
   }
   return `unknown schedule kind: ${kind}`

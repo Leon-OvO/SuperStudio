@@ -71,6 +71,7 @@ export function schedulerHandlers(): void {
       throw new Error(`最多 ${TASK_LIMIT} 个任务。删除或暂停一些再试。`)
     }
     validateInput(input)
+    assertOnceInFuture(input, Date.now())
 
     const id = randomUUID()
     const now = Date.now()
@@ -107,6 +108,9 @@ export function schedulerHandlers(): void {
     // Recompute next_fire_at if either kind or value changed.
     const kindChanged = existing.schedule_kind !== input.scheduleKind
     const valueChanged = existing.schedule_value !== JSON.stringify(input.scheduleValue)
+    // Only re-validate "once in the future" when the schedule actually changed —
+    // editing the prompt of a past one-shot shouldn't be blocked.
+    if (kindChanged || valueChanged) assertOnceInFuture(input, now)
     const next = (kindChanged || valueChanged)
       ? computeNextFireAt(input.scheduleKind, input.scheduleValue, new Date(now))
       : existing.next_fire_at
@@ -182,6 +186,18 @@ export function schedulerHandlers(): void {
     return { ok: true }
   })
 
+  // Live "next fire" preview for the form — reuses the exact main-side math so
+  // the displayed time always matches what will actually happen.
+  ipcMain.handle(IPC.SCHEDULER_PREVIEW_NEXT, (_e, args: { scheduleKind: ScheduleKind; scheduleValue: ScheduleValue }) => {
+    const err = validateScheduleValue(args.scheduleKind, args.scheduleValue)
+    if (err) return { error: err }
+    try {
+      return { nextFireAt: computeNextFireAt(args.scheduleKind, args.scheduleValue, new Date()) }
+    } catch (e) {
+      return { error: (e as Error).message }
+    }
+  })
+
   ipcMain.handle(IPC.SCHEDULER_LIST_RUNS, (_e, taskId: string, limit = 30) => {
     const rows = dbAll<RunRow>(
       `SELECT id, task_id, fired_at, status, duration_ms, cost, error, message_id
@@ -210,6 +226,13 @@ function validateInput(input: ScheduledTaskInput): void {
   if (err) throw new Error('schedule_value 不合法：' + err)
 }
 
+/** A "once" task must be scheduled for the future (with a tiny grace window). */
+function assertOnceInFuture(input: ScheduledTaskInput, now: number): void {
+  if (input.scheduleKind !== 'once') return
+  const at = computeNextFireAt('once', input.scheduleValue, new Date(now))
+  if (at <= now - 60_000) throw new Error('「仅一次」的时间必须是将来的时间')
+}
+
 function createDedicatedSession(taskName: string): string {
   const id = randomUUID()
   const now = Date.now()
@@ -228,7 +251,7 @@ function sessionExists(sessionId: string): boolean {
 function loadRowOrThrow(id: string): TaskRow {
   const row = dbGet<TaskRow>(
     `SELECT id, name, prompt, schedule_kind, schedule_value, session_id, provider_id, model,
-            webhook_bot_id, enabled, last_fired_at, next_fire_at, consecutive_failures, created_at, updated_at
+            webhook_bot_id, computer_mode, enabled, last_fired_at, next_fire_at, consecutive_failures, created_at, updated_at
      FROM scheduled_tasks WHERE id = ?`,
     [id]
   )

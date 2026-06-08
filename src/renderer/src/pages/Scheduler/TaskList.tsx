@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from 'react'
-import { Plus, Play, Pencil, Trash2, CheckCircle2, XCircle, MoonStar, Clock, Bot } from 'lucide-react'
+import { Plus, Play, Pencil, Trash2, CheckCircle2, XCircle, MoonStar, Clock, Bot, Loader2 } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { toast } from '../../components/ui/Toast'
 import { useConfirmDialog } from '../../components/ui/ConfirmDialog'
@@ -21,6 +21,7 @@ export function TaskList({ onEdit, onOpenDetail, onOpenBots }: Props) {
   const [tasks, setTasks] = useState<ScheduledTask[]>([])
   const [loading, setLoading] = useState(true)
   const [lastStatus, setLastStatus] = useState<Record<string, string>>({})
+  const [running, setRunning] = useState<Record<string, boolean>>({})
   const unreadMap = useScheduledNotifications(s => s.unread)
   const clearUnread = useScheduledNotifications(s => s.clear)
   const dlg = useConfirmDialog()
@@ -46,10 +47,17 @@ export function TaskList({ onEdit, onOpenDetail, onOpenBots }: Props) {
 
   useEffect(() => { refresh() }, [])
 
-  // Refresh after a scheduled run completes so badges update live.
+  // Live run state: a "running" indicator while a task is mid-run, and a refresh
+  // when it completes so the status badge + next-fire update immediately.
   useEffect(() => {
-    const off = window.api.onScheduledRunCompleted(() => { refresh() })
-    return off
+    const offStart = window.api.onScheduledRunStarted?.(e => {
+      setRunning(r => ({ ...r, [e.taskId]: true }))
+    })
+    const offDone = window.api.onScheduledRunCompleted(e => {
+      setRunning(r => ({ ...r, [e.taskId]: false }))
+      refresh()
+    })
+    return () => { offStart?.(); offDone() }
   }, [])
 
   async function handleToggle(task: ScheduledTask) {
@@ -79,10 +87,14 @@ export function TaskList({ onEdit, onOpenDetail, onOpenBots }: Props) {
   }
 
   async function handleTriggerNow(task: ScheduledTask) {
+    // Optimistic "running" so the user gets instant feedback even before the
+    // RUN_STARTED event lands; cleared by RUN_COMPLETED (or on error).
+    setRunning(r => ({ ...r, [task.id]: true }))
     try {
       await window.api.triggerScheduledTaskNow(task.id)
       toast.success(`已触发「${task.name}」`)
     } catch (e) {
+      setRunning(r => ({ ...r, [task.id]: false }))
       toast.error('触发失败：' + ((e as Error).message ?? '未知错误'))
     }
   }
@@ -112,11 +124,10 @@ export function TaskList({ onEdit, onOpenDetail, onOpenBots }: Props) {
           </button>
           <button
             onClick={() => atLimit ? toast.error('最多 20 个任务。删除或暂停一些再试。') : onEdit(null)}
-            disabled={atLimit}
             className={cn(
               'flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all',
               atLimit
-                ? 'bg-muted text-muted-foreground cursor-not-allowed'
+                ? 'bg-muted text-muted-foreground hover:bg-muted/80'
                 : 'bg-primary text-primary-foreground hover:opacity-90 active:scale-95 shadow-sm'
             )}
             title={atLimit ? '最多 20 个任务。删除或暂停一些再试。' : '新建任务'}
@@ -140,6 +151,7 @@ export function TaskList({ onEdit, onOpenDetail, onOpenBots }: Props) {
                 key={task.id}
                 task={task}
                 lastStatus={lastStatus[task.id]}
+                running={!!running[task.id]}
                 unread={!!unreadMap[task.id]}
                 onToggle={() => handleToggle(task)}
                 onDelete={() => handleDelete(task)}
@@ -158,10 +170,11 @@ export function TaskList({ onEdit, onOpenDetail, onOpenBots }: Props) {
 }
 
 function TaskCard({
-  task, lastStatus, unread, onToggle, onDelete, onEdit, onOpen, onTriggerNow
+  task, lastStatus, running, unread, onToggle, onDelete, onEdit, onOpen, onTriggerNow
 }: {
   task: ScheduledTask
   lastStatus?: string
+  running: boolean
   unread: boolean
   onToggle: () => void
   onDelete: () => void
@@ -170,23 +183,28 @@ function TaskCard({
   onTriggerNow: () => void
 }) {
   const t = useT()
+  // A disabled one-shot that already fired = "done", not "paused".
+  const onceDone = !task.enabled && task.scheduleKind === 'once' && !!task.lastFiredAt
   return (
     <div
       className={cn(
         'group flex items-center gap-3 px-4 py-3 rounded-lg border bg-card hover:border-primary/50 transition-all cursor-pointer',
-        !task.enabled && 'opacity-60'
+        !task.enabled && !running && 'opacity-60',
+        running && 'border-primary/60'
       )}
       onClick={onOpen}
     >
       {/* Status indicator */}
       <div className="shrink-0">
-        {!task.enabled
-          ? <MoonStar size={18} className="text-muted-foreground" />
-          : lastStatus === 'failed'
-            ? <XCircle size={18} className="text-destructive" />
-            : lastStatus === 'success'
-              ? <CheckCircle2 size={18} className="text-emerald-500" />
-              : <Clock size={18} className="text-primary" />
+        {running
+          ? <Loader2 size={18} className="text-primary animate-spin" />
+          : !task.enabled
+            ? (onceDone ? <CheckCircle2 size={18} className="text-emerald-500" /> : <MoonStar size={18} className="text-muted-foreground" />)
+            : lastStatus === 'failed'
+              ? <XCircle size={18} className="text-destructive" />
+              : lastStatus === 'success'
+                ? <CheckCircle2 size={18} className="text-emerald-500" />
+                : <Clock size={18} className="text-primary" />
         }
       </div>
 
@@ -200,8 +218,13 @@ function TaskCard({
               title="有未读的执行结果"
             />
           )}
-          {!task.enabled && (
-            <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground">{t('sched.paused')}</span>
+          {running && (
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-primary/15 text-primary">运行中…</span>
+          )}
+          {!task.enabled && !running && (
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground">
+              {onceDone ? '已完成' : t('sched.paused')}
+            </span>
           )}
           {task.consecutiveFailures >= 3 && task.enabled && (
             <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-600 dark:text-amber-400">
