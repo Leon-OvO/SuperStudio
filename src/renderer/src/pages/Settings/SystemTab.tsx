@@ -5,6 +5,7 @@ import { cn } from '../../lib/utils'
 import { toast } from '../../components/ui/Toast'
 import { Select } from '../../components/ui/Select'
 import { useUIStore, type Skin } from '../../stores/ui'
+import { IS_DWORK } from '@shared/flavor'
 import { GlobalSettings } from './GlobalSettings'
 import { AutoModelTab } from './AutoModelTab'
 
@@ -646,6 +647,17 @@ const SKIN_OPTIONS: SkinOption[] = [
   }
 ]
 
+// DWork's exclusive default skin — white-dominant with #FF8921 orange accent.
+// Only offered in the DWork flavor; prepended so it's the first/primary card.
+const DWORK_SKIN: SkinOption = {
+  id: 'dwork',
+  label: 'DWork',
+  description: 'DWork 默认 — 纯白主调 + 暖橙 (#FF8921) 点缀，简洁明亮。',
+  swatches: { bg: 'hsl(0 0% 100%)', surface: 'hsl(28 44% 97%)', primary: 'hsl(28 100% 56%)', accent: 'hsl(28 100% 92%)' },
+  base: 'light'
+}
+const VISIBLE_SKINS: SkinOption[] = IS_DWORK ? [DWORK_SKIN, ...SKIN_OPTIONS] : SKIN_OPTIONS
+
 function SkinSection(): JSX.Element {
   const skin = useUIStore(u => u.skin)
   const setSkin = useUIStore(u => u.setSkin)
@@ -660,7 +672,7 @@ function SkinSection(): JSX.Element {
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        {SKIN_OPTIONS.map(opt => (
+        {VISIBLE_SKINS.map(opt => (
           <SkinCard
             key={opt.id}
             option={opt}

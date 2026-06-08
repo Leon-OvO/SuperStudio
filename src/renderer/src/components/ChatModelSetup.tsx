@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Sparkles, Loader2, RefreshCw, Info, MessageSquareText } from 'lucide-react'
+import { Zap, Loader2, RefreshCw, Info, MessageSquareText } from 'lucide-react'
 import type { AppSettings, ProviderConfig } from '../../../shared/ipc-types'
 import { Select } from './ui/Select'
 import { BRAND_LINKS } from '@shared/brand-links'
@@ -96,7 +96,7 @@ export function ChatModelSetup({ onDone }: Props): JSX.Element {
       <div className="w-[520px] space-y-6">
         <div className="text-center space-y-2">
           <div className="w-12 h-12 mx-auto rounded-xl bg-primary flex items-center justify-center">
-            <Sparkles size={20} className="text-primary-foreground" />
+            <Zap size={20} className="text-primary-foreground" fill="currentColor" />
           </div>
           <h1 className="text-xl font-semibold">选择默认对话模型</h1>
           <p className="text-sm text-muted-foreground">

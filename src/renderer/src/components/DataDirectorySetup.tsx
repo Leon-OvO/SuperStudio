@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { FolderOpen, Loader2, Info, Sparkles } from 'lucide-react'
+import { FolderOpen, Loader2, Info, Zap } from 'lucide-react'
 import type { AppSettings } from '../../../shared/ipc-types'
 
 interface Props {
@@ -48,7 +48,7 @@ export function DataDirectorySetup({ onDone }: Props): JSX.Element {
       <div className="w-[480px] space-y-6">
         <div className="text-center space-y-2">
           <div className="w-12 h-12 mx-auto rounded-xl bg-primary flex items-center justify-center">
-            <Sparkles size={20} className="text-primary-foreground" />
+            <Zap size={20} className="text-primary-foreground" fill="currentColor" />
           </div>
           <h1 className="text-xl font-semibold">设置数据目录</h1>
           <p className="text-sm text-muted-foreground">

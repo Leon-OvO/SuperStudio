@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Minus, Square, X, Maximize2, Sun, Moon, Languages } from 'lucide-react'
+import { Minus, Square, X, Maximize2, Sun, Moon, Languages, Zap } from 'lucide-react'
 import { TopBarUser } from './TopBarUser'
 import { useUIStore } from '../../stores/ui'
 import { useT, setLanguage, useLanguage } from '../../lib/i18n'
@@ -28,7 +28,7 @@ export function TitleBar() {
       {isWin ? (
         <div className="w-[52px] shrink-0 flex items-center justify-center">
           <div className="w-4 h-4 rounded-md bg-primary flex items-center justify-center shadow-sm">
-            <span className="text-primary-foreground font-bold text-[9px] leading-none">{BRAND.productName.charAt(0).toUpperCase()}</span>
+            <Zap size={11} strokeWidth={1.5} fill="currentColor" className="text-white" />
           </div>
         </div>
       ) : (

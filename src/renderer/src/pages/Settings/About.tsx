@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Loader2, RefreshCw, Sparkles, ExternalLink, Database, Download, Upload, FileWarning, Trash2, Copy, RotateCcw } from 'lucide-react'
+import { Loader2, RefreshCw, Zap, ExternalLink, Database, Download, Upload, FileWarning, Trash2, Copy, RotateCcw } from 'lucide-react'
 import { useT } from '../../lib/i18n'
 import { useConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { toast } from '../../components/ui/Toast'
@@ -31,7 +31,7 @@ export function About({
     <div className="space-y-6 max-w-2xl">
       <header className="flex items-center gap-3">
         <div className="w-10 h-10 rounded-xl bg-primary flex items-center justify-center shadow-md shadow-primary/30">
-          <Sparkles size={18} className="text-primary-foreground" />
+          <Zap size={18} className="text-primary-foreground" fill="currentColor" />
         </div>
         <div>
           <h2 className="text-lg font-semibold">{t('about.title')}</h2>

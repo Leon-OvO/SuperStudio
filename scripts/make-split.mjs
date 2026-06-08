@@ -271,6 +271,17 @@ for (const file of tracked) {
     coreCount++
     continue
   }
+  // tray.ts ships an INLINE base64 tray icon — swap it for the DWork lightning.
+  if (file === 'electron/main/services/tray.ts') {
+    let t = fs.readFileSync(file, 'utf8')
+    if (fs.existsSync('build/dwork/tray.b64.txt')) {
+      const b64 = fs.readFileSync('build/dwork/tray.b64.txt', 'utf8').trim()
+      t = t.replace(/const TRAY_ICON_PNG_BASE64 =[\s\S]*?\n\nexport /, `const TRAY_ICON_PNG_BASE64 = '${b64}'\n\nexport `)
+    }
+    writeFile(CORE, file, scrubText(t))
+    coreCount++
+    continue
+  }
   // Scrub text files by extension, plus a few extensionless text files (LICENSE).
   if (SCAN_EXT.has(path.extname(file)) || path.basename(file) === 'LICENSE') {
     const raw = fs.readFileSync(file, 'utf8')
@@ -290,6 +301,14 @@ let talentShipped = false
 if (fs.existsSync(talentEnc)) {
   copyFile(CORE, talentEnc)
   talentShipped = true
+}
+
+// Make the DWork lightning icons the canonical build/icon.* in core, so the
+// runtime window-icon path (build/icon.png) and any build/icon.* reference use
+// DWork's — not just the electron-builder win.icon (build/dwork/icon.ico).
+for (const f of ['icon.png', 'icon.ico', 'tray.png', 'tray.b64.txt']) {
+  const src = `build/dwork/${f}`
+  if (fs.existsSync(src)) writeFile(CORE, `build/${f}`, fs.readFileSync(src))
 }
 
 // .gitignore additions for core. Strip the upstream `talent-pool.enc` ignore so
