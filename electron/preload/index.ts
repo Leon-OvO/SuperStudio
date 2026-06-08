@@ -266,6 +266,19 @@ const api = {
   setEmployeeDept: (args: { id: string; dept: string }) => ipcRenderer.invoke(IPC.EMP_SET_DEPT, args),
   companySpendRange: (fromMs: number, toMs: number): Promise<Array<{ id: string; cost: number; tokensIn: number; tokensOut: number }>> => ipcRenderer.invoke(IPC.EMP_SPEND_RANGE, { fromMs, toMs }),
 
+  // --- SSH connections (Agent remote execution) ---
+  sshListConnections: () => ipcRenderer.invoke(IPC.SSH_LIST),
+  sshSaveConnection: (conn: unknown) => ipcRenderer.invoke(IPC.SSH_SAVE, conn),
+  sshDeleteConnection: (id: string) => ipcRenderer.invoke(IPC.SSH_DELETE, id),
+  sshTestConnection: (conn: unknown) => ipcRenderer.invoke(IPC.SSH_TEST, conn) as Promise<{ ok: boolean; error?: string }>,
+  sshImportConnections: (filePath: string) => ipcRenderer.invoke(IPC.SSH_IMPORT, filePath) as Promise<{ imported: number; duplicates: number; skipped: number; missingKey: number }>,
+  onSshExecConfirm: (cb: (req: { id: string; host: string; command: string }) => void) => {
+    const listener = (_e: unknown, req: { id: string; host: string; command: string }) => cb(req)
+    ipcRenderer.on(IPC.SSH_EXEC_CONFIRM, listener)
+    return () => ipcRenderer.removeListener(IPC.SSH_EXEC_CONFIRM, listener)
+  },
+  respondSshExecConfirm: (id: string, ok: boolean) => ipcRenderer.send(IPC.SSH_EXEC_CONFIRM_REPLY, { id, ok }),
+
   // --- Remote model.conf (managed default models from GitHub) ---
   syncModelConf: () => ipcRenderer.invoke(IPC.MODEL_CONF_SYNC) as Promise<{
     ok: boolean

@@ -59,6 +59,9 @@ import { classifyVibeIntent } from '../agent/classify'
 import { agentRunSemaphore } from '../agent/semaphore'
 import { topologicalLevels } from '../agent/pure'
 import { runShell } from '../services/shell'
+import { getSshConnections } from '../services/store'
+import { sshExec, resolveSshConnection } from '../services/ssh-service'
+import { confirmSshExec } from '../services/ssh-guard'
 import { computeCost } from '../services/model-pricing'
 
 /**
@@ -424,6 +427,40 @@ function buildVibeTools(
         } catch (e) {
           const msg = (e as Error).message
           emit({ type: 'tool_result', toolName: 'code_bash', toolResultPreview: msg, isError: true })
+          return { error: msg }
+        }
+      }
+    }),
+    ssh_exec: tool({
+      description: (() => {
+        const conns = getSshConnections()
+        const list = conns.length ? conns.map(c => `${c.name}(${c.username}@${c.host})`).join('、') : '（无，请先在「设置 → SSH 连接」添加）'
+        return '在【预配置的 SSH 连接】上的远程服务器执行一条 shell 命令，返回 {host,exitCode,stdout,stderr}。' +
+          `可用连接：${list}。connection 传连接名（或 id）。凭据本机加密保管,不进上下文;命令独立执行(不留 cwd,需切目录用 cd x && cmd);某连接首次执行会弹窗请用户确认。`
+      })(),
+      parameters: z.object({
+        connection: z.string().describe('已配置的 SSH 连接名称或 id'),
+        command: z.string().describe('要在远程服务器上执行的 shell 命令'),
+      }),
+      execute: async ({ connection, command }) => {
+        const { conn, error: resolveErr } = resolveSshConnection(connection, getSshConnections())
+        if (!conn) {
+          emit({ type: 'tool_result', toolName: 'ssh_exec', toolResultPreview: '无此连接', isError: true })
+          return { error: resolveErr }
+        }
+        emit({ type: 'tool_use', toolName: 'ssh_exec', toolArgsPreview: `${conn.name}: ${truncate(command, 80)}` })
+        const allowed = await confirmSshExec(conn.id, conn.host, command)
+        if (!allowed) {
+          emit({ type: 'tool_result', toolName: 'ssh_exec', toolResultPreview: '用户未授权', isError: true })
+          return { error: `已取消：用户未授权在「${conn.name}」上执行该命令。` }
+        }
+        try {
+          const r = await sshExec(conn.id, command, abortSignal)
+          emit({ type: 'tool_result', toolName: 'ssh_exec', toolResultPreview: `exit ${r.code}`, isError: r.code !== 0 })
+          return { host: conn.host, exitCode: r.code, stdout: r.stdout, stderr: r.stderr, timedOut: r.timedOut }
+        } catch (e) {
+          const msg = (e as Error).message
+          emit({ type: 'tool_result', toolName: 'ssh_exec', toolResultPreview: msg, isError: true })
           return { error: msg }
         }
       }

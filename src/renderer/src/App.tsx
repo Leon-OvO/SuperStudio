@@ -69,6 +69,22 @@ export default function App() {
     return () => { off?.() }
   }, [cuConfirm])
 
+  // SSH remote execution: first command on a connection asks for confirmation
+  // (host + command shown). Approving trusts that connection for this app run.
+  useEffect(() => {
+    const off = window.api.onSshExecConfirm?.(async (req) => {
+      const ok = await cuConfirm.confirm({
+        title: '允许 Agent 在远程服务器执行命令？',
+        message: `主机：${req.host}\n命令：${req.command}\n\n仅在你信任该任务时允许。批准后本次运行内该连接的后续命令将自动放行。`,
+        tone: 'danger',
+        confirmLabel: '允许执行',
+        cancelLabel: '取消',
+      })
+      window.api.respondSshExecConfirm?.(req.id, ok)
+    })
+    return () => { off?.() }
+  }, [cuConfirm])
+
   // Long-term memory captured anywhere (chat archive / company delivery / manual)
   // → surface a single app-wide toast so "越用越聪明" is visible regardless of page.
   useEffect(() => {

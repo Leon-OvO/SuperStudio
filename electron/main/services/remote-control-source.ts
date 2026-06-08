@@ -30,6 +30,12 @@ export interface UpdateInfo {
   releaseUrl: string
   /** Set when the check failed — UI can show a non-toast error. */
   error?: string
+  /** DWork-only: true when the update should be treated as required
+   *  (manifest.mandatory === true, or the running version is below minVersion). */
+  mandatory?: boolean
+  /** DWork-only: minimum supported version from the manifest; clients below it
+   *  must update. Null when the manifest doesn't declare one. */
+  minVersion?: string | null
 }
 
 export interface RemoteControlSource {
@@ -54,6 +60,38 @@ function compareVersions(a: string, b: string): number {
   return 0
 }
 
+/** The JSON shape the updater understands. Served either as a standalone JSON
+ *  file or embedded in the DWork update page as a
+ *  `<script type="application/json" id="dwork-update-manifest">` block. */
+interface UpdateManifest {
+  version?: string
+  /** Alias accepted for `version`. */
+  latestVersion?: string
+  name?: string
+  notes?: string
+  body?: string
+  mandatory?: boolean
+  minVersion?: string
+  releaseUrl?: string
+}
+
+/** Pull the update manifest out of a fetched body. Prefers an embedded
+ *  `<script type="application/json" id="dwork-update-manifest">` block — so the
+ *  customer-facing landing page can double as the update endpoint — and falls
+ *  back to treating the whole body as JSON (a plain version file). Returns null
+ *  when neither parses, so the caller reports "up to date" instead of throwing. */
+function extractManifest(text: string): UpdateManifest | null {
+  const m = text.match(
+    /<script[^>]*id=["']dwork-update-manifest["'][^>]*>([\s\S]*?)<\/script>/i
+  )
+  const raw = (m ? m[1] : text).trim()
+  try {
+    return JSON.parse(raw) as UpdateManifest
+  } catch {
+    return null
+  }
+}
+
 /** Deliverable default: no remote model.conf; detect updates by comparing the
  *  running version against the `version` field of BRAND.updateVersionUrl (a raw
  *  package.json), and open BRAND.updateReleasesUrl for download. When the brand
@@ -73,14 +111,36 @@ const brandRemoteControlSource: RemoteControlSource = {
       remoteName: null,
       body: null,
       releaseUrl: BRAND.updateReleasesUrl || '',
+      mandatory: false,
+      minVersion: null,
     }
     try {
       const res = await fetch(verUrl, { headers: { 'Cache-Control': 'no-cache' } })
       if (!res.ok) return base
-      const data = JSON.parse(await res.text()) as { version?: string }
-      const remoteVersion = (data.version || '').trim() || null
+      const manifest = extractManifest(await res.text())
+      if (!manifest) return base
+      const remoteVersion = (manifest.version || manifest.latestVersion || '').trim() || null
       if (!remoteVersion) return base
-      return { ...base, remoteVersion, hasUpdate: compareVersions(remoteVersion, currentVersion) > 0 }
+      const minVersion = (manifest.minVersion || '').trim() || null
+      // Fields the client judges on: "behind" when remote > current; "mandatory"
+      // when the manifest flags it or the running build is below minVersion.
+      const hasUpdate = compareVersions(remoteVersion, currentVersion) > 0
+      const mandatory =
+        manifest.mandatory === true ||
+        (minVersion ? compareVersions(minVersion, currentVersion) > 0 : false)
+      return {
+        ...base,
+        remoteVersion,
+        remoteName: manifest.name ?? null,
+        body: manifest.notes ?? manifest.body ?? null,
+        releaseUrl:
+          (typeof manifest.releaseUrl === 'string' && manifest.releaseUrl) ||
+          BRAND.updateReleasesUrl ||
+          '',
+        hasUpdate,
+        mandatory,
+        minVersion,
+      }
     } catch (e) {
       return { ...base, error: (e as Error)?.message || String(e) }
     }

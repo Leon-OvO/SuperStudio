@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { BRAND } from '@shared/brand'
 import { FolderOpen, Loader2, Info, Zap } from 'lucide-react'
 import type { AppSettings } from '../../../shared/ipc-types'
 
@@ -60,7 +61,7 @@ export function DataDirectorySetup({ onDone }: Props): JSX.Element {
           <div className="flex items-start gap-2 text-xs text-foreground/80">
             <Info size={14} className="text-amber-500 shrink-0 mt-0.5" />
             <div className="space-y-1">
-              <p>建议选择非系统盘（例如 D:\SuperStudio）下一个独立目录。</p>
+              <p>建议选择非系统盘（例如 D:\{BRAND.displayName}）下一个独立目录。</p>
               <p>选定后可随时在「设置 → 模型 → 数据存储」中更改，但更改后需要手动迁移已有文件。</p>
             </div>
           </div>

@@ -31,8 +31,11 @@ export interface Brand {
   /** Namespace prefix for data files / store keys so installs of different
    *  flavors never read or overwrite each other's data. */
   dataNamespace: string
-  /** Raw URL of a package.json (or version file) used to detect updates by
-   *  comparing its `version` with the running app. Empty = no update check. */
+  /** URL the updater fetches to detect a new version. May be a raw JSON file
+   *  ({ version }) OR an HTML page embedding a
+   *  `<script type="application/json" id="dwork-update-manifest">` JSON block
+   *  (version / name / notes / mandatory / minVersion / downloads). The running
+   *  app's version is compared against `version`. Empty = no update check. */
   updateVersionUrl?: string
   /** Releases page opened when the user clicks "download new version". */
   updateReleasesUrl?: string
@@ -60,8 +63,11 @@ const BRANDS: Record<Flavor, Brand> = {
     copyright: 'Copyright © 2026 DWork',
     defaultSkin: 'dwork',
     dataNamespace: 'dwork',
-    updateVersionUrl: 'http://git.op.dianhun.cn/dejianxiang/DWork/raw/main/package.json',
-    updateReleasesUrl: 'http://git.op.dianhun.cn/dejianxiang/DWork/releases',
+    // DWork 专属：版本检测与下载统一走自有更新站 dwork.op.dianhun.cn。
+    // updateVersionUrl 指向落地页本身，页面 <head> 内嵌
+    // <script id="dwork-update-manifest"> JSON 清单，由 checkUpdate 解析比对。
+    updateVersionUrl: 'http://dwork.op.dianhun.cn/',
+    updateReleasesUrl: 'http://dwork.op.dianhun.cn/#download',
   },
 }
 

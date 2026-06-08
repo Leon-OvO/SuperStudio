@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
+import { BRAND } from '@shared/brand'
 import { Send, Square, Paperclip, X, ImagePlus, FileText, ImageOff, Monitor, Folder, FolderOpen } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { ModelPicker } from './ModelPicker'
@@ -186,7 +187,7 @@ export function ChatInput({
     ? '⏳ Agent 正在执行中，可点击「停止」中断…'
     : imageMode
       ? '描述你想生成的图片内容…'
-      : '与 SuperStudio 对话… (Enter 发送，Shift+Enter 换行)'
+      : `与 ${BRAND.displayName} 对话… (Enter 发送，Shift+Enter 换行)`
 
   const canSend = !!text.trim() && !disabled
 

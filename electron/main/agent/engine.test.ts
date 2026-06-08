@@ -52,7 +52,8 @@ vi.mock('../services/store', () => ({
     defaultVideoModel: 'sora',
     autoModelEnabled: false
   }),
-  getProviders: () => [{ id: 'p1', name: 'OpenAI', type: 'openai', apiKey: 'k', models: ['gpt-4o'] }]
+  getProviders: () => [{ id: 'p1', name: 'OpenAI', type: 'openai', apiKey: 'k', models: ['gpt-4o'] }],
+  getSshConnections: () => []
 }))
 
 vi.mock('../services/llm', () => ({ createLLMClient: () => ({}), thinkingStreamOpts: () => ({}), effectiveProtocol: () => 'openai' }))

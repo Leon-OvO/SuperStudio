@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { BRAND } from '@shared/brand'
 import {
   X, Brush, Eraser, Undo2, RotateCcw, Wand2, Type, Scissors, Maximize2,
   Loader2, Sparkles, Check
@@ -510,7 +511,7 @@ export function ImageEditor({ src, sessionId, onClose, onApplied }: Props) {
                 onChange={e => setPrompt(e.target.value)}
                 placeholder={mode === 'inpaint'
                   ? '描述你想把涂抹区域变成什么…\n例如：把这只狗换成一只猫'
-                  : '输入要替换成的新文字…\n例如：SuperStudio'}
+                  : `输入要替换成的新文字…\n例如：${BRAND.displayName}`}
                 rows={4}
                 className="w-full px-2.5 py-1.5 rounded-md bg-card border border-border text-xs outline-none focus:ring-1 focus:ring-ring resize-none leading-relaxed"
               />

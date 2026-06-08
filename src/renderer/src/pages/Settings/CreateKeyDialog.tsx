@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { BRAND } from '@shared/brand'
 import { X, Loader2, Plus } from 'lucide-react'
 import { Select } from '../../components/ui/Select'
 import type { AvailableGroupInfo } from '../../../../shared/ipc-types'
@@ -32,7 +33,7 @@ export function CreateKeyDialog({ open, defaultGroupId, onClose, onCreated }: Pr
         setGroupId(initial)
         const grp = list.find(x => String(x.id) === initial)
         setName(grp
-          ? `SuperStudio-${grp.name}-${new Date().toLocaleDateString('zh-CN').replace(/\//g, '')}`
+          ? `${BRAND.displayName}-${grp.name}-${new Date().toLocaleDateString('zh-CN').replace(/\//g, '')}`
           : ''
         )
       })
@@ -43,7 +44,7 @@ export function CreateKeyDialog({ open, defaultGroupId, onClose, onCreated }: Pr
   useEffect(() => {
     const grp = groups.find(g => String(g.id) === groupId)
     if (grp) {
-      setName(`SuperStudio-${grp.name}-${new Date().toLocaleDateString('zh-CN').replace(/\//g, '')}`)
+      setName(`${BRAND.displayName}-${grp.name}-${new Date().toLocaleDateString('zh-CN').replace(/\//g, '')}`)
     }
   }, [groupId, groups])
 
@@ -117,7 +118,7 @@ export function CreateKeyDialog({ open, defaultGroupId, onClose, onCreated }: Pr
                   value={name}
                   onChange={e => setName(e.target.value)}
                   className="input w-full"
-                  placeholder="例如 SuperStudio-备用"
+                  placeholder={`例如 ${BRAND.displayName}-备用`}
                   autoFocus
                   onKeyDown={e => {
                     if (e.key === 'Enter') { e.preventDefault(); handleSubmit() }

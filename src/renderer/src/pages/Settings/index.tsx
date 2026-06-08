@@ -7,6 +7,7 @@ import { PluginsTab } from './PluginsTab'
 import { McpServers } from './McpServers'
 import { About } from './About'
 import { ProviderManager } from './ProviderManager'
+import { SshManager } from './SshManager'
 import { SystemTab } from './SystemTab'
 import { useConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { toast } from '../../components/ui/Toast'
@@ -15,7 +16,7 @@ import { useT } from '../../lib/i18n'
 // 'system' is the parent tab that now bundles 模型 / 自动切换模型 / 构建 as
 // sub-sections (see SystemTab). The standalone 'defaults' / 'auto-model' /
 // 'build' tabs are gone from the sidebar.
-type Tab = 'account' | 'system' | 'search' | 'kb' | 'mcp' | 'plugins' | 'about'
+type Tab = 'account' | 'system' | 'search' | 'kb' | 'mcp' | 'ssh' | 'plugins' | 'about'
 
 export function SettingsPage() {
   const t = useT()
@@ -155,6 +156,7 @@ export function SettingsPage() {
         <TabButton active={tab === 'search'} onClick={() => setTab('search')}>{t('settings.tabWebSearch')}</TabButton>
         <TabButton active={tab === 'kb'} onClick={() => setTab('kb')}>{t('settings.tabKnowledgeBase')}</TabButton>
         <TabButton active={tab === 'mcp'} onClick={() => setTab('mcp')}>{t('settings.tabMcpServers')}</TabButton>
+        <TabButton active={tab === 'ssh'} onClick={() => setTab('ssh')}>SSH 连接</TabButton>
         <TabButton active={tab === 'plugins'} onClick={() => setTab('plugins')}>{t('settings.tabPlugins')}</TabButton>
         <div className="flex-1" />
         <TabButton active={tab === 'about'} onClick={() => setTab('about')}>{t('settings.tabAbout')}</TabButton>
@@ -169,6 +171,7 @@ export function SettingsPage() {
             : <ProviderManager providers={providers} onRefresh={reload} />
         })()}
         {tab === 'mcp' && <McpServers />}
+        {tab === 'ssh' && <SshManager />}
         {tab === 'plugins' && settings && <PluginsTab settings={settings} onSave={handleSaveSettings} />}
         {tab === 'system' && (
           <SystemTab

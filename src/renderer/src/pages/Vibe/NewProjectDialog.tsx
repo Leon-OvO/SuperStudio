@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { BRAND } from '@shared/brand'
 import { X, Loader2, Plus, Folder, AlertTriangle } from 'lucide-react'
 
 interface Props {
@@ -102,7 +103,7 @@ export function NewProjectDialog({ open, onClose, onCreated }: Props) {
                 <div className="flex-1 text-xs">
                   <div className="font-medium">应用管理（推荐）</div>
                   <div className="text-muted-foreground mt-0.5">
-                    存放在 SuperStudio 的数据目录下，无需自己维护
+                    存放在 {BRAND.displayName} 的数据目录下，无需自己维护
                   </div>
                 </div>
               </label>

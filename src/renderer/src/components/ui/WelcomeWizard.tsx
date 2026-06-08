@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { BRAND } from '@shared/brand'
 import { Sparkles, ArrowRight, Check, Loader2, X, Cpu, Key, Link2 } from 'lucide-react'
 import type { ProviderConfig, AppSettings } from '../../../../shared/ipc-types'
 import { Select } from './Select'
@@ -156,7 +157,7 @@ export function WelcomeWizard({ onDismiss }: Props) {
           {step === 'welcome' && (
             <>
               <p className="text-sm text-muted-foreground leading-relaxed">
-                SuperStudio 是一个本地优先的 AI 桌面应用，把对话、生图、生视频、知识库、工作流编排放在一个地方。所有 API Key 都加密保存在你的本机 keychain，不会上传。
+                {BRAND.displayName} 是一个本地优先的 AI 桌面应用，把对话、生图、生视频、知识库、工作流编排放在一个地方。所有 API Key 都加密保存在你的本机 keychain，不会上传。
               </p>
               <ul className="space-y-2 text-sm">
                 <li className="flex items-center gap-2"><Check size={14} className="text-primary shrink-0" /> 多家模型提供商（OpenAI / Anthropic / Gemini / 任意 OpenAI 兼容代理）</li>

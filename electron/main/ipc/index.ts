@@ -20,6 +20,7 @@ import { modelConfHandlers } from './model-conf'
 import { talentHandlers } from './talent'
 import { employeeHandlers } from './employees'
 import { schedulerHandlers } from './scheduler'
+import { sshHandlers } from './ssh'
 import { logEntry, getEntriesFromDisk, clearEntries } from '../services/error-log'
 
 export function registerIpcHandlers(): void {
@@ -57,6 +58,7 @@ export function registerIpcHandlers(): void {
     ['talent', talentHandlers],
     ['employees', employeeHandlers],
     ['scheduler', schedulerHandlers],
+    ['ssh', sshHandlers],
   ]
   for (const [name, register] of groups) {
     try {

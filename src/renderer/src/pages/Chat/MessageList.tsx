@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { BRAND } from '@shared/brand'
 import { createPortal } from 'react-dom'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import type { Message, ToolCallRecord, AskUserPayload } from '../../../../shared/ipc-types'
@@ -174,7 +175,7 @@ export function MessageList({
             <div className="space-y-1.5">
               <h3 className="text-base font-semibold">先配置一个模型提供商</h3>
               <p className="text-sm text-muted-foreground leading-relaxed">
-                SuperStudio 还不知道把请求发到哪。前往「设置 → 提供商」添加 OpenAI、Anthropic、Gemini 或任意 OpenAI 兼容的代理；填好 API Key 就能开始对话、生图、生视频。
+                {BRAND.displayName} 还不知道把请求发到哪。前往「设置 → 提供商」添加 OpenAI、Anthropic、Gemini 或任意 OpenAI 兼容的代理；填好 API Key 就能开始对话、生图、生视频。
               </p>
             </div>
             <button

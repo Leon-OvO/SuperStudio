@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { BRAND } from '@shared/brand'
 import { Plus, Trash2, Pencil, ArrowLeft, Loader2, CheckCircle2, XCircle, Server, Cpu, Globe, X, ShieldAlert } from 'lucide-react'
 import type { McpServerConfig } from '../../../../shared/ipc-types'
 import { Select } from '../../components/ui/Select'
@@ -228,7 +229,7 @@ export function McpServers() {
           <div className="text-amber-700 dark:text-amber-400 space-y-1">
             <p className="font-medium">安全提示</p>
             <p className="leading-relaxed">
-              stdio 服务器会用「启动命令 + 参数 + 环境变量」在你本机启动一个**子进程**，与 SuperStudio
+              stdio 服务器会用「启动命令 + 参数 + 环境变量」在你本机启动一个**子进程**，与 {BRAND.displayName}
               共用同一个用户权限。只接入你信任的命令（如官方 MCP 服务器或自己写的脚本）。
               切勿粘贴来历不明的命令，它们能读写你的文件、访问网络、调用外部 API。
             </p>

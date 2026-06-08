@@ -2,12 +2,13 @@ import Store from 'electron-store'
 import { safeStorage, app } from 'electron'
 import fs from 'fs'
 import path from 'path'
-import { ProviderConfig, AppSettings, McpServerConfig, WebhookBot, RemoteModelConf } from '../../../src/shared/ipc-types'
+import { ProviderConfig, AppSettings, McpServerConfig, WebhookBot, RemoteModelConf, SshConnection } from '../../../src/shared/ipc-types'
 
 interface StoreSchema {
   providers: ProviderConfig[]
   settings: AppSettings
   mcpServers: McpServerConfig[]
+  sshConnections: SshConnection[]
 }
 
 /** Built-in fallback default model NAMES used when no remote model.conf has been
@@ -25,6 +26,7 @@ export const BUILTIN_MODEL_DEFAULTS: Required<RemoteModelConf> = {
 const defaults: StoreSchema = {
   providers: [],
   mcpServers: [],
+  sshConnections: [],
   settings: {
     defaultChatModel: BUILTIN_MODEL_DEFAULTS.defaultChatModel,
     defaultChatProviderId: '',
@@ -163,7 +165,8 @@ function createOrMigrateStore(): Store<StoreSchema> {
     snapshot = {
       providers: (legacy.get('providers') ?? []) as ProviderConfig[],
       settings: { ...defaults.settings, ...((legacy.get('settings') as AppSettings | undefined) ?? {}) },
-      mcpServers: (legacy.get('mcpServers') ?? []) as McpServerConfig[]
+      mcpServers: (legacy.get('mcpServers') ?? []) as McpServerConfig[],
+      sshConnections: (legacy.get('sshConnections') ?? []) as SshConnection[]
     }
   } catch (e) {
     console.warn('[store] legacy-key decryption also failed — config will be reset to defaults:', (e as Error).message)
@@ -193,6 +196,7 @@ function createOrMigrateStore(): Store<StoreSchema> {
     env: s.env ? mapValues(s.env, encryptString) : s.env,
     headers: s.headers ? mapValues(s.headers, encryptString) : s.headers
   })))
+  fresh.set('sshConnections', (snapshot.sshConnections ?? []).map(encryptSshConn))
   console.log(`[store] migration complete: ${snapshot.providers.length} provider(s), ${snapshot.mcpServers.length} MCP server(s) re-encrypted`)
   return fresh
 }
@@ -221,6 +225,57 @@ export function saveProvider(provider: ProviderConfig): void {
 export function deleteProvider(id: string): void {
   const list = (getStore().get('providers') ?? []) as ProviderConfig[]
   getStore().set('providers', list.filter(p => p.id !== id))
+}
+
+// --- SSH connections ---------------------------------------------------
+//
+// Stored in their OWN top-level key (NOT in AppSettings) so getSettings() never
+// broadcasts SSH credentials app-wide. password/privateKey/passphrase are
+// encrypted at rest via safeStorage, exactly like provider apiKey / webhookBots.
+
+function encryptSshConn(c: SshConnection): SshConnection {
+  return {
+    ...c,
+    password: c.password ? encryptString(c.password) : c.password,
+    privateKey: c.privateKey ? encryptString(c.privateKey) : c.privateKey,
+    passphrase: c.passphrase ? encryptString(c.passphrase) : c.passphrase,
+  }
+}
+function decryptSshConn(c: SshConnection): SshConnection {
+  return {
+    ...c,
+    password: c.password ? decryptString(c.password) : c.password,
+    privateKey: c.privateKey ? decryptString(c.privateKey) : c.privateKey,
+    passphrase: c.passphrase ? decryptString(c.passphrase) : c.passphrase,
+  }
+}
+
+/** All connections with credentials decrypted (for the settings UI + ssh-service). */
+export function getSshConnections(): SshConnection[] {
+  const raw = (getStore().get('sshConnections') ?? []) as SshConnection[]
+  return raw.map(decryptSshConn)
+}
+
+/** A single connection (decrypted) by id — used by the ssh service to connect.
+ *  Never crosses IPC to the renderer. */
+export function getSshConnection(id: string): SshConnection | null {
+  return getSshConnections().find(c => c.id === id) ?? null
+}
+
+export function saveSshConnection(conn: SshConnection): void {
+  const list = (getStore().get('sshConnections') ?? []) as SshConnection[]
+  const idx = list.findIndex(c => c.id === conn.id)
+  // Preserve the original createdAt across edits; stamp it for brand-new rows.
+  const createdAt = idx >= 0 ? (list[idx].createdAt ?? Date.now()) : (conn.createdAt ?? Date.now())
+  const encrypted = encryptSshConn({ ...conn, createdAt })
+  if (idx >= 0) list[idx] = encrypted
+  else list.push(encrypted)
+  getStore().set('sshConnections', list)
+}
+
+export function deleteSshConnection(id: string): void {
+  const list = (getStore().get('sshConnections') ?? []) as SshConnection[]
+  getStore().set('sshConnections', list.filter(c => c.id !== id))
 }
 
 // --- Settings ----------------------------------------------------------

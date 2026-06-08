@@ -220,6 +220,15 @@ export const IPC = {
   EMP_SET_DEPT: 'emp:set-dept',
   EMP_SPEND_RANGE: 'emp:spend-range',
 
+  // SSH client: connection CRUD (creds encrypted at rest) + per-exec confirm.
+  SSH_LIST: 'ssh:list',
+  SSH_SAVE: 'ssh:save',
+  SSH_DELETE: 'ssh:delete',
+  SSH_TEST: 'ssh:test',
+  SSH_IMPORT: 'ssh:import',                       // import a MobaXterm .mxtsessions export
+  SSH_EXEC_CONFIRM: 'ssh:exec-confirm',           // main → renderer: ask before a remote exec { id, host, command }
+  SSH_EXEC_CONFIRM_REPLY: 'ssh:exec-confirm-reply', // renderer → main: { id, ok }
+
   // Terminal (PTY-backed shell in Vibe page)
   TERMINAL_CREATE: 'terminal:create',
   TERMINAL_WRITE: 'terminal:write',
@@ -907,6 +916,27 @@ export interface Attachment {
   name: string
   path: string
   mimeType: string
+}
+
+// ── SSH client: a saved connection the Agent can run commands on ────────────
+
+/** A saved SSH connection. Credentials (password/privateKey/passphrase) are
+ *  encrypted at rest via safeStorage and NEVER passed into the LLM context —
+ *  the agent references a connection only by `name`. */
+export interface SshConnection {
+  id: string
+  name: string
+  host: string
+  port: number
+  username: string
+  authType: 'password' | 'privateKey'
+  password?: string
+  privateKey?: string
+  passphrase?: string
+  /** Optional folder/group for list organization (e.g. a MobaXterm subfolder). */
+  group?: string
+  /** Unix ms; set on first save. Used for the "recently added" sort. */
+  createdAt?: number
 }
 
 // ── AI Company: talent pool (souls) + employees ─────────────────────────────

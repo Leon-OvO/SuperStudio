@@ -5,7 +5,9 @@ import { IPC, AgentProgressEvent } from '../../../src/shared/ipc-types'
 import { parseJsonLoose } from '../../../src/shared/json-repair'
 import { BRAND } from '../../../src/shared/brand'
 import { createLLMClient, thinkingStreamOpts, effectiveProtocol } from '../services/llm'
-import { getSettings, getProviders } from '../services/store'
+import { getSettings, getProviders, getSshConnections } from '../services/store'
+import { sshExec, resolveSshConnection } from '../services/ssh-service'
+import { confirmSshExec } from '../services/ssh-guard'
 import { generateImage } from '../services/image'
 import { generateVideo } from '../services/video'
 import { readFile, writeFile, writeTextFile, listDir } from '../services/fileops'
@@ -1223,6 +1225,57 @@ export async function runAgent(
         // automatically. Exposing it as a tool only causes the model to either
         // skip it (missing entries) or double-call it (duplicate entries).
       }
+
+    // SSH remote execution — runs a command on a PRECONFIGURED connection
+    // (设置 → SSH 连接). Credentials never enter this context; the model passes a
+    // connection NAME only. First use of each connection asks the user to confirm.
+    {
+      const sshConns = getSshConnections()
+      const connList = sshConns.length
+        ? sshConns.map(c => `${c.name}(${c.username}@${c.host})`).join('、')
+        : '（无，请先去「设置 → SSH 连接」添加）'
+      allTools.ssh_exec = tool({
+        description:
+          '在【预配置的 SSH 连接】上的远程服务器执行一条 shell 命令，返回 { host, exitCode, stdout, stderr }。' +
+          `可用连接：${connList}。connection 传连接名（或其 id）。` +
+          '凭据由本机加密保管，你不会也无需知道密码/私钥。每条命令独立执行（不保留工作目录），' +
+          '需要切目录就用 `cd /path && 命令`。某连接首次执行会弹窗请用户确认。' +
+          '危险/不可逆操作（删除、重启、改配置等）执行前应在回复里向用户说明。',
+        parameters: z.object({
+          connection: z.string().describe('已配置的 SSH 连接名称或 id'),
+          command: z.string().describe('要在远程服务器上执行的 shell 命令'),
+        }),
+        execute: async ({ connection, command }) => {
+          const myIdx = stepIndex++
+          const { conn, error: resolveErr } = resolveSshConnection(connection, getSshConnections())
+          if (!conn) {
+            emit({ stepIndex: myIdx, stepName: 'SSH', toolName: 'ssh_exec', status: 'error', message: resolveErr })
+            toolCallLog.push({ toolName: 'ssh_exec', args: { connection, command }, result: { error: resolveErr } })
+            return `[ssh_exec error] ${resolveErr}`
+          }
+          emit({ stepIndex: myIdx, stepName: 'SSH', toolName: 'ssh_exec', status: 'running', message: `${conn.name}: ${command.slice(0, 80)}` })
+          const allowed = await confirmSshExec(conn.id, conn.host, command)
+          if (!allowed) {
+            const msg = `已取消：用户未授权在「${conn.name}」(${conn.host}) 上执行该命令。`
+            emit({ stepIndex: myIdx, stepName: 'SSH', toolName: 'ssh_exec', status: 'error', message: msg })
+            toolCallLog.push({ toolName: 'ssh_exec', args: { connection, command }, result: { error: msg } })
+            return `[ssh_exec error] ${msg}`
+          }
+          try {
+            const r = await sshExec(conn.id, command, abort.signal)
+            const result = { host: conn.host, exitCode: r.code, stdout: r.stdout, stderr: r.stderr, timedOut: r.timedOut }
+            emit({ stepIndex: myIdx, stepName: 'SSH', toolName: 'ssh_exec', status: r.code === 0 ? 'done' : 'error', message: `exit ${r.code}` })
+            toolCallLog.push({ toolName: 'ssh_exec', args: { connection, command }, result })
+            return result
+          } catch (e) {
+            const msg = (e as Error).message || String(e)
+            emit({ stepIndex: myIdx, stepName: 'SSH', toolName: 'ssh_exec', status: 'error', message: msg })
+            toolCallLog.push({ toolName: 'ssh_exec', args: { connection, command }, result: { error: msg } })
+            return `[ssh_exec error] ${msg}`
+          }
+        }
+      })
+    }
 
     // Apply skill tool whitelist (union across skills; null = unrestricted).
     // Only legacy skills carry whitelists — runtime skills are always null.

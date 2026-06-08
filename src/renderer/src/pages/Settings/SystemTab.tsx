@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { BRAND } from '@shared/brand'
 import { Loader2, Power, MousePointerClick, AlertTriangle, Home, Check, Globe, PanelLeft, Network } from 'lucide-react'
 import type { AppSettings, ProviderConfig, ProxyMode } from '../../../../shared/ipc-types'
 import { cn } from '../../lib/utils'
@@ -184,7 +185,7 @@ function SystemSection({
         <div className="flex-1 min-w-0">
           <h3 className="text-sm font-medium">首页</h3>
           <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
-            选择 SuperStudio 启动后默认进入的页面。通过右键「用 SuperStudio 打开」启动时不受此设置影响。
+            选择 {BRAND.displayName} 启动后默认进入的页面。通过右键「用 {BRAND.displayName} 打开」启动时不受此设置影响。
           </p>
         </div>
         <div className="shrink-0">
@@ -215,7 +216,7 @@ function SystemSection({
       <ToggleRow
         icon={<Power size={16} className="text-primary" />}
         title="开机自启"
-        description="在操作系统启动时自动打开 SuperStudio。如果你后续把 .exe 移到了别的位置，请重新切换此开关让路径生效。"
+        description={`在操作系统启动时自动打开 ${BRAND.displayName}。如果你后续把 .exe 移到了别的位置，请重新切换此开关让路径生效。`}
         checked={state.storedAutoLaunch}
         actualState={state.autoLaunch}
         pending={pending === 'autoLaunch'}
@@ -228,7 +229,7 @@ function SystemSection({
         title="菜单右键打开文件、文件夹"
         description={
           state.shellIntegrationSupported
-            ? '在 Windows 资源管理器中右键点击文件或文件夹时显示「用 SuperStudio 打开」。文件会作为编辑器标签页打开；文件夹会作为「公司」项目打开。'
+            ? `在 Windows 资源管理器中右键点击文件或文件夹时显示「用 ${BRAND.displayName} 打开」。文件会作为编辑器标签页打开；文件夹会作为「公司」项目打开。`
             : '当前操作系统暂不支持此功能（仅 Windows 可用）。'
         }
         checked={state.storedShellIntegration}

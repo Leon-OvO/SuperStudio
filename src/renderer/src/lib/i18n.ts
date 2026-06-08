@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from 'react'
+import { BRAND } from '../../../shared/brand'
 
 export type Lang = 'zh' | 'en'
 
@@ -364,6 +365,14 @@ const EN: Dict = {
   'chatHeader.saveAsWorkflow': 'Save as Workflow',
   'chatHeader.saveAsWorkflowTitle': 'Convert this conversation into a visual workflow'
 }
+
+// Brand-dependent strings derive from the active flavor's BRAND so white-label
+// builds (e.g. DWork) show their own product name without forking the
+// dictionaries. Keep this list to strings that embed the product NAME — purely
+// translated copy (taglines, body text) stays per-language above.
+ZH['about.title'] = EN['about.title'] = BRAND.displayName
+ZH['welcome.title'] = `欢迎使用 ${BRAND.displayName}`
+EN['welcome.title'] = `Welcome to ${BRAND.displayName}`
 
 const RESOURCES: Record<Lang, Dict> = { zh: ZH, en: EN }
 

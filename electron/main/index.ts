@@ -212,6 +212,11 @@ function createWindow(): void {
       const { disposeAllForWebContents } = await import('./services/terminals')
       disposeAllForWebContents(wcRef)
     } catch { /* terminals module may not be loaded */ }
+    // Tear down any pooled SSH connections so they don't outlive the window.
+    try {
+      const { closeAllSsh } = await import('./services/ssh-service')
+      closeAllSsh()
+    } catch { /* ssh module may not be loaded */ }
     // Tear down the hidden search-scraper window too — otherwise it can outlive
     // the main window, keeping the app alive headless or (when it later closes)
     // tripping window-all-closed → app.quit() at a surprising time.

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { BRAND } from '@shared/brand'
 import { ArrowLeft, Save, AlertTriangle, ChevronDown, ChevronUp, Monitor } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { toast } from '../../components/ui/Toast'
@@ -362,7 +363,7 @@ export function TaskForm({ task, fromTemplate, onBack, onSaved }: Props) {
           <div className="flex items-start gap-2 p-3 rounded-md bg-amber-500/10 border border-amber-500/30 text-amber-700 dark:text-amber-300">
             <AlertTriangle size={14} className="shrink-0 mt-0.5" />
             <p className="text-[11px] leading-relaxed">
-              任务只在 SuperStudio 运行时执行。若关闭应用，错过 24 小时以内会在下次启动时补跑一次；超过 24 小时则跳过。
+              任务只在 {BRAND.displayName} 运行时执行。若关闭应用，错过 24 小时以内会在下次启动时补跑一次；超过 24 小时则跳过。
             </p>
           </div>
         </div>
