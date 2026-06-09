@@ -22,6 +22,7 @@ export function SshForm({ initial, onSave, onCancel }: Props) {
   const [password, setPassword] = useState(initial?.password || '')
   const [privateKey, setPrivateKey] = useState(initial?.privateKey || '')
   const [passphrase, setPassphrase] = useState(initial?.passphrase || '')
+  const [autoConfirm, setAutoConfirm] = useState(initial?.autoConfirm ?? false)
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<{ ok: boolean; error?: string } | null>(null)
@@ -38,6 +39,7 @@ export function SshForm({ initial, onSave, onCancel }: Props) {
       privateKey: authType === 'privateKey' ? privateKey : undefined,
       passphrase: authType === 'privateKey' && passphrase ? passphrase : undefined,
       group: group.trim() || undefined,
+      autoConfirm,
       createdAt: initial?.createdAt,
     }
   }
@@ -149,6 +151,25 @@ export function SshForm({ initial, onSave, onCancel }: Props) {
           </Field>
         </>
       )}
+
+      <label className={cn(
+        'flex items-start gap-2.5 cursor-pointer rounded-md border p-2.5 transition-colors',
+        autoConfirm ? 'border-amber-500/50 bg-amber-500/[0.06]' : 'border-border'
+      )}>
+        <input
+          type="checkbox"
+          className="mt-0.5 accent-primary shrink-0"
+          checked={autoConfirm}
+          onChange={e => setAutoConfirm(e.target.checked)}
+        />
+        <span className="min-w-0">
+          <span className="block text-sm font-medium">免确认执行（不弹窗，自动执行）</span>
+          <span className="block text-[11px] text-muted-foreground mt-0.5 leading-relaxed">
+            ⚠️ 勾选后，Agent 在此连接上执行命令<b>不再逐次弹窗确认</b>，包括删除 / 重启 / 改配置等高危操作。
+            仅在你完全信任相关任务时开启；默认关闭，关闭时每条新命令仍会弹窗请你确认。
+          </span>
+        </span>
+      </label>
 
       {testResult && (
         <div className={cn(

@@ -1009,6 +1009,9 @@ export interface SshConnection {
   passphrase?: string
   /** Optional folder/group for list organization (e.g. a MobaXterm subfolder). */
   group?: string
+  /** When true, the Agent runs commands on this connection WITHOUT the per-run
+   *  confirmation popup. Default false (off) — every command prompts first. */
+  autoConfirm?: boolean
   /** Unix ms; set on first save. Used for the "recently added" sort. */
   createdAt?: number
 }

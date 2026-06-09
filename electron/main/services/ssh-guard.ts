@@ -1,6 +1,7 @@
 import { ipcMain, BrowserWindow } from 'electron'
 import { randomUUID } from 'crypto'
 import { IPC } from '../../../src/shared/ipc-types'
+import { getSshConnection } from './store'
 
 /**
  * Safety gate for agent-driven SSH command execution.
@@ -46,6 +47,8 @@ async function askConfirm(host: string, command: string): Promise<boolean> {
  *  connections pass immediately; otherwise prompt, and cache on approval. */
 export async function confirmSshExec(connId: string, host: string, command: string): Promise<boolean> {
   if (trusted.has(connId)) return true
+  // Per-connection opt-in (default off): run without the confirmation popup.
+  try { if (getSshConnection(connId)?.autoConfirm) return true } catch { /* fall through to prompt */ }
   const ok = await askConfirm(host, command)
   if (ok) trusted.add(connId)
   return ok
