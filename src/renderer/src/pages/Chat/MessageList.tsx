@@ -304,6 +304,13 @@ function MessageBubble({
     () => isUser ? { reasoning: '', answer: message.content, streaming: false } : splitThinking(message.content),
     [isUser, message.content]
   )
+  // Some reasoning models / proxies (e.g. MiniMax-M3) put their ENTIRE reply in
+  // the <think> channel and leave the answer empty. Once the run is done with no
+  // separate answer, surface the thinking AS the answer instead of a blank bubble
+  // (and suppress the now-duplicate 思考过程 block).
+  const onlyThinking = !!reasoning && !answer.trim()
+  const liveStreaming = !isUser && isRunning && isLastMsg
+  const thinkingAsAnswer = onlyThinking && !liveStreaming
 
   async function handleLightboxCopy() {
     if (!lightboxSrc) return
@@ -391,7 +398,7 @@ function MessageBubble({
               ))}
             </div>
           )}
-          {reasoning && (
+          {reasoning && !thinkingAsAnswer && (
             <ReasoningBlock content={reasoning} streaming={streaming} />
           )}
           {editing && isUser ? (
@@ -410,6 +417,9 @@ function MessageBubble({
             ) : (
               <AssistantAnswer content={answer} duplicatePaths={[...imageArtifacts, ...videoArtifacts]} />
             )
+          ) : thinkingAsAnswer ? (
+            // Model produced only thinking and no separate answer → show it as the reply.
+            <AssistantAnswer content={reasoning} duplicatePaths={[...imageArtifacts, ...videoArtifacts]} />
           ) : !reasoning ? (
             // No answer and no reasoning yet. If this is the live run still waiting
             // on its first token (e.g. Opus 4.8 thinking before it streams), show an

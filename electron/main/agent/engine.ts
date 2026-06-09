@@ -1515,6 +1515,10 @@ export async function runAgent(
     // and forward reasoning deltas wrapped in <think>…</think>. Reasoning is NOT
     // added to fullText, so the persisted message + history stay answer-only.
     let inReasoning = false
+    // Accumulate reasoning so we can salvage it if the model returns ONLY thinking
+    // and no answer (some OpenAI-compat reasoning models put their whole reply in
+    // the reasoning_content channel and leave the answer empty).
+    let reasoningText = ''
     const sendDelta = (delta: string): void => {
       if (!isStaleRun()) win.webContents.send(IPC.AGENT_DELTA, { sessionId, messageId: asstMsgId, delta })
     }
@@ -1548,6 +1552,7 @@ export async function runAgent(
           armStall(part.type === 'text-delta' ? STREAM_GAP_MS : SILENT_WORK_MS)
           if (part.type === 'reasoning' && part.textDelta) {
             if (!inReasoning) { inReasoning = true; sendDelta('<think>') }
+            reasoningText += part.textDelta
             sendDelta(part.textDelta)
           } else if (part.type === 'text-delta' && part.textDelta) {
             closeThink()
@@ -1645,6 +1650,10 @@ export async function runAgent(
     if (!fullText.trim()) {
       const lastAsk = [...toolCallLog].reverse().find(t => t.toolName === 'ask_user')
       if (lastAsk) fullText = String((lastAsk.args as { question?: string }).question || '请选择：')
+      // Reasoning-only model (the reply came through the reasoning channel and the
+      // answer is empty) → surface the reasoning as the answer instead of erroring
+      // with "模型返回了空响应". MiniMax-M3 and similar hit this.
+      else if (reasoningText.trim()) fullText = reasoningText.trim()
     }
 
     // Surface truncation / step-exhaustion so a cut-off turn isn't presented as a
