@@ -19,6 +19,8 @@ interface GenerateImageParams {
    * never get an unrelated text-to-image result silently.
    */
   noFallback?: boolean
+  /** Cancels the in-flight HTTP requests when the caller aborts (e.g. workflow 停止). */
+  abortSignal?: AbortSignal
 }
 
 interface GeneratedImage {
@@ -56,7 +58,7 @@ async function doOneRequest(
   params: GenerateImageParams,
   requestedN: number
 ): Promise<GenerateImageResult> {
-  const { prompt, size = '1024x1024', quality, settings, referenceImagePaths, maskPath, noFallback } = params
+  const { prompt, size = '1024x1024', quality, settings, referenceImagePaths, maskPath, noFallback, abortSignal } = params
   const providers = getProviders()
   const provider = providers.find(p => p.id === settings.defaultImageProviderId)
   if (!provider) throw new Error('Image provider not configured')
@@ -119,7 +121,8 @@ async function doOneRequest(
         res = await fetch(`${baseUrl}/v1/images/edits`, {
           method: 'POST',
           headers: { Authorization: `Bearer ${provider.apiKey}` },
-          body: buildForm()
+          body: buildForm(),
+          signal: abortSignal
         })
         if (res.ok) {
           editsOk = true
@@ -155,7 +158,8 @@ async function doOneRequest(
       res = await fetch(`${baseUrl}/v1/images/generations`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${provider.apiKey}` },
-        body: JSON.stringify({ model: modelName, prompt, size, n: 1, ...(quality ? { quality } : {}) })
+        body: JSON.stringify({ model: modelName, prompt, size, n: 1, ...(quality ? { quality } : {}) }),
+        signal: abortSignal
       })
     }
   } else {
@@ -169,7 +173,8 @@ async function doOneRequest(
     res = await fetch(`${baseUrl}/v1/images/generations`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${provider.apiKey}` },
-      body: JSON.stringify(body)
+      body: JSON.stringify(body),
+      signal: abortSignal
     })
   }
 
@@ -192,7 +197,7 @@ async function doOneRequest(
     console.log('[image] item keys:', Object.keys(item), 'hasUrl:', !!item.url, 'hasB64:', !!item.b64_json)
 
     if (item.url) {
-      const imgRes = await fetch(item.url)
+      const imgRes = await fetch(item.url, { signal: abortSignal })
       const buffer = await imgRes.arrayBuffer()
       fs.writeFileSync(filePath, Buffer.from(buffer))
       console.log('[image] saved from url, size:', buffer.byteLength, 'path:', filePath)

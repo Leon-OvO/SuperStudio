@@ -1,5 +1,5 @@
 import { BrowserWindow } from 'electron'
-import { IPC } from '../../../src/shared/ipc-types'
+import { IPC, type WorkflowDoneEvent } from '../../../src/shared/ipc-types'
 import { generateImage } from '../services/image'
 import { generateVideo } from '../services/video'
 import { readFile, writeFile } from '../services/fileops'
@@ -26,69 +26,146 @@ interface WorkflowEdge {
 
 const runningWorkflows = new Map<string, AbortController>()
 
+/** True when the given workflow already has a run in flight. */
+export function isWorkflowRunning(workflowId: string): boolean {
+  return runningWorkflows.has(workflowId)
+}
+
+/** Thrown when a node is cut short because the user pressed 停止. Distinct from a
+ *  real node error so it isn't surfaced as one. */
+class WorkflowAbortError extends Error {
+  constructor() { super('workflow aborted'); this.name = 'WorkflowAbortError' }
+}
+
+/** Bail out of a node before a side effect if the user pressed 停止 in the window
+ *  between an await resolving and the effect running (raceAbort rejects async, so
+ *  it can't catch this gap — an explicit check before persisting does). */
+function throwIfAborted(signal: AbortSignal): void {
+  if (signal.aborted) throw new WorkflowAbortError()
+}
+
+/**
+ * Reject as soon as `signal` aborts, so the engine stops awaiting a node whose
+ * underlying call cannot be hard-cancelled (e.g. a headless search). Calls that
+ * DO accept an abortSignal (LLM / image / video) are additionally cancelled at
+ * the source; this race just guarantees the engine itself never hangs on stop.
+ */
+function raceAbort<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(new WorkflowAbortError())
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => reject(new WorkflowAbortError())
+    signal.addEventListener('abort', onAbort, { once: true })
+    work.then(
+      v => { signal.removeEventListener('abort', onAbort); resolve(v) },
+      e => { signal.removeEventListener('abort', onAbort); reject(e) }
+    )
+  })
+}
+
 export async function executeWorkflow(
   workflowId: string,
   definition: { nodes: WorkflowNode[]; edges: WorkflowEdge[] },
   variables: Record<string, string>,
   win: BrowserWindow
 ): Promise<void> {
+  // Run-guard: a second concurrent run of the same workflow would overwrite the
+  // first's AbortController (making it unstoppable) and collide on cleanup. The
+  // IPC layer rejects the duplicate before we get here; this is the backstop.
+  if (runningWorkflows.has(workflowId)) return
+
   const abort = new AbortController()
   runningWorkflows.set(workflowId, abort)
   const { nodes, edges } = definition
-  const nodeOutputs: Record<string, unknown> = {}
-  const settings = getSettings()
 
-  const emit = (nodeId: string, status: 'pending' | 'running' | 'done' | 'error', message?: string) => {
-    win.webContents.send(IPC.WORKFLOW_NODE_STATUS, { workflowId, nodeId, status, message })
+  const emit = (nodeId: string, status: 'pending' | 'running' | 'done' | 'error', message?: string): void => {
+    try { win.webContents.send(IPC.WORKFLOW_NODE_STATUS, { workflowId, nodeId, status, message }) } catch { /* window gone */ }
   }
 
-  // Execute by topological LEVELS: every node in a level has its dependencies
-  // satisfied and is independent of its siblings, so the whole level runs in
-  // parallel (bounded by the shared agent semaphore). nodeOutputs is keyed by
-  // id, so concurrent writes target distinct keys — no race.
-  const levels = topologicalLevels(nodes, edges)
-  let failFastStop = false
+  const ran = new Set<string>()
+  let runStatus: WorkflowDoneEvent['status'] = 'completed'
+  let runError: string | undefined
 
-  for (const level of levels) {
-    if (abort.signal.aborted || failFastStop) break
-    await Promise.all(level.map(async (nodeId) => {
-      if (abort.signal.aborted || failFastStop) return
-      const node = nodes.find(n => n.id === nodeId)
-      if (!node) return
-      emit(nodeId, 'running')
-      try {
-        const input = resolveInputs(node, edges, nodeOutputs)
-        const output = await agentRunSemaphore.run(() =>
-          executeNode(node, input, variables, settings, win, workflowId))
-        nodeOutputs[nodeId] = output
-        emit(nodeId, 'done')
-      } catch (err) {
-        const msg = (err as Error).message ?? String(err)
-        emit(nodeId, 'error', msg)
-        // Per-node error policy (default fail-fast preserves prior behavior).
-        // 'continue' / 'skip-downstream' record an error sentinel and let the
-        // rest of the workflow proceed; downstream resolveInputs sees it.
-        const policy = typeof node.data?.errorPolicy === 'string' ? node.data.errorPolicy : 'fail-fast'
-        if (policy === 'continue' || policy === 'skip-downstream') {
-          nodeOutputs[nodeId] = { error: msg }
-        } else {
-          failFastStop = true
+  try {
+    const settings = getSettings()
+    const nodeOutputs: Record<string, unknown> = {}
+
+    // Mark every node queued up-front so the UI can tell "waiting" apart from
+    // "never scheduled" (the latter stay pending and become 'skipped' on done).
+    for (const n of nodes) emit(n.id, 'pending')
+
+    // Execute by topological LEVELS: every node in a level has its dependencies
+    // satisfied and is independent of its siblings, so the whole level runs in
+    // parallel (bounded by the shared agent semaphore). nodeOutputs is keyed by
+    // id, so concurrent writes target distinct keys — no race.
+    const levels = topologicalLevels(nodes, edges)
+    let failFastStop = false
+
+    for (const level of levels) {
+      if (abort.signal.aborted || failFastStop) break
+      await Promise.all(level.map(async (nodeId) => {
+        if (abort.signal.aborted || failFastStop) return
+        const node = nodes.find(n => n.id === nodeId)
+        if (!node) return
+        ran.add(nodeId)
+        emit(nodeId, 'running')
+        try {
+          const input = resolveInputs(node, edges, nodeOutputs)
+          const output = await agentRunSemaphore.run(() => {
+            // Re-check on slot acquisition — a node may have waited in the
+            // semaphore queue while the user pressed 停止.
+            if (abort.signal.aborted) throw new WorkflowAbortError()
+            return raceAbort(executeNode(node, input, variables, settings, win, workflowId, abort.signal), abort.signal)
+          })
+          nodeOutputs[nodeId] = output
+          emit(nodeId, 'done')
+        } catch (err) {
+          // A stop is not a node failure — leave its status as-is; the terminal
+          // WORKFLOW_DONE event reports the run as 'stopped'.
+          if (err instanceof WorkflowAbortError || abort.signal.aborted) return
+          const msg = (err as Error).message ?? String(err)
+          emit(nodeId, 'error', msg)
+          // Per-node error policy (default fail-fast preserves prior behavior).
+          // 'continue' / 'skip-downstream' record an error sentinel and let the
+          // rest of the workflow proceed; downstream resolveInputs sees it.
+          const policy = typeof node.data?.errorPolicy === 'string' ? node.data.errorPolicy : 'fail-fast'
+          if (policy === 'continue' || policy === 'skip-downstream') {
+            nodeOutputs[nodeId] = { error: msg }
+          } else {
+            failFastStop = true
+            runStatus = 'error'
+            runError = msg
+          }
         }
-      }
-    }))
-  }
+      }))
+    }
 
-  runningWorkflows.delete(workflowId)
+    if (abort.signal.aborted) runStatus = 'stopped'
+  } catch (err) {
+    // Anything thrown OUTSIDE the per-node try (getSettings, topologicalLevels,
+    // an unexpected throw) lands here instead of leaking as an unhandled
+    // rejection — and the finally still cleans up + notifies the renderer.
+    runStatus = 'error'
+    runError = (err as Error).message ?? String(err)
+  } finally {
+    runningWorkflows.delete(workflowId)
+    const unreached = nodes.filter(n => !ran.has(n.id)).map(n => n.id)
+    const done: WorkflowDoneEvent = { workflowId, status: runStatus, error: runError, unreached }
+    try { win.webContents.send(IPC.WORKFLOW_DONE, done) } catch { /* window gone */ }
+  }
 }
 
 export function stopWorkflow(workflowId: string): void {
   runningWorkflows.get(workflowId)?.abort()
 }
 
-/** Parse "providerId::model" encoded provider-model picker value. */
+/** Parse "providerId::model" encoded provider-model picker value. Splits on the
+ *  FIRST "::" only, so a model id that itself contains "::" survives intact. */
 function parseProviderModel(value: unknown): { providerId: string; model: string } | null {
-  if (typeof value !== 'string' || !value.includes('::')) return null
-  const [providerId, model] = value.split('::')
+  if (typeof value !== 'string') return null
+  const idx = value.indexOf('::')
+  if (idx < 0) return null
+  const providerId = value.slice(0, idx)
+  const model = value.slice(idx + 2)
   if (!providerId || !model) return null
   return { providerId, model }
 }
@@ -108,7 +185,8 @@ async function executeNode(
   variables: Record<string, string>,
   settings: ReturnType<typeof getSettings>,
   win: BrowserWindow,
-  workflowId: string
+  workflowId: string,
+  signal: AbortSignal
 ): Promise<unknown> {
   const d = node.data
   const upstreamText = String(input['text'] ?? '')
@@ -139,7 +217,8 @@ async function executeNode(
         model,
         system,
         temperature,
-        messages: [{ role: 'user', content: rendered }]
+        messages: [{ role: 'user', content: rendered }],
+        abortSignal: signal
       })
       return result.text
     }
@@ -158,8 +237,11 @@ async function executeNode(
         n: (d.n as number) || 1,
         size: (d.size as string) || '1024x1024',
         quality: (d.quality as string) || undefined,
-        settings: effectiveSettings
+        settings: effectiveSettings,
+        abortSignal: signal
       })
+      // Don't persist if the user stopped while the request was completing.
+      throwIfAborted(signal)
       for (const img of result.images) {
         await saveGalleryItem({
           type: 'image',
@@ -191,8 +273,11 @@ async function executeNode(
         duration,
         settings: effectiveSettings,
         win,
-        sessionId: workflowId
+        sessionId: workflowId,
+        abortSignal: signal
       })
+      // Don't persist if the user stopped while the request was completing.
+      throwIfAborted(signal)
       if (result.path) {
         await saveGalleryItem({
           type: 'video',
@@ -225,6 +310,7 @@ async function executeNode(
     case 'file_write': {
       const filePath = String(d.filePath || '')
       if (!filePath) throw new Error('写入文件节点未设置 filePath')
+      throwIfAborted(signal)
       const operations = Array.isArray(d.operations) ? d.operations : []
       const result = await writeFile({ filePath, operations: operations as never })
       return result
@@ -235,6 +321,7 @@ async function executeNode(
       const videoPath = input['video'] as string | undefined
       const filePath = imagePath || videoPath
       if (!filePath) throw new Error('保存画廊节点没有接收到图片或视频')
+      throwIfAborted(signal)
       const type = videoPath ? 'video' : 'image'
       await saveGalleryItem({
         type,

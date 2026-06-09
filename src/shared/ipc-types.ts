@@ -274,8 +274,28 @@ export const IPC = {
   WORKFLOW_RUN: 'workflow:run',
   WORKFLOW_STOP: 'workflow:stop',
   WORKFLOW_NODE_STATUS: 'workflow:node-status', // main → renderer (event)
+  WORKFLOW_DONE: 'workflow:done',               // main → renderer (event, terminal)
   WORKFLOW_FROM_CHAT: 'workflow:from-chat',
 } as const
+
+// Per-node status event (main → renderer). `pending` = queued before it starts.
+export interface WorkflowNodeStatusEvent {
+  workflowId: string
+  nodeId: string
+  status: 'pending' | 'running' | 'done' | 'error'
+  message?: string
+}
+
+// Terminal workflow event (main → renderer). Always emitted exactly once per run
+// — on success, failure, or stop — so the renderer can reliably leave the
+// "running" state instead of inferring it from per-node status.
+export interface WorkflowDoneEvent {
+  workflowId: string
+  status: 'completed' | 'error' | 'stopped'
+  error?: string
+  /** Node ids that never ran (dropped by a cycle, or skipped by fail-fast/stop). */
+  unreached?: string[]
+}
 
 // Agent progress event payload
 export interface AgentProgressEvent {
@@ -425,6 +445,14 @@ export interface AppSettings {
   defaultChatProviderId: string
   defaultImageModel: string
   defaultImageProviderId: string
+  /** Default image-generation rules, applied to every image turn (per-turn row can
+   *  override). Mirrors the renderer's ImageParams (Chat/ChatHeader). */
+  defaultImageRules?: {
+    resolution: '1K' | '2K' | '4K'
+    quality: 'standard' | 'hd'
+    ratio: string
+    count: 1 | 2 | 3 | 4
+  }
   defaultVideoModel: string
   defaultVideoProviderId: string
   defaultEmbeddingModel: string

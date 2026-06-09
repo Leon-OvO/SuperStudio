@@ -290,8 +290,12 @@ function ProviderModelPicker({
   settings: AppSettings | null
   role: 'chat' | 'image' | 'video' | 'embedding'
 }) {
-  // Encoded as "providerId::modelName"; empty string means "use global default"
-  const [providerId, modelName] = value.includes('::') ? value.split('::') : ['', '']
+  // Encoded as "providerId::modelName"; empty string means "use global default".
+  // Split on the FIRST "::" only so a model id that contains "::" stays intact
+  // (mirrors parseProviderModel in the workflow engine).
+  const sep = value.indexOf('::')
+  const providerId = sep >= 0 ? value.slice(0, sep) : ''
+  const modelName = sep >= 0 ? value.slice(sep + 2) : ''
 
   const provider = providers.find(p => p.id === providerId)
   const models = provider?.models ?? []

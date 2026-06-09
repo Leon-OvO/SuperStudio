@@ -46,6 +46,10 @@ function WorkflowEditor() {
   const [connectionError, setConnectionError] = useState<string | null>(null)
   const [variableForm, setVariableForm] = useState<Record<string, string> | null>(null)
   const idCounter = useRef(0)
+  // Mirror of currentId for the once-subscribed status listeners, so events from a
+  // run the user has navigated away from don't bleed into the now-shown workflow.
+  const currentIdRef = useRef<string | null>(null)
+  useEffect(() => { currentIdRef.current = currentId }, [currentId])
   const { pendingWorkflowId, setPendingWorkflowId } = useUIStore()
   const dlg = useConfirmDialog()
   const t = useT()
@@ -60,20 +64,39 @@ function WorkflowEditor() {
     loadWorkflow(id)
   }, [pendingWorkflowId])
 
+  // Subscribe ONCE. Per-node events only merge status (functional update — no
+  // stale snapshot). Leaving the "running" state is driven solely by the engine's
+  // terminal WORKFLOW_DONE event, so abort / fail-fast / cycles can't strand the
+  // UI in "running", and a parallel level finishing can't race the completion edge.
   useEffect(() => {
-    const unsub = window.api.onWorkflowNodeStatus((event: unknown) => {
-      const e = event as { nodeId: string; status: string; message?: string }
+    const onStatus = (event: unknown): void => {
+      const e = event as { workflowId: string; nodeId: string; status: string }
+      if (e.workflowId !== currentIdRef.current) return
       setNodeStatuses(prev => ({ ...prev, [e.nodeId]: e.status }))
-      if (e.status === 'done' || e.status === 'error') {
-        const allDone = nodes.every(n => {
-          const s = e.nodeId === n.id ? e.status : nodeStatuses[n.id]
-          return s === 'done' || s === 'error'
+    }
+    const onDone = (event: unknown): void => {
+      const e = event as { workflowId: string; status: 'completed' | 'error' | 'stopped'; error?: string; unreached?: string[] }
+      if (e.workflowId !== currentIdRef.current) return
+      setRunning(false)
+      if (e.unreached?.length) {
+        // Nodes that never ran (dropped by a cycle, or skipped by fail-fast/stop)
+        // would otherwise sit on 'pending' forever — mark them skipped.
+        setNodeStatuses(prev => {
+          const next = { ...prev }
+          for (const id of e.unreached!) {
+            if (next[id] !== 'done' && next[id] !== 'error') next[id] = 'skipped'
+          }
+          return next
         })
-        if (allDone) setRunning(false)
       }
-    })
-    return () => { unsub?.() }
-  }, [nodes, nodeStatuses])
+      if (e.status === 'error') toast.error('工作流出错：' + (e.error || '未知错误'))
+      else if (e.status === 'stopped') toast.info('工作流已停止')
+      else toast.success('工作流已完成')
+    }
+    const unsubStatus = window.api.onWorkflowNodeStatus(onStatus)
+    const unsubDone = window.api.onWorkflowDone(onDone)
+    return () => { unsubStatus?.(); unsubDone?.() }
+  }, [])
 
   async function loadWorkflows() {
     const data = await window.api.listWorkflows()
@@ -201,6 +224,42 @@ function WorkflowEditor() {
         })
       }
     }
+    // Required config the engine would otherwise only discover mid-run (and then
+    // throw with a worse error surface). Only the cases that DEFINITELY fail.
+    const hasIncoming = (id: string): boolean => (incoming.get(id) ?? 0) > 0
+    for (const n of nodes) {
+      const d = (n.data ?? {}) as Record<string, unknown>
+      const label = (d.label as string) || NODE_DEFINITIONS[n.type as NodeKind]?.label || (n.type as string)
+      if (n.type === 'file_write' && !String(d.filePath ?? '').trim()) {
+        errors.push({ nodeId: n.id, message: `节点「${label}」未设置写入文件路径。` })
+      }
+      if (n.type === 'file_read' && !String(d.filePath ?? '').trim() && !hasIncoming(n.id)) {
+        errors.push({ nodeId: n.id, message: `节点「${label}」未设置读取文件路径，也没有上游提供路径。` })
+      }
+      if (n.type === 'web_search' && !String(d.query ?? '').trim() && !hasIncoming(n.id)) {
+        errors.push({ nodeId: n.id, message: `节点「${label}」未设置搜索内容，也没有上游输入。` })
+      }
+    }
+
+    // Cycle detection (Kahn): if not every node drains to in-degree 0, there's a
+    // loop. The engine silently DROPS cycle nodes (they never run), so catch it here.
+    const indeg: Record<string, number> = {}
+    const adj: Record<string, string[]> = {}
+    for (const n of nodes) { indeg[n.id] = 0; adj[n.id] = [] }
+    for (const e of edges) {
+      if (adj[e.source] && e.target in indeg) { adj[e.source].push(e.target); indeg[e.target]++ }
+    }
+    const queue = nodes.filter(n => indeg[n.id] === 0).map(n => n.id)
+    let drained = 0
+    while (queue.length) {
+      const id = queue.shift()!
+      drained++
+      for (const c of adj[id]) { if (--indeg[c] === 0) queue.push(c) }
+    }
+    if (drained < nodes.length) {
+      errors.push({ nodeId: '', message: '工作流存在环形依赖（节点互相循环连接），成环的节点不会执行，请断开循环连线。' })
+    }
+
     // Workflow needs at least one terminal — output / gallery_save / file_write
     const hasTerminal = nodes.some(n => ['output', 'gallery_save', 'file_write'].includes(n.type as string))
     if (!hasTerminal) {
@@ -216,7 +275,13 @@ function WorkflowEditor() {
     setVariableForm(null)
     setNodeStatuses({})
     setRunning(true)
-    await window.api.runWorkflow(currentId!, variables)
+    // The engine rejects a duplicate run; surface that instead of hanging on
+    // "running" while waiting for a WORKFLOW_DONE that will never come.
+    const r = await window.api.runWorkflow(currentId!, variables) as { started?: boolean; error?: string }
+    if (r?.error) {
+      setRunning(false)
+      toast.error(r.error)
+    }
   }
 
   async function stopWf() {

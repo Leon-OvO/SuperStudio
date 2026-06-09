@@ -1,5 +1,5 @@
 import { Handle, Position, type NodeProps } from '@xyflow/react'
-import { Loader2, CheckCircle, XCircle } from 'lucide-react'
+import { Loader2, CheckCircle, XCircle, MinusCircle } from 'lucide-react'
 import { cn } from '../../lib/utils'
 
 export type NodeKind =
@@ -373,7 +373,8 @@ function GenericNode({ data, type }: NodeProps) {
       def.color,
       status === 'running' && 'ring-2 ring-primary',
       status === 'done' && 'ring-2 ring-green-500',
-      status === 'error' && 'ring-2 ring-destructive'
+      status === 'error' && 'ring-2 ring-destructive',
+      status === 'skipped' && 'ring-1 ring-muted-foreground/40 opacity-60'
     )}>
       {inPort && (
         <Handle
@@ -386,6 +387,7 @@ function GenericNode({ data, type }: NodeProps) {
         {status === 'running' && <Loader2 size={11} className="animate-spin" />}
         {status === 'done' && <CheckCircle size={11} className="text-green-500" />}
         {status === 'error' && <XCircle size={11} className="text-destructive" />}
+        {status === 'skipped' && <MinusCircle size={11} className="text-muted-foreground" />}
         <span className="font-medium">{label || def.label}</span>
       </div>
       <div className="flex items-center justify-between mt-0.5">

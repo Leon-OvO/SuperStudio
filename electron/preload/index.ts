@@ -126,7 +126,7 @@ const api = {
     sessionId: string,
     message: string,
     attachments?: unknown[],
-    overrides?: { providerId?: string; model?: string; mountedSpaceIds?: string[]; imageSize?: string; imageQuality?: string; imageCount?: number; computerMode?: boolean }
+    overrides?: { providerId?: string; model?: string; mountedSpaceIds?: string[]; imageSize?: string; imageQuality?: string; imageCount?: number; computerMode?: boolean; forceImage?: boolean }
   ) => ipcRenderer.invoke(IPC.AGENT_RUN, sessionId, message, attachments, overrides),
   stopAgent: (sessionId: string) => ipcRenderer.invoke(IPC.AGENT_STOP, sessionId),
   classifyIntent: (message: string, providerId: string, model: string) =>
@@ -349,8 +349,14 @@ const api = {
     ipcRenderer.invoke(IPC.WORKFLOW_RUN, workflowId, variables),
   stopWorkflow: (workflowId: string) => ipcRenderer.invoke(IPC.WORKFLOW_STOP, workflowId),
   onWorkflowNodeStatus: (cb: (event: unknown) => void) => {
-    ipcRenderer.on(IPC.WORKFLOW_NODE_STATUS, (_e, data) => cb(data))
-    return () => ipcRenderer.removeAllListeners(IPC.WORKFLOW_NODE_STATUS)
+    const listener = (_e: unknown, data: unknown): void => cb(data)
+    ipcRenderer.on(IPC.WORKFLOW_NODE_STATUS, listener)
+    return () => ipcRenderer.removeListener(IPC.WORKFLOW_NODE_STATUS, listener)
+  },
+  onWorkflowDone: (cb: (event: unknown) => void) => {
+    const listener = (_e: unknown, data: unknown): void => cb(data)
+    ipcRenderer.on(IPC.WORKFLOW_DONE, listener)
+    return () => ipcRenderer.removeListener(IPC.WORKFLOW_DONE, listener)
   },
   workflowFromChat: (sessionId: string) =>
     ipcRenderer.invoke(IPC.WORKFLOW_FROM_CHAT, sessionId),

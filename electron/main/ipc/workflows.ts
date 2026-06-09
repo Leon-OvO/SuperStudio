@@ -3,7 +3,7 @@ import { IPC } from '../../../src/shared/ipc-types'
 import { dbRun, dbAll, dbGet } from '../db/sqlite'
 import { randomUUID } from 'crypto'
 import { getMainWindow } from '../index'
-import { executeWorkflow, stopWorkflow } from '../agent/workflow-engine'
+import { executeWorkflow, stopWorkflow, isWorkflowRunning } from '../agent/workflow-engine'
 
 export function workflowHandlers(): void {
   ipcMain.handle(IPC.WORKFLOWS_LIST, () => {
@@ -38,10 +38,17 @@ export function workflowHandlers(): void {
   ipcMain.handle(IPC.WORKFLOW_RUN, async (_e, workflowId: string, variables?: Record<string, string>) => {
     const win = getMainWindow()
     if (!win) return { error: 'No window' }
+    // Reject a duplicate run (e.g. a second window) so it can't clobber the
+    // in-flight run's AbortController and make it unstoppable.
+    if (isWorkflowRunning(workflowId)) return { error: '该工作流已在运行中', started: false }
     const row = dbGet<{ definition: string }>(`SELECT definition FROM workflows WHERE id = ?`, [workflowId])
     if (!row) throw new Error('Workflow not found')
     const definition = JSON.parse(row.definition)
-    executeWorkflow(workflowId, definition, variables || {}, win)
+    // Fire-and-forget: the run drives the UI via WORKFLOW_NODE_STATUS / WORKFLOW_DONE
+    // events. executeWorkflow has its own try/finally and resolves on every path,
+    // but keep a defensive .catch so nothing can become an unhandled rejection.
+    void executeWorkflow(workflowId, definition, variables || {}, win).catch(err =>
+      console.error('[workflow] unexpected run failure:', err))
     return { started: true }
   })
 
