@@ -47,6 +47,30 @@ export function SshManager() {
     toast.success(`已删除 ${ids.length} 个连接`)
   }
 
+  async function handleBulkSetAutoConfirm(ids: string[], value: boolean) {
+    // Only touch连接 whose state actually changes, so the confirm count and the
+    // saves reflect真实变更数（混合选择时不会把已是目标态的项算进去/重写一遍）。
+    const targets = connections.filter(c => ids.includes(c.id) && !!c.autoConfirm !== value)
+    if (!targets.length) return
+    // Turning免确认 ON is high-risk (bypasses every per-command prompt) → confirm.
+    // Turning it OFF restores prompting → safe, no confirm needed.
+    if (value) {
+      const ok = await dlg.confirm({
+        message: `确定对选中的 ${targets.length} 个连接开启「免确认执行」？\n\n开启后，Agent 在这些连接上执行命令（含删除 / 重启 / 改配置等高危操作）将不再逐次弹窗确认。仅在你完全信任相关任务时使用。`,
+        tone: 'danger',
+        confirmLabel: `开启 ${targets.length} 个`,
+      })
+      if (!ok) return
+    }
+    // Connections from SSH_LIST carry decrypted creds; saveSshConnection re-encrypts,
+    // so spreading只改 autoConfirm 不会丢密码/私钥。
+    for (const c of targets) await window.api.sshSaveConnection({ ...c, autoConfirm: value })
+    await reload()
+    toast.success(value
+      ? `已对 ${targets.length} 个连接开启免确认执行`
+      : `已关闭 ${targets.length} 个连接的免确认执行`)
+  }
+
   async function handleDuplicate(c: SshConnection) {
     const copy: SshConnection = { ...c, id: randomId(), name: `${c.name} 副本`, createdAt: undefined }
     await window.api.sshSaveConnection(copy)
@@ -95,6 +119,7 @@ export function SshManager() {
           onEdit={(c) => setEditing(c)}
           onDelete={handleDelete}
           onBulkDelete={handleBulkDelete}
+          onBulkSetAutoConfirm={handleBulkSetAutoConfirm}
           onDuplicate={handleDuplicate}
           onImport={handleImport}
           importing={importing}

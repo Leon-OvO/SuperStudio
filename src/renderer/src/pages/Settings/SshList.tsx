@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import {
   Plus, Edit2, Trash2, Server, KeyRound, Lock, Upload, Loader2, Copy, Search, X,
-  ChevronDown, ChevronRight, Activity, CheckCircle2, XCircle, FolderClosed
+  ChevronDown, ChevronRight, Activity, CheckCircle2, XCircle, FolderClosed, Zap, ShieldCheck
 } from 'lucide-react'
 import type { SshConnection } from '../../../../shared/ipc-types'
 import { Select } from '../../components/ui/Select'
@@ -15,6 +15,7 @@ interface Props {
   onEdit: (c: SshConnection) => void
   onDelete: (id: string) => void
   onBulkDelete: (ids: string[]) => Promise<void> | void
+  onBulkSetAutoConfirm: (ids: string[], value: boolean) => Promise<void> | void
   onDuplicate: (c: SshConnection) => void
   onCreate: () => void
   onImport: () => void
@@ -30,13 +31,14 @@ async function runPool<T>(items: T[], n: number, fn: (t: T) => Promise<void>): P
   await Promise.all(Array.from({ length: Math.min(n, items.length) }, worker))
 }
 
-export function SshList({ connections, onEdit, onDelete, onBulkDelete, onDuplicate, onCreate, onImport, importing }: Props) {
+export function SshList({ connections, onEdit, onDelete, onBulkDelete, onBulkSetAutoConfirm, onDuplicate, onCreate, onImport, importing }: Props) {
   const [query, setQuery] = useState('')
   const [sortKey, setSortKey] = useState<SortKey>('name')
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   const [status, setStatus] = useState<Record<string, TestState>>({})
   const [bulkTesting, setBulkTesting] = useState(false)
+  const [settingAuto, setSettingAuto] = useState(false)
 
   // Filter → group → sort.
   const groups = useMemo(() => {
@@ -97,6 +99,16 @@ export function SshList({ connections, onEdit, onDelete, onBulkDelete, onDuplica
   async function bulkDelete() {
     await onBulkDelete(selectedVisible)
     setSelected(new Set())
+  }
+
+  // Split the selection by current免确认 state so each button shows how many it will
+  // actually change (mixed selections), and disables when nothing would change.
+  const selectedAutoOn = selectedVisible.filter(id => connections.find(c => c.id === id)?.autoConfirm).length
+  const toEnable = selectedVisible.length - selectedAutoOn // selected that are currently OFF
+  const toDisable = selectedAutoOn                          // selected that are currently ON
+  async function bulkSetAutoConfirm(value: boolean) {
+    setSettingAuto(true)
+    try { await onBulkSetAutoConfirm(selectedVisible, value) } finally { setSettingAuto(false) }
   }
 
   const StatusDot = ({ id }: { id: string }) => {
@@ -162,13 +174,27 @@ export function SshList({ connections, onEdit, onDelete, onBulkDelete, onDuplica
 
           {/* selection action bar */}
           {selectedVisible.length > 0 && (
-            <div className="flex items-center gap-2 text-sm bg-accent/60 border border-border rounded-md px-3 py-2">
+            <div className="flex items-center gap-2 flex-wrap text-sm bg-accent/60 border border-border rounded-md px-3 py-2">
               <span className="text-foreground font-medium">已选 {selectedVisible.length}</span>
               <div className="flex-1" />
               <button onClick={bulkTest} disabled={bulkTesting}
                 className="flex items-center gap-1 px-2.5 py-1 rounded border border-border bg-card hover:bg-accent text-xs disabled:opacity-50">
                 {bulkTesting ? <Loader2 size={12} className="animate-spin" /> : <Activity size={12} />} 批量测试
               </button>
+              <span className="w-px h-4 bg-border mx-0.5" />
+              <button onClick={() => bulkSetAutoConfirm(true)}
+                disabled={toEnable === 0 || settingAuto}
+                title="对选中连接开启免确认执行（Agent 执行命令不再弹窗）"
+                className="flex items-center gap-1 px-2.5 py-1 rounded border border-amber-500/40 text-amber-700 dark:text-amber-400 hover:bg-amber-500/10 text-xs disabled:opacity-40 disabled:cursor-not-allowed">
+                <Zap size={12} /> 开启免确认{toEnable > 0 && toDisable > 0 ? `（${toEnable}）` : ''}
+              </button>
+              <button onClick={() => bulkSetAutoConfirm(false)}
+                disabled={toDisable === 0 || settingAuto}
+                title="对选中连接关闭免确认执行（恢复每条命令弹窗确认）"
+                className="flex items-center gap-1 px-2.5 py-1 rounded border border-border bg-card hover:bg-accent text-xs disabled:opacity-40 disabled:cursor-not-allowed">
+                <ShieldCheck size={12} /> 关闭免确认{toEnable > 0 && toDisable > 0 ? `（${toDisable}）` : ''}
+              </button>
+              <span className="w-px h-4 bg-border mx-0.5" />
               <button onClick={bulkDelete}
                 className="flex items-center gap-1 px-2.5 py-1 rounded border border-destructive/40 text-destructive hover:bg-destructive/10 text-xs">
                 <Trash2 size={12} /> 批量删除
@@ -212,6 +238,12 @@ export function SshList({ connections, onEdit, onDelete, onBulkDelete, onDuplica
                               <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground inline-flex items-center gap-1 shrink-0">
                                 {c.authType === 'privateKey' ? <><KeyRound size={9} /> 私钥</> : <><Lock size={9} /> 密码</>}
                               </span>
+                              {c.autoConfirm && (
+                                <span title="免确认执行：Agent 在此连接上执行命令不弹窗确认"
+                                  className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-700 dark:text-amber-400 inline-flex items-center gap-1 shrink-0">
+                                  <Zap size={9} /> 免确认
+                                </span>
+                              )}
                             </div>
                             <div className="text-xs text-muted-foreground mt-0.5 truncate">{c.username}@{c.host}:{c.port || 22}</div>
                           </div>
