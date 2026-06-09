@@ -52,12 +52,14 @@ export const IPC = {
   FILE_REVERT_BACKUP: 'file:revert-backup',
   FILE_OPEN_DIALOG: 'file:open-dialog',
   FILE_WRITE_TEMP: 'file:write-temp',
+  FILE_APPROVE_PATH: 'file:approve-path',
   FILE_SAVE_AS: 'file:save-as',
   FILE_SAVE_TEXT: 'file:save-text',
   SHELL_SHOW_ITEM: 'shell:show-item',
 
   // Gallery
   GALLERY_LIST: 'gallery:list',
+  GALLERY_SEARCH: 'gallery:search',
   GALLERY_DELETE: 'gallery:delete',
   GALLERY_BATCH_DELETE: 'gallery:batch-delete',
   GALLERY_BATCH_SAVE: 'gallery:batch-save',

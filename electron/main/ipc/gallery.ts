@@ -1,7 +1,7 @@
 import { ipcMain, dialog, BrowserWindow, app } from 'electron'
 import { randomUUID } from 'crypto'
 import { IPC } from '../../../src/shared/ipc-types'
-import { listGallery, deleteGalleryItem, batchDeleteGallery, saveGalleryItem } from '../services/gallery'
+import { listGallery, searchGalleryImages, deleteGalleryItem, batchDeleteGallery, saveGalleryItem } from '../services/gallery'
 import { getSettings } from '../services/store'
 import { dbAll } from '../db/sqlite'
 import fs from 'fs'
@@ -17,6 +17,7 @@ const KIND_BY_EXT: Record<string, 'image' | 'video' | 'audio'> = {
 
 export function galleryHandlers(): void {
   ipcMain.handle(IPC.GALLERY_LIST, (_e, filters) => listGallery(filters))
+  ipcMain.handle(IPC.GALLERY_SEARCH, (_e, query: string, limit?: number) => searchGalleryImages(query || '', limit ?? 40))
   ipcMain.handle(IPC.GALLERY_DELETE, (_e, id: number) => {
     deleteGalleryItem(id)
     return { ok: true }

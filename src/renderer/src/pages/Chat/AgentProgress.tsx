@@ -114,7 +114,9 @@ export function AgentProgress() {
                   <div className="mt-1">
                     {step.artifact.type === 'image' && (
                       <img
-                        src={`file://${step.artifact.path}`}
+                        // Must use the app's allowlisted local-file:// protocol (raw
+                        // file:// is blocked in the renderer) + forward slashes.
+                        src={`local-file:///${step.artifact.path.replace(/\\/g, '/').replace(/^\//, '')}`}
                         alt="Generated"
                         className="max-w-[200px] rounded border border-border"
                       />

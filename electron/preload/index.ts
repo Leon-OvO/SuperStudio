@@ -189,6 +189,9 @@ const api = {
   // File.path; webUtils.getPathForFile is the supported replacement. Returns ''
   // for in-memory File objects (no disk backing) — callers fall back to writeTempFile.
   getPathForFile: (file: File): string => { try { return webUtils.getPathForFile(file) } catch { return '' } },
+  // Allowlist a dropped file's path so its local-file:// preview is served (drag-drop
+  // bypasses the picker/paste approval). Await before rendering the thumbnail.
+  approvePath: (filePath: string) => ipcRenderer.invoke(IPC.FILE_APPROVE_PATH, filePath),
   saveFileAs: (sourcePath: string, suggestedName?: string) =>
     ipcRenderer.invoke(IPC.FILE_SAVE_AS, sourcePath, suggestedName),
   saveTextAs: (params: { defaultName: string; content: string; filters?: Array<{ name: string; extensions: string[] }> }) =>
@@ -197,6 +200,7 @@ const api = {
 
   // --- Gallery ---
   listGallery: (filters?: unknown) => ipcRenderer.invoke(IPC.GALLERY_LIST, filters),
+  searchGallery: (query: string, limit?: number) => ipcRenderer.invoke(IPC.GALLERY_SEARCH, query, limit),
   deleteGalleryItem: (id: number) => ipcRenderer.invoke(IPC.GALLERY_DELETE, id),
   batchDeleteGallery: (ids: number[]) => ipcRenderer.invoke(IPC.GALLERY_BATCH_DELETE, ids),
   batchSaveGallery: (ids: number[]) => ipcRenderer.invoke(IPC.GALLERY_BATCH_SAVE, ids),

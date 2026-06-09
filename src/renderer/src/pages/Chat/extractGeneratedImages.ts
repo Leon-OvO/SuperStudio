@@ -4,6 +4,8 @@ export interface GeneratedImageRef {
   path: string
   /** Stable, chronological label shown in the @-mention picker, e.g. "图1". */
   label: string
+  /** Section header in the picker — e.g. "本对话生成" or "素材库". Omitted = default. */
+  group?: string
 }
 
 /**

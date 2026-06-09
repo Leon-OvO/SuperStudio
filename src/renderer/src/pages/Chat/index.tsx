@@ -454,8 +454,12 @@ export function ChatPage() {
   }, [])
 
   const currentMessages = activeSessionId ? (messages[activeSessionId] || []) : []
-  // Images this conversation has generated — feeds the composer's @-mention picker.
-  const generatedImages = React.useMemo(() => extractGeneratedImages(currentMessages), [currentMessages])
+  // This conversation's generated images (newest first) — the in-memory source for
+  // the @-mention picker. The 素材库 (gallery) is searched on-demand inside ChatInput.
+  const mentionImages = React.useMemo(
+    () => [...extractGeneratedImages(currentMessages)].reverse().map(g => ({ ...g, group: '本对话生成' })),
+    [currentMessages]
+  )
   const currentOverride = activeSessionId ? sessionModel[activeSessionId] : null
   const canRetry = !isRunning && !!(activeSessionId && lastSentRef.current[activeSessionId])
   const isImageMode = !!(currentOverride?.model && defaultImageModel && currentOverride.model === defaultImageModel)
@@ -509,7 +513,7 @@ export function ChatPage() {
           disabled={false}
           attachments={attachments}
           setAttachments={setAttachments}
-          generatedImages={generatedImages}
+          generatedImages={mentionImages}
           imageMode={isImageMode}
           forceImage={forceImage}
           onForceImageChange={setForceImage}

@@ -1,7 +1,11 @@
-import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
+import { useState, useRef, useCallback, useEffect, useMemo, Fragment } from 'react'
 import { BRAND } from '@shared/brand'
 import type { GeneratedImageRef } from './extractGeneratedImages'
-import { Send, Square, Paperclip, X, ImagePlus, FileText, ImageOff, Monitor, Folder, FolderOpen } from 'lucide-react'
+import type { GalleryItem } from '../../../../shared/ipc-types'
+
+/** Max 素材库 results the @-picker requests per query (LIMIT pushed into SQL). */
+const MENTION_GALLERY_LIMIT = 40
+import { Send, Square, Paperclip, X, ImagePlus, FileText, ImageOff, Monitor, Folder, FolderOpen, Check, AtSign } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { ModelPicker } from './ModelPicker'
 import { Select } from '../../components/ui/Select'
@@ -61,26 +65,52 @@ export function ChatInput({
 }: Props) {
   const [text, setText] = useState('')
   const [previewSrc, setPreviewSrc] = useState<string | null>(null)
-  // `@` mention of a previously-generated image: {start} = index of the '@'.
+  // `@` mention picker: {start} = index of the '@'. Multi-select — clicking a row
+  // toggles a reference live and the popup STAYS open; the @query token is removed
+  // only when the picker closes (Enter/Tab/Esc/blur).
   const [mention, setMention] = useState<{ query: string; start: number } | null>(null)
   const [mentionIndex, setMentionIndex] = useState(0)
+  // 素材库 results, searched on-demand (debounced, LIMIT'd) so a huge library never
+  // loads wholesale. Cap reached => MENTION_GALLERY_LIMIT exactly.
+  const [galleryResults, setGalleryResults] = useState<GeneratedImageRef[]>([])
+  const mentionAddedRef = useRef<Set<string>>(new Set())  // paths toggled-on this @ session
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const ctxMenu = useImageContextMenu()
 
-  // Newest-first list of generated images filtered by the @-query (label or filename).
+  // 本对话生成 (in-memory, filtered by query) + 素材库 (server-searched), de-duped by path.
   const mentionItems = useMemo(() => {
-    if (!mention || !generatedImages?.length) return []
-    const all = [...generatedImages].reverse()
+    if (!mention) return []
     const q = mention.query.toLowerCase()
-    if (!q) return all
-    return all.filter(g => g.label.toLowerCase().includes(q) || (g.path.split(/[\\/]/).pop() || '').toLowerCase().includes(q))
-  }, [mention, generatedImages])
+    const chat = (generatedImages ?? []).filter(g =>
+      !q || g.label.toLowerCase().includes(q) || (g.path.split(/[\\/]/).pop() || '').toLowerCase().includes(q))
+    const seen = new Set(chat.map(g => g.path))
+    return [...chat, ...galleryResults.filter(g => !seen.has(g.path))]
+  }, [mention, generatedImages, galleryResults])
   useEffect(() => { setMentionIndex(0) }, [mention?.query])
+  // How many currently-shown picker items are already referenced (footer count).
+  const pickedCount = mention ? mentionItems.filter(g => attachments.some(a => a.path === g.path)).length : 0
+
+  // Debounced 素材库 search whenever the @query changes.
+  useEffect(() => {
+    if (!mention) { setGalleryResults([]); mentionAddedRef.current = new Set(); return }
+    let cancelled = false
+    const t = setTimeout(async () => {
+      try {
+        const items = (await window.api.searchGallery(mention.query, MENTION_GALLERY_LIMIT)) as GalleryItem[]
+        if (cancelled) return
+        setGalleryResults(items.map(it => ({
+          path: it.filePath,
+          label: it.filePath.split(/[\\/]/).pop() || '素材',
+          group: '素材库'
+        })))
+      } catch { if (!cancelled) setGalleryResults([]) }
+    }, 180)
+    return () => { cancelled = true; clearTimeout(t) }
+  }, [mention])
 
   // Detect an `@token` immediately left of the caret (no whitespace inside, `@` at a
-  // word boundary). Returns null when there's nothing to complete.
+  // word boundary). Always allows `@` so 素材库 can be searched even with no chat images.
   const detectMention = useCallback((value: string, caret: number): { query: string; start: number } | null => {
-    if (!generatedImages?.length) return null
     const upto = value.slice(0, caret)
     const at = upto.lastIndexOf('@')
     if (at === -1) return null
@@ -89,29 +119,63 @@ export function ChatInput({
     const before = at === 0 ? '' : value[at - 1]
     if (before && !/\s/.test(before)) return null
     return { query: between, start: at }
-  }, [generatedImages])
+  }, [])
 
   const handleTextChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setText(e.target.value)
     setMention(detectMention(e.target.value, e.target.selectionStart ?? e.target.value.length))
   }
 
-  const selectMention = useCallback((item: GeneratedImageRef) => {
-    if (!mention) return
-    // Drop the "@query" token from the text.
-    const next = text.slice(0, mention.start) + text.slice(mention.start + 1 + mention.query.length)
+  // Close the picker: strip the "@query" token from the text. Selections are already
+  // applied live, so closing never loses them.
+  const closeMention = useCallback(() => {
+    setMention(m => {
+      if (m) setText(prev => {
+        // Drop "@query" plus one trailing space so "a @x b" → "a b", not "a  b".
+        const after = prev.slice(m.start + 1 + m.query.length).replace(/^[ \t]/, '')
+        return prev.slice(0, m.start) + after
+      })
+      return null
+    })
+    setGalleryResults([])
+    mentionAddedRef.current = new Set()
+  }, [])
+
+  // Toolbar "引用图片" entry: insert an `@` at the caret and open the picker — makes
+  // the @-reference feature discoverable instead of a hidden keystroke.
+  const insertMentionTrigger = useCallback(() => {
+    const el = textareaRef.current
+    const caret = el?.selectionStart ?? text.length
+    const before = text.slice(0, caret)
+    const insert = (before.length > 0 && !/\s$/.test(before) ? ' ' : '') + '@'
+    const next = before + insert + text.slice(caret)
+    const newCaret = before.length + insert.length
     setText(next)
-    setMention(null)
-    // Add the image as a reference attachment (deduped).
-    const name = item.path.split(/[\\/]/).pop() || 'reference.png'
+    setMention(detectMention(next, newCaret))
+    setTimeout(() => {
+      const e2 = textareaRef.current
+      if (e2) { e2.focus(); e2.setSelectionRange(newCaret, newCaret) }
+    }, 0)
+  }, [text, detectMention])
+
+  // Toggle an image as a reference attachment (multi-select). Popup stays open.
+  const toggleMentionImage = useCallback((item: GeneratedImageRef) => {
+    const p = item.path
+    if (attachments.some(a => a.path === p)) {
+      mentionAddedRef.current.delete(p)
+      setAttachments(prev => prev.filter(a => a.path !== p))
+      return
+    }
+    const name = p.split(/[\\/]/).pop() || 'reference.png'
     const ext = (name.split('.').pop() || 'png').toLowerCase()
     const mime = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg'
       : ext === 'webp' ? 'image/webp' : ext === 'gif' ? 'image/gif'
       : ext === 'bmp' ? 'image/bmp' : 'image/png'
-    setAttachments(prev => prev.some(a => a.path === item.path) ? prev : [...prev, { name: item.label, path: item.path, mimeType: mime }])
-    toast.info(`已引用${item.label}作为参考图`)
-    setTimeout(() => textareaRef.current?.focus(), 0)
-  }, [mention, text, setAttachments])
+    // Already allowlisted for gallery/generated, but approve defensively (imports).
+    void window.api.approvePath(p)
+    mentionAddedRef.current.add(p)
+    setAttachments(prev => prev.some(a => a.path === p) ? prev : [...prev, { name: item.label, path: p, mimeType: mime }])
+  }, [attachments, setAttachments])
 
   // Close preview on Escape
   useEffect(() => {
@@ -137,10 +201,21 @@ export function ChatInput({
   const handleKeyDown = (e: React.KeyboardEvent) => {
     // While the @-mention popup is open, the arrow/enter keys drive it.
     if (mention && mentionItems.length > 0) {
-      if (e.key === 'ArrowDown') { e.preventDefault(); setMentionIndex(i => (i + 1) % mentionItems.length); return }
-      if (e.key === 'ArrowUp') { e.preventDefault(); setMentionIndex(i => (i - 1 + mentionItems.length) % mentionItems.length); return }
-      if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); selectMention(mentionItems[mentionIndex]); return }
-      if (e.key === 'Escape') { e.preventDefault(); setMention(null); return }
+      const len = mentionItems.length
+      if (e.key === 'ArrowDown') { e.preventDefault(); setMentionIndex(i => (i + 1) % len); return }
+      if (e.key === 'ArrowUp') { e.preventDefault(); setMentionIndex(i => (i - 1 + len) % len); return }
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        e.preventDefault()
+        // If nothing was multi-selected this session, treat Enter as quick-pick of the
+        // highlighted row (backward-compatible single select); otherwise just finish.
+        if (mentionAddedRef.current.size === 0) {
+          const hi = mentionItems[Math.min(mentionIndex, len - 1)]
+          if (hi) toggleMentionImage(hi)
+        }
+        closeMention()
+        return
+      }
+      if (e.key === 'Escape') { e.preventDefault(); closeMention(); return }
     }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
@@ -213,6 +288,9 @@ export function ChatInput({
       try {
         const realPath = window.api.getPathForFile(file)
         if (realPath) {
+          // Drag-drop bypasses the picker/paste allowlisting — approve the path
+          // first, else the local-file:// thumbnail preview 403s (broken image).
+          await window.api.approvePath(realPath)
           setAttachments(prev => [...prev, { name: file.name, path: realPath, mimeType: file.type || getMimeType(realPath) }])
         } else {
           const base64 = await blobToBase64(file)
@@ -317,26 +395,59 @@ export function ChatInput({
           </div>
         )}
 
-        {/* @-mention picker — reference a previously generated image of this chat */}
+        {/* @-mention picker — multi-select images (本对话生成 / 素材库) as references.
+            Click toggles live; popup stays open. Finish via 「完成」 / click-away / Enter. */}
         {mention && mentionItems.length > 0 && (
-          <div className="absolute bottom-full left-2 mb-2 z-30 w-72 max-h-64 overflow-y-auto rounded-xl border border-border bg-popover shadow-xl p-1">
-            <div className="px-2 py-1 text-[10px] text-muted-foreground select-none">引用本对话生成的图片作为参考图</div>
-            {mentionItems.map((g, i) => (
+          <div className="absolute bottom-full left-2 mb-2 z-30 w-72 max-h-72 overflow-y-auto rounded-xl border border-border bg-popover shadow-xl p-1">
+            <div className="px-2 py-1 text-[10px] text-muted-foreground select-none">
+              @ 引用图片作为参考图（可多选，点缩略图即添加）
+            </div>
+            {mentionItems.map((g, i) => {
+              const curGroup = g.group || '本对话生成'
+              const showHeader = curGroup !== (i > 0 ? (mentionItems[i - 1].group || '本对话生成') : null)
+              const fname = g.path.split(/[\\/]/).pop() || ''
+              const checked = attachments.some(a => a.path === g.path)
+              return (
+                <Fragment key={g.path}>
+                  {showHeader && (
+                    <div className="px-2 pt-1.5 pb-0.5 text-[10px] font-medium text-muted-foreground/80 select-none">{curGroup}</div>
+                  )}
+                  <button
+                    type="button"
+                    onMouseDown={e => { e.preventDefault(); toggleMentionImage(g) }}
+                    onMouseEnter={() => setMentionIndex(i)}
+                    className={cn(
+                      'w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-left transition-colors',
+                      i === mentionIndex ? 'bg-accent' : 'hover:bg-accent/60'
+                    )}
+                  >
+                    <span className={cn(
+                      'w-4 h-4 rounded border flex items-center justify-center shrink-0',
+                      checked ? 'bg-primary border-primary text-primary-foreground' : 'border-border'
+                    )}>
+                      {checked && <Check size={11} />}
+                    </span>
+                    <img src={toLocalFileUrl(g.path)} loading="lazy" className="w-9 h-9 rounded object-cover border border-border shrink-0" alt={g.label} />
+                    <span className="text-xs font-medium shrink-0">{g.label}</span>
+                    {fname !== g.label && <span className="text-[10px] text-muted-foreground truncate">{fname}</span>}
+                  </button>
+                </Fragment>
+              )
+            })}
+            {galleryResults.length >= MENTION_GALLERY_LIMIT && (
+              <div className="px-2 pt-1 pb-0.5 text-[10px] text-muted-foreground/70 select-none">素材库结果较多，输入关键词缩小范围</div>
+            )}
+            {/* Confirm bar — so finishing isn't Enter-only. */}
+            <div className="sticky bottom-0 -mx-1 -mb-1 mt-1 px-2.5 py-1.5 bg-popover border-t border-border/60 flex items-center justify-between">
+              <span className="text-[10px] text-muted-foreground">已选 {pickedCount} 张 · 点空白处也可结束</span>
               <button
-                key={g.path}
                 type="button"
-                onMouseDown={e => { e.preventDefault(); selectMention(g) }}
-                onMouseEnter={() => setMentionIndex(i)}
-                className={cn(
-                  'w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-left transition-colors',
-                  i === mentionIndex ? 'bg-accent' : 'hover:bg-accent/60'
-                )}
+                onMouseDown={e => { e.preventDefault(); closeMention(); setTimeout(() => textareaRef.current?.focus(), 0) }}
+                className="px-2.5 py-1 rounded-md bg-primary text-primary-foreground text-[11px] font-medium hover:opacity-90 active:scale-95 transition-transform"
               >
-                <img src={toLocalFileUrl(g.path)} className="w-9 h-9 rounded object-cover border border-border shrink-0" alt={g.label} />
-                <span className="text-xs font-medium shrink-0">{g.label}</span>
-                <span className="text-[10px] text-muted-foreground truncate">{g.path.split(/[\\/]/).pop()}</span>
+                完成
               </button>
-            ))}
+            </div>
           </div>
         )}
 
@@ -347,6 +458,12 @@ export function ChatInput({
             icon={<Paperclip size={16} />}
             title={showImageControls ? '添加参考图 / 文件（支持多张）' : '附加文件'}
             onClick={showImageControls ? handleImageSelect : handleFileSelect}
+            disabled={isRunning}
+          />
+          <ToolbarIcon
+            icon={<AtSign size={16} />}
+            title="引用图片作为参考图：选本对话生成图或素材库（输入 @ 也可）"
+            onClick={insertMentionTrigger}
             disabled={isRunning}
           />
           {!imageMode && onForceImageChange && (
@@ -395,7 +512,7 @@ export function ChatInput({
           value={text}
           onChange={handleTextChange}
           onSelect={e => setMention(detectMention(e.currentTarget.value, e.currentTarget.selectionStart ?? e.currentTarget.value.length))}
-          onBlur={() => setTimeout(() => setMention(null), 120)}
+          onBlur={() => setTimeout(() => { if (mention && document.activeElement !== textareaRef.current) closeMention() }, 150)}
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}
           disabled={isRunning || disabled}

@@ -55,6 +55,27 @@ export function listGallery(filters?: { type?: string; source?: string }): Galle
   return dbAll<GalleryItem>(sql, params)
 }
 
+/**
+ * Search IMAGE items for the composer's @-mention picker. Pushes the filter +
+ * LIMIT into SQL so a huge library never loads wholesale into the renderer.
+ * Empty query → the most recent `limit` images.
+ */
+export function searchGalleryImages(query: string, limit = 40): GalleryItem[] {
+  const lim = Math.max(1, Math.min(Math.floor(limit) || 40, 200))
+  let sql = `SELECT id, type, file_path AS filePath, thumbnail_path AS thumbnailPath,
+    prompt, source, session_id AS sessionId, workflow_id AS workflowId,
+    model_name AS modelName, created_at AS createdAt FROM gallery WHERE type = 'image'`
+  const params: unknown[] = []
+  const q = (query || '').trim()
+  if (q) {
+    sql += ` AND (file_path LIKE ? OR prompt LIKE ?)`
+    params.push(`%${q}%`, `%${q}%`)
+  }
+  sql += ` ORDER BY created_at DESC LIMIT ?`
+  params.push(lim)
+  return dbAll<GalleryItem>(sql, params)
+}
+
 /** Set or replace the thumbnail file for an existing gallery item.
  *  Used by the Video page after the renderer extracts a still frame. */
 export function updateGalleryThumbnail(id: number, thumbnailPath: string): boolean {

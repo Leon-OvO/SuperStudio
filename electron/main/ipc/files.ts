@@ -20,6 +20,15 @@ export function fileHandlers(): void {
     return { ok: true, restoredTo: targetPath }
   })
 
+  // Approve a path the user dropped onto the composer. Drag-drop resolves the real
+  // path via webUtils.getPathForFile (a pure preload call that never reaches main),
+  // so unlike the file picker / paste it isn't allowlisted — and the local-file
+  // protocol would 403 its preview. The renderer awaits this before rendering.
+  ipcMain.handle(IPC.FILE_APPROVE_PATH, (_e, filePath: string) => {
+    if (typeof filePath === 'string' && filePath) registerApproved(filePath)
+    return { ok: true }
+  })
+
   ipcMain.handle(IPC.FILE_WRITE_TEMP, (_e, { name, data }: { name: string; data: string }) => {
     const tempDir = path.join(app.getPath('userData'), 'temp')
     fs.mkdirSync(tempDir, { recursive: true })
