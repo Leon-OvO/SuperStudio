@@ -185,7 +185,7 @@ function scrubText(text) {
 function transformPackageJson(text) {
   const pkg = JSON.parse(text)
   pkg.name = 'dwork'
-  pkg.version = '0.1.4'
+  pkg.version = '0.1.5'
   pkg.description = 'DWork — AI Productivity Suite'
   if (pkg.scripts) {
     // Core IS the DWork product → default flavor is dwork.
