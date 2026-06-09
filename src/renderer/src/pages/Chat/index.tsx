@@ -9,6 +9,7 @@ import { ChatInput } from './ChatInput'
 import { AgentProgress } from './AgentProgress'
 import { ChatHeader, computeImageSize, DEFAULT_IMAGE_PARAMS } from './ChatHeader'
 import type { ImageParams } from './ChatHeader'
+import { extractGeneratedImages } from './extractGeneratedImages'
 import type { AgentProgressEvent, Message } from '../../../../shared/ipc-types'
 import { randomId } from '../../lib/id'
 import { ImageEditor } from '../../components/ui/ImageEditor'
@@ -46,6 +47,11 @@ export function ChatPage() {
   const pendingAutoRouteRef = useRef<Record<string, { intent: string }>>({})
   const [imageParamsMap, setImageParamsMap] = React.useState<Record<string, ImageParams>>({})
   const [defaultImageModel, setDefaultImageModel] = React.useState<string>('')
+  // Global default image rules (Settings → 模型); seeds each session's per-turn params.
+  const [defaultImageRules, setDefaultImageRules] = React.useState<ImageParams>(DEFAULT_IMAGE_PARAMS)
+  // Per-turn "强制本轮生成图片" toggle — lets a chat-model session generate an image
+  // this turn. Reset on session switch.
+  const [forceImage, setForceImage] = React.useState(false)
   const [attachments, setAttachments] = React.useState<Attachment[]>([])
   // Top-level ImageEditor — any image in the chat surface can open it.
   const [editorSrc, setEditorSrc] = React.useState<string | null>(null)
@@ -61,10 +67,11 @@ export function ChatPage() {
 
   useEffect(() => {
     loadSessions()
-    const loadSettings = () => window.api.getSettings().then((s: { defaultChatProviderId: string; defaultChatModel: string; defaultImageModel?: string; defaultImageProviderId?: string; computerUseEnabled?: boolean }) => {
+    const loadSettings = () => window.api.getSettings().then((s: { defaultChatProviderId: string; defaultChatModel: string; defaultImageModel?: string; defaultImageProviderId?: string; computerUseEnabled?: boolean; defaultImageRules?: ImageParams }) => {
       defaultModelRef.current = { providerId: s.defaultChatProviderId, model: s.defaultChatModel }
       setDefaultChatModelState(s.defaultChatModel || '')
       setDefaultImageModel(s.defaultImageModel || '')
+      setDefaultImageRules(s.defaultImageRules ?? DEFAULT_IMAGE_PARAMS)
       setComputerUseEnabled(s.computerUseEnabled === true)
       if (s.defaultImageProviderId && s.defaultImageModel) {
         defaultImageModelRef.current = { providerId: s.defaultImageProviderId, model: s.defaultImageModel }
@@ -178,9 +185,10 @@ export function ChatPage() {
     }
   }, [pendingChatImageMode, activeSessionId, setSessionModel, setPendingChatImageMode])
 
-  // Clear attachments when switching sessions
+  // Clear attachments + the per-turn force-image toggle when switching sessions
   useEffect(() => {
     setAttachments([])
+    setForceImage(false)
   }, [activeSessionId])
 
   async function loadSessions() {
@@ -266,7 +274,7 @@ export function ChatPage() {
   async function doSend(sessionId: string, text: string, attachments?: Array<{ name: string; path: string; mimeType: string }>) {
     startRun(sessionId)
     const override = sessionModel[sessionId]
-    const imgParams = imageParamsMap[sessionId] || DEFAULT_IMAGE_PARAMS
+    const imgParams = imageParamsMap[sessionId] || defaultImageRules
     const imageSize = computeImageSize(imgParams.resolution, imgParams.ratio)
     const imageQuality = imgParams.quality
     const imageCount = imgParams.count
@@ -279,7 +287,8 @@ export function ChatPage() {
         imageSize,
         imageQuality,
         imageCount,
-        computerMode: computerMode || undefined
+        computerMode: computerMode || undefined,
+        forceImage: forceImage || undefined
       }
     )
   }
@@ -430,12 +439,28 @@ export function ChatPage() {
     }
   }
 
+  // Add a generated (or any) image as a reference for the next image turn, and flip
+  // on the 生成图片 toggle (strong "I want to build on this" intent). No model switch —
+  // the engine uses image attachments as references in the forced / tool path.
+  const handleUseAsReference = React.useCallback((imgPath: string) => {
+    const name = imgPath.split(/[\\/]/).pop() || 'reference.png'
+    const ext = (name.split('.').pop() || 'png').toLowerCase()
+    const mime = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg'
+      : ext === 'webp' ? 'image/webp' : ext === 'gif' ? 'image/gif'
+      : ext === 'bmp' ? 'image/bmp' : 'image/png'
+    setAttachments(prev => prev.some(a => a.path === imgPath) ? prev : [...prev, { name, path: imgPath, mimeType: mime }])
+    setForceImage(true)
+    toast.info('已加入参考图，继续输入提示词即可基于它生成')
+  }, [])
+
   const currentMessages = activeSessionId ? (messages[activeSessionId] || []) : []
+  // Images this conversation has generated — feeds the composer's @-mention picker.
+  const generatedImages = React.useMemo(() => extractGeneratedImages(currentMessages), [currentMessages])
   const currentOverride = activeSessionId ? sessionModel[activeSessionId] : null
   const canRetry = !isRunning && !!(activeSessionId && lastSentRef.current[activeSessionId])
   const isImageMode = !!(currentOverride?.model && defaultImageModel && currentOverride.model === defaultImageModel)
   const activeSession = sessions.find(s => s.id === activeSessionId)
-  const currentImageParams = activeSessionId ? (imageParamsMap[activeSessionId] || DEFAULT_IMAGE_PARAMS) : DEFAULT_IMAGE_PARAMS
+  const currentImageParams = activeSessionId ? (imageParamsMap[activeSessionId] || defaultImageRules) : defaultImageRules
 
   return (
     <div className="flex h-full">
@@ -465,6 +490,7 @@ export function ChatPage() {
           sessionId={activeSessionId}
           onRetry={canRetry ? handleRetry : undefined}
           onEditImage={setEditorSrc}
+          onUseAsReference={handleUseAsReference}
           providersCount={providersCount}
           defaultChatModel={defaultChatModel}
           onDeleteMessage={handleDeleteMessage}
@@ -483,7 +509,10 @@ export function ChatPage() {
           disabled={false}
           attachments={attachments}
           setAttachments={setAttachments}
+          generatedImages={generatedImages}
           imageMode={isImageMode}
+          forceImage={forceImage}
+          onForceImageChange={setForceImage}
           computerMode={computerMode}
           onComputerModeChange={setComputerMode}
           computerUseEnabled={computerUseEnabled}

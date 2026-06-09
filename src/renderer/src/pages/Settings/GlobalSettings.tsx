@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { RefreshCw, Loader2, Info, Check } from 'lucide-react'
 import type { AppSettings, ProviderConfig } from '../../../../shared/ipc-types'
 import { Select } from '../../components/ui/Select'
+import { IMAGE_RATIOS, DEFAULT_IMAGE_PARAMS, type ImageParams } from '../Chat/ChatHeader'
 
 interface Props {
   tab: 'defaults' | 'search' | 'kb' | 'build'
@@ -98,6 +99,28 @@ export function GlobalSettings({ tab, settings, providers, onSave, onProvidersRe
           onChange={(p, m) => updatePair('defaultImageProviderId', p, 'defaultImageModel', m)}
           onRefresh={handleRefreshModels}
         />
+        {(() => {
+          // Default image-generation rules: applied to every image turn (chat-side
+          // per-turn row can override). Reuses the same options as the composer.
+          const rules: ImageParams = draft.defaultImageRules ?? DEFAULT_IMAGE_PARAMS
+          const setRule = (patch: Partial<ImageParams>) => update('defaultImageRules', { ...rules, ...patch })
+          return (
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium block">图片生成默认规则</label>
+              <div className="flex items-center gap-2 flex-wrap">
+                <Select<ImageParams['resolution']> value={rules.resolution} onChange={v => setRule({ resolution: v })}
+                  options={[{ value: '1K', label: '1K' }, { value: '2K', label: '2K' }, { value: '4K', label: '4K' }]} size="sm" title="分辨率" />
+                <Select<ImageParams['quality']> value={rules.quality} onChange={v => setRule({ quality: v })}
+                  options={[{ value: 'standard', label: '标准' }, { value: 'hd', label: '高清' }]} size="sm" title="品质" />
+                <Select value={rules.ratio} onChange={v => setRule({ ratio: v })}
+                  options={IMAGE_RATIOS.map(r => ({ value: r, label: r }))} size="sm" title="比例" />
+                <Select value={String(rules.count)} onChange={v => setRule({ count: Number(v) as ImageParams['count'] })}
+                  options={[{ value: '1', label: '×1' }, { value: '2', label: '×2' }, { value: '3', label: '×3' }, { value: '4', label: '×4' }]} size="sm" title="数量" />
+              </div>
+              <p className="text-[11px] text-muted-foreground">对话里开启「生成图片」时默认套用的尺寸 / 品质 / 数量，单轮可临时调整。</p>
+            </div>
+          )
+        })()}
         <ModelPicker
           label="视频生成"
           providers={providers}

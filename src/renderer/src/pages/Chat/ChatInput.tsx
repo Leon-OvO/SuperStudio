@@ -1,5 +1,6 @@
-import { useState, useRef, useCallback, useEffect } from 'react'
+import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { BRAND } from '@shared/brand'
+import type { GeneratedImageRef } from './extractGeneratedImages'
 import { Send, Square, Paperclip, X, ImagePlus, FileText, ImageOff, Monitor, Folder, FolderOpen } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { ModelPicker } from './ModelPicker'
@@ -16,6 +17,10 @@ interface Props {
   isRunning: boolean
   disabled: boolean
   imageMode?: boolean
+  /** Per-turn "强制本轮生成图片" toggle — generate an image this turn even with a
+   *  chat model selected (uses the default image model). Works alongside imageMode. */
+  forceImage?: boolean
+  onForceImageChange?: (on: boolean) => void
   /** "电脑操控" mode: this turn runs the screenshot loop to drive the desktop. */
   computerMode?: boolean
   onComputerModeChange?: (on: boolean) => void
@@ -31,6 +36,8 @@ interface Props {
   /** Controlled attachments state (lifted to parent so external sources can inject). */
   attachments: Attachment[]
   setAttachments: React.Dispatch<React.SetStateAction<Attachment[]>>
+  /** Images this conversation generated — for the `@` mention picker. */
+  generatedImages?: GeneratedImageRef[]
   /** Currently-selected model (provider + model name); empty strings = use defaults. */
   providerId: string
   model: string
@@ -44,17 +51,67 @@ interface Props {
 
 export function ChatInput({
   onSend, onStop, isRunning, disabled, imageMode,
+  forceImage, onForceImageChange,
   computerMode, onComputerModeChange, computerUseEnabled,
   workingDir, onSetWorkingDir,
-  attachments, setAttachments,
+  attachments, setAttachments, generatedImages,
   providerId, model, onModelChange,
   imageParams, onImageParamsChange,
   onEditImage
 }: Props) {
   const [text, setText] = useState('')
   const [previewSrc, setPreviewSrc] = useState<string | null>(null)
+  // `@` mention of a previously-generated image: {start} = index of the '@'.
+  const [mention, setMention] = useState<{ query: string; start: number } | null>(null)
+  const [mentionIndex, setMentionIndex] = useState(0)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const ctxMenu = useImageContextMenu()
+
+  // Newest-first list of generated images filtered by the @-query (label or filename).
+  const mentionItems = useMemo(() => {
+    if (!mention || !generatedImages?.length) return []
+    const all = [...generatedImages].reverse()
+    const q = mention.query.toLowerCase()
+    if (!q) return all
+    return all.filter(g => g.label.toLowerCase().includes(q) || (g.path.split(/[\\/]/).pop() || '').toLowerCase().includes(q))
+  }, [mention, generatedImages])
+  useEffect(() => { setMentionIndex(0) }, [mention?.query])
+
+  // Detect an `@token` immediately left of the caret (no whitespace inside, `@` at a
+  // word boundary). Returns null when there's nothing to complete.
+  const detectMention = useCallback((value: string, caret: number): { query: string; start: number } | null => {
+    if (!generatedImages?.length) return null
+    const upto = value.slice(0, caret)
+    const at = upto.lastIndexOf('@')
+    if (at === -1) return null
+    const between = upto.slice(at + 1)
+    if (/\s/.test(between)) return null
+    const before = at === 0 ? '' : value[at - 1]
+    if (before && !/\s/.test(before)) return null
+    return { query: between, start: at }
+  }, [generatedImages])
+
+  const handleTextChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    setText(e.target.value)
+    setMention(detectMention(e.target.value, e.target.selectionStart ?? e.target.value.length))
+  }
+
+  const selectMention = useCallback((item: GeneratedImageRef) => {
+    if (!mention) return
+    // Drop the "@query" token from the text.
+    const next = text.slice(0, mention.start) + text.slice(mention.start + 1 + mention.query.length)
+    setText(next)
+    setMention(null)
+    // Add the image as a reference attachment (deduped).
+    const name = item.path.split(/[\\/]/).pop() || 'reference.png'
+    const ext = (name.split('.').pop() || 'png').toLowerCase()
+    const mime = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg'
+      : ext === 'webp' ? 'image/webp' : ext === 'gif' ? 'image/gif'
+      : ext === 'bmp' ? 'image/bmp' : 'image/png'
+    setAttachments(prev => prev.some(a => a.path === item.path) ? prev : [...prev, { name: item.label, path: item.path, mimeType: mime }])
+    toast.info(`已引用${item.label}作为参考图`)
+    setTimeout(() => textareaRef.current?.focus(), 0)
+  }, [mention, text, setAttachments])
 
   // Close preview on Escape
   useEffect(() => {
@@ -78,6 +135,13 @@ export function ChatInput({
   }, [text, attachments, isRunning, onSend, setAttachments])
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    // While the @-mention popup is open, the arrow/enter keys drive it.
+    if (mention && mentionItems.length > 0) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); setMentionIndex(i => (i + 1) % mentionItems.length); return }
+      if (e.key === 'ArrowUp') { e.preventDefault(); setMentionIndex(i => (i - 1 + mentionItems.length) % mentionItems.length); return }
+      if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); selectMention(mentionItems[mentionIndex]); return }
+      if (e.key === 'Escape') { e.preventDefault(); setMention(null); return }
+    }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       handleSend()
@@ -183,9 +247,13 @@ export function ChatInput({
     if (files.length) addDroppedFiles(files)
   }
 
+  // Image controls (params row + 参考图 button) show in classic image mode OR when
+  // the per-turn 生成图片 toggle is on — so a chat model can generate this turn.
+  const showImageControls = !!imageMode || !!forceImage
+
   const placeholder = isRunning
     ? '⏳ Agent 正在执行中，可点击「停止」中断…'
-    : imageMode
+    : showImageControls
       ? '描述你想生成的图片内容…'
       : `与 ${BRAND.displayName} 对话… (Enter 发送，Shift+Enter 换行)`
 
@@ -249,11 +317,85 @@ export function ChatInput({
           </div>
         )}
 
+        {/* @-mention picker — reference a previously generated image of this chat */}
+        {mention && mentionItems.length > 0 && (
+          <div className="absolute bottom-full left-2 mb-2 z-30 w-72 max-h-64 overflow-y-auto rounded-xl border border-border bg-popover shadow-xl p-1">
+            <div className="px-2 py-1 text-[10px] text-muted-foreground select-none">引用本对话生成的图片作为参考图</div>
+            {mentionItems.map((g, i) => (
+              <button
+                key={g.path}
+                type="button"
+                onMouseDown={e => { e.preventDefault(); selectMention(g) }}
+                onMouseEnter={() => setMentionIndex(i)}
+                className={cn(
+                  'w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-left transition-colors',
+                  i === mentionIndex ? 'bg-accent' : 'hover:bg-accent/60'
+                )}
+              >
+                <img src={toLocalFileUrl(g.path)} className="w-9 h-9 rounded object-cover border border-border shrink-0" alt={g.label} />
+                <span className="text-xs font-medium shrink-0">{g.label}</span>
+                <span className="text-[10px] text-muted-foreground truncate">{g.path.split(/[\\/]/).pop()}</span>
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* Top toolbar — WeChat-desktop style: a row of borderless icons. Toggles
+            collapse to an icon when off and expand to a tinted icon+label when on. */}
+        <div className="flex items-center gap-1 px-2.5 pt-2 pb-1">
+          <ToolbarIcon
+            icon={<Paperclip size={16} />}
+            title={showImageControls ? '添加参考图 / 文件（支持多张）' : '附加文件'}
+            onClick={showImageControls ? handleImageSelect : handleFileSelect}
+            disabled={isRunning}
+          />
+          {!imageMode && onForceImageChange && (
+            <ToolbarToggle
+              icon={<ImagePlus size={16} />}
+              label="生成图片"
+              active={!!forceImage}
+              tone="primary"
+              title={forceImage ? '本轮将生成图片（点此关闭，恢复普通对话）' : '本轮强制生成图片：用默认图片模型，可加参考图与规则'}
+              onClick={() => onForceImageChange(!forceImage)}
+              disabled={isRunning}
+            />
+          )}
+          {!imageMode && onComputerModeChange && computerUseEnabled && (
+            <ToolbarToggle
+              icon={<Monitor size={16} />}
+              label="电脑操控"
+              active={!!computerMode}
+              tone="danger"
+              title={computerMode ? '电脑操控已开启：本轮 AI 可看屏幕、操作鼠标键盘。点击关闭' : '开启电脑操控：让 AI 看屏幕、操作你的鼠标键盘'}
+              onClick={() => onComputerModeChange(!computerMode)}
+              disabled={isRunning}
+            />
+          )}
+          {onSetWorkingDir && (
+            workingDir ? (
+              <div title={`工作目录：${workingDir}（点击更换 · × 清除）`}
+                className="inline-flex items-center gap-1 h-7 pl-1.5 pr-1 rounded-md text-primary text-xs shrink-0">
+                <button type="button" onClick={handlePickWorkingDir} disabled={isRunning}
+                  className="inline-flex items-center gap-1 min-w-0 disabled:opacity-40 disabled:cursor-not-allowed">
+                  <FolderOpen size={15} className="shrink-0" />
+                  <span className="max-w-[120px] truncate font-medium">{workingDirName}</span>
+                </button>
+                <button type="button" onClick={() => onSetWorkingDir('')} disabled={isRunning} title="清除工作目录"
+                  className="opacity-60 hover:opacity-100 disabled:opacity-30"><X size={11} /></button>
+              </div>
+            ) : (
+              <ToolbarIcon icon={<Folder size={16} />} title="设置本对话的工作目录：之后新建 / 读写文件默认放这里" onClick={handlePickWorkingDir} disabled={isRunning} />
+            )
+          )}
+        </div>
+
         {/* Textarea */}
         <textarea
           ref={textareaRef}
           value={text}
-          onChange={e => setText(e.target.value)}
+          onChange={handleTextChange}
+          onSelect={e => setMention(detectMention(e.currentTarget.value, e.currentTarget.selectionStart ?? e.currentTarget.value.length))}
+          onBlur={() => setTimeout(() => setMention(null), 120)}
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}
           disabled={isRunning || disabled}
@@ -272,8 +414,8 @@ export function ChatInput({
           }}
         />
 
-        {/* Image-mode parameters row (only when image model selected) */}
-        {imageMode && (
+        {/* Image parameters row — shown in image mode or when 生成图片 toggle is on */}
+        {showImageControls && (
           <div className="flex items-center gap-2 px-3 pb-1.5 pt-1 flex-wrap text-[10.5px] text-muted-foreground border-t border-border/40">
             <span className="font-medium text-foreground/70">图片参数</span>
 
@@ -332,90 +474,10 @@ export function ChatInput({
           </div>
         )}
 
-        {/* Bottom toolbar */}
-        <div className="flex items-center gap-2 px-3 pb-3 pt-0.5">
+        {/* Bottom bar — WeChat style: model picker on the left, 发送 on the right. */}
+        <div className="flex items-center gap-2 px-3 pb-2.5 pt-0.5">
 
-          {/* Left actions */}
           <div className="flex items-center gap-1.5 flex-1 min-w-0">
-            {imageMode ? (
-              <button
-                onClick={handleImageSelect}
-                disabled={isRunning}
-                title="添加参考图（支持多张）"
-                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs border border-dashed border-border text-muted-foreground hover:text-foreground hover:bg-muted/60 hover:border-border/80 transition-all disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
-              >
-                <ImagePlus size={13} />
-                参考图
-              </button>
-            ) : (
-              <button
-                onClick={handleFileSelect}
-                disabled={isRunning}
-                title="附加文件"
-                className="flex items-center justify-center w-8 h-8 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-all disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
-              >
-                <Paperclip size={15} />
-              </button>
-            )}
-
-            {!imageMode && onComputerModeChange && computerUseEnabled && (
-              <button
-                onClick={() => onComputerModeChange(!computerMode)}
-                disabled={isRunning}
-                title={computerMode
-                  ? '电脑操控已开启：本轮 AI 可看屏幕、操作鼠标键盘。点击关闭'
-                  : '开启电脑操控：让 AI 看屏幕、操作你的鼠标键盘'}
-                className={cn(
-                  'flex items-center gap-1 px-2 h-8 rounded-lg text-xs border transition-all disabled:opacity-40 shrink-0',
-                  computerMode
-                    ? 'border-red-500/50 bg-red-500/10 text-red-600'
-                    : 'border-border text-muted-foreground hover:text-foreground hover:bg-muted/60'
-                )}
-              >
-                <Monitor size={14} />
-                电脑操控
-              </button>
-            )}
-
-            {onSetWorkingDir && (
-              workingDir ? (
-                <div
-                  title={`工作目录：${workingDir}\n点击更换 · × 清除`}
-                  className="flex items-center gap-1 pl-2 pr-1 h-8 rounded-lg text-xs border border-primary/40 bg-primary/5 text-foreground/80 max-w-[160px] shrink-0"
-                >
-                  <button
-                    type="button"
-                    onClick={handlePickWorkingDir}
-                    disabled={isRunning}
-                    className="flex items-center gap-1 min-w-0 disabled:opacity-40 disabled:cursor-not-allowed"
-                  >
-                    <FolderOpen size={13} className="shrink-0 text-primary" />
-                    <span className="truncate">{workingDirName}</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onSetWorkingDir('')}
-                    disabled={isRunning}
-                    title="清除工作目录"
-                    className="shrink-0 text-muted-foreground hover:text-foreground disabled:opacity-40"
-                  >
-                    <X size={11} />
-                  </button>
-                </div>
-              ) : (
-                <button
-                  type="button"
-                  onClick={handlePickWorkingDir}
-                  disabled={isRunning}
-                  title="设置本对话的工作目录：之后新建 / 读写文件默认放这里，AI 也能用 list_dir 列出其中的文件"
-                  className="flex items-center gap-1 px-2 h-8 rounded-lg text-xs border border-dashed border-border text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-all disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
-                >
-                  <Folder size={13} />
-                  工作目录
-                </button>
-              )
-            )}
-
             <ModelPicker providerId={providerId} model={model} onChange={onModelChange} />
           </div>
 
@@ -522,6 +584,57 @@ function ImageAttachmentThumb({
         {name}
       </div>
     </div>
+  )
+}
+
+/** A borderless icon button in the top toolbar (WeChat-desktop style). */
+function ToolbarIcon({ icon, title, onClick, disabled }: {
+  icon: React.ReactNode
+  title: string
+  onClick: () => void
+  disabled?: boolean
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      className="flex items-center justify-center w-7 h-7 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
+    >
+      {icon}
+    </button>
+  )
+}
+
+/** A per-turn toggle in the top toolbar: an icon when off, an icon + tinted label
+ *  when on — so the active state reads at a glance without a separate chip. */
+function ToolbarToggle({ icon, label, active, tone, title, onClick, disabled }: {
+  icon: React.ReactNode
+  label: string
+  active: boolean
+  tone: 'primary' | 'danger'
+  title: string
+  onClick: () => void
+  disabled?: boolean
+}) {
+  const activeCls = tone === 'danger'
+    ? 'text-red-600 dark:text-red-400 bg-red-500/10'
+    : 'text-primary bg-primary/10'
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      className={cn(
+        'flex items-center gap-1 h-7 rounded-md transition-colors disabled:opacity-40 disabled:cursor-not-allowed shrink-0',
+        active ? `pl-1.5 pr-2 ${activeCls}` : 'w-7 justify-center text-muted-foreground hover:text-foreground hover:bg-muted/60'
+      )}
+    >
+      {icon}
+      {active && <span className="text-xs font-medium">{label}</span>}
+    </button>
   )
 }
 

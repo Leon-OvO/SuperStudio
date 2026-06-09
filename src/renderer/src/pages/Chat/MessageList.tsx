@@ -8,7 +8,7 @@ import { copyImageToClipboard } from '../../lib/clipboard'
 import { useImageContextMenu } from '../../components/ui/ImageContextMenu'
 import { toast } from '../../components/ui/Toast'
 import { Markdown } from '../../lib/markdown'
-import { Play, X, RotateCcw, Clock, Cpu, Copy, Check, Download, Wand2, Brain, ChevronRight, ChevronDown, ChevronUp, Pencil, Trash2, RefreshCw, Coins } from 'lucide-react'
+import { Play, X, RotateCcw, Clock, Cpu, Copy, Check, Download, Wand2, Brain, ChevronRight, ChevronDown, ChevronUp, Pencil, Trash2, RefreshCw, Coins, ImagePlus } from 'lucide-react'
 import { formatUsageLine } from '../../lib/format-cost'
 
 function toFileUrl(p: string): string {
@@ -118,6 +118,8 @@ interface Props {
   onRetry?: () => void
   /** Open the global ImageEditor with the given src. Mounted at ChatPage level. */
   onEditImage: (src: string) => void
+  /** Add a generated image as a reference for the next image turn (用作参考图). */
+  onUseAsReference?: (path: string) => void
   /** Total configured LLM providers — drives the first-run onboarding. null = still loading. */
   providersCount?: number | null
   /** Currently configured default chat model id — empty string means none picked. */
@@ -135,7 +137,7 @@ interface Props {
 }
 
 export function MessageList({
-  messages, onRetry, onEditImage, providersCount, defaultChatModel,
+  messages, onRetry, onEditImage, onUseAsReference, providersCount, defaultChatModel,
   onDeleteMessage, onRegenerate, onEditUserMessage, isRunning, onChoose
 }: Props) {
   const ctxMenu = useImageContextMenu()
@@ -260,6 +262,7 @@ export function MessageList({
                 onRetry={showRetry ? onRetry : undefined}
                 openContextMenu={ctxMenu.open}
                 onEditImage={onEditImage}
+                onUseAsReference={onUseAsReference}
                 onDeleteMessage={onDeleteMessage}
                 onRegenerate={onRegenerate}
                 onEditUserMessage={onEditUserMessage}
@@ -281,6 +284,7 @@ interface BubbleProps {
   onRetry?: () => void
   openContextMenu: ReturnType<typeof useImageContextMenu>['open']
   onEditImage: (src: string) => void
+  onUseAsReference?: (path: string) => void
   onDeleteMessage?: (messageId: string) => void
   onRegenerate?: (assistantMessageId: string) => void
   onEditUserMessage?: (messageId: string, newContent: string) => void
@@ -290,7 +294,7 @@ interface BubbleProps {
 }
 
 function MessageBubble({
-  message, onRetry, openContextMenu, onEditImage,
+  message, onRetry, openContextMenu, onEditImage, onUseAsReference,
   onDeleteMessage, onRegenerate, onEditUserMessage, isRunning, isLastMsg, onChoose
 }: BubbleProps) {
   const isUser = message.role === 'user'
@@ -456,18 +460,31 @@ function MessageBubble({
                       filePath: imgPath,
                       src: toFileUrl(imgPath),
                       onPreview: () => setLightboxSrc({ src: toFileUrl(imgPath), filePath: imgPath }),
-                      onEdit: () => onEditImage(toFileUrl(imgPath))
+                      onEdit: () => onEditImage(toFileUrl(imgPath)),
+                      ...(onUseAsReference ? { onUseAsReference: () => onUseAsReference(imgPath) } : {})
                     })}
-                  title="点击放大 · 右键编辑 / 复制 / 另存为"
+                  title="点击放大 · 右键 用作参考图 / 编辑 / 复制 / 另存为"
                   />
-                  <button
-                    onClick={(e) => { e.stopPropagation(); onEditImage(toFileUrl(imgPath)) }}
-                    title="编辑这张图（局部修改 / 抠图 / 改字 / 扩图）"
-                    className="absolute top-2 right-2 flex items-center gap-1 px-2 py-1 rounded-md bg-black/55 text-white text-[11px] opacity-0 group-hover/img:opacity-100 hover:bg-black/75 transition-opacity backdrop-blur-sm"
-                  >
-                    <Wand2 size={11} />
-                    编辑
-                  </button>
+                  <div className="absolute top-2 right-2 flex items-center gap-1 opacity-0 group-hover/img:opacity-100 transition-opacity">
+                    {onUseAsReference && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); onUseAsReference(imgPath) }}
+                        title="用作参考图：基于这张图继续生成"
+                        className="flex items-center gap-1 px-2 py-1 rounded-md bg-black/55 text-white text-[11px] hover:bg-black/75 backdrop-blur-sm"
+                      >
+                        <ImagePlus size={11} />
+                        参考图
+                      </button>
+                    )}
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onEditImage(toFileUrl(imgPath)) }}
+                      title="编辑这张图（局部修改 / 抠图 / 改字 / 扩图）"
+                      className="flex items-center gap-1 px-2 py-1 rounded-md bg-black/55 text-white text-[11px] hover:bg-black/75 backdrop-blur-sm"
+                    >
+                      <Wand2 size={11} />
+                      编辑
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>

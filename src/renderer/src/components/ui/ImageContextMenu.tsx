@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Copy, Download, FolderOpen, Maximize2, Check, Wand2 } from 'lucide-react'
+import { Copy, Download, FolderOpen, Maximize2, Check, Wand2, ImagePlus } from 'lucide-react'
 import { copyImageToClipboard } from '../../lib/clipboard'
 
 interface MenuState {
@@ -9,10 +9,11 @@ interface MenuState {
   src: string
   onPreview?: () => void
   onEdit?: () => void
+  onUseAsReference?: () => void
 }
 
 export interface ImageContextMenuHandle {
-  open: (e: React.MouseEvent, opts: { filePath: string; src: string; onPreview?: () => void; onEdit?: () => void }) => void
+  open: (e: React.MouseEvent, opts: { filePath: string; src: string; onPreview?: () => void; onEdit?: () => void; onUseAsReference?: () => void }) => void
 }
 
 interface Props {
@@ -53,7 +54,7 @@ export function useImageContextMenu({ hidePreview }: Props = {}) {
     return () => clearTimeout(t)
   }, [toast])
 
-  function open(e: React.MouseEvent, opts: { filePath: string; src: string; onPreview?: () => void; onEdit?: () => void }) {
+  function open(e: React.MouseEvent, opts: { filePath: string; src: string; onPreview?: () => void; onEdit?: () => void; onUseAsReference?: () => void }) {
     e.preventDefault()
     e.stopPropagation()
     // Clamp to viewport — taller menu now that we have up to 5 items
@@ -106,6 +107,9 @@ export function useImageContextMenu({ hidePreview }: Props = {}) {
         >
           {!hidePreview && menu.onPreview && (
             <MenuItem icon={<Maximize2 size={13} />} label="在大图中查看" onClick={handlePreview} />
+          )}
+          {menu.onUseAsReference && (
+            <MenuItem icon={<ImagePlus size={13} />} label="用作参考图（基于此图继续生成）" onClick={() => { menu.onUseAsReference?.(); setMenu(null) }} />
           )}
           {menu.onEdit && (
             <MenuItem icon={<Wand2 size={13} />} label="编辑（局部修改 / 抠图 / 改字 / 扩图）" onClick={() => { menu.onEdit?.(); setMenu(null) }} />

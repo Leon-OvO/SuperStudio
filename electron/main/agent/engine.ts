@@ -53,6 +53,10 @@ interface RunParams {
   /** Per-turn "电脑操控" mode toggle from the chat input. Runs the dedicated,
    *  model-agnostic computer-use loop (screenshots fed as user-message images). */
   computerMode?: boolean
+  /** Per-turn "强制本轮生成图片" toggle. Forces this turn to generate an image even
+   *  when the session model is a chat model — uses the configured DEFAULT image
+   *  provider/model. Lets a single conversation mix chat turns and image turns. */
+  forceImage?: boolean
 }
 
 const runningAgents = new Map<string, AbortController>()
@@ -86,7 +90,7 @@ export async function runAgent(
   params: RunParams,
   win: BrowserWindow
 ): Promise<void> {
-  const { sessionId, message, attachments = [], overrideProviderId, overrideModel, mountedSpaceIds = [], imageSize, imageQuality, imageCount, scheduledContext = false, computerMode = false } = params
+  const { sessionId, message, attachments = [], overrideProviderId, overrideModel, mountedSpaceIds = [], imageSize, imageQuality, imageCount, scheduledContext = false, computerMode = false, forceImage = false } = params
   const runStartTime = Date.now()
   console.log('[Agent] runAgent called', { sessionId, msgLen: message.length, atts: attachments.length, overrideProviderId, overrideModel })
   // Set when a Computer Use run minimizes the main window (to get it out of the
@@ -206,10 +210,19 @@ export async function runAgent(
       throw new Error('请先在「设置 → 默认模型」配置对话模型，或在对话顶部下拉框选一个模型。')
     }
 
-    // Direct image generation mode: if the selected model is the configured image model,
-    // bypass the chat completions flow and call the image API directly.
-    if (effectiveModel === settings.defaultImageModel && settings.defaultImageModel) {
-      await runDirectImageGeneration({ message, sessionId, settings, emit, win, toolCallLog, providerId: effectiveProviderId, providerName: effectiveProviderName, model: effectiveModel, imageSize, imageQuality, imageCount, attachments, runStartTime, isStale: isStaleRun })
+    // Direct image generation: either the session model IS the configured image
+    // model (classic image mode), OR the user toggled "强制本轮生成图片" on top of a
+    // chat model. In the forced case the session provider is a CHAT provider, so we
+    // must generate with the configured DEFAULT image provider/model instead.
+    const sessionIsImageModel = effectiveModel === settings.defaultImageModel && !!settings.defaultImageModel
+    if (sessionIsImageModel || forceImage) {
+      const imgProviderId = sessionIsImageModel ? effectiveProviderId : settings.defaultImageProviderId
+      const imgModel = sessionIsImageModel ? effectiveModel : settings.defaultImageModel
+      const imgProviderName = sessionIsImageModel ? effectiveProviderName : (allProviders.find(p => p.id === imgProviderId)?.name || imgProviderId)
+      if (!imgModel || !imgProviderId) {
+        throw new Error('请先在「设置 → 模型」配置默认图片模型，再开启「生成图片」。')
+      }
+      await runDirectImageGeneration({ message, sessionId, settings, emit, win, toolCallLog, providerId: imgProviderId, providerName: imgProviderName, model: imgModel, imageSize, imageQuality, imageCount, attachments, runStartTime, isStale: isStaleRun })
       return
     }
 
@@ -900,19 +913,26 @@ export async function runAgent(
           }
         }),
         image_generate: tool({
-          description: 'Generate one or more images from a text prompt. Pass null for n/size to use defaults (1 image at 1024x1024). n is clamped to 1-4. Returns { images: [{ path }] }; each `path` can be passed directly to web_upload.filePaths or video_generate.referenceImagePath. Prefer a rich, detailed prompt (subject, style, composition, lighting) over the user\'s terse wording. The UI renders images inline — do not echo paths or wrap them in markdown.',
+          description: 'Generate one or more images from a text prompt. Pass null for n/size to use the user\'s configured defaults. n is clamped to 1-4. To CONTINUE FROM or EDIT a previously generated/attached image (the user says "based on that image" / "把刚才那张改成…"), pass its absolute path (from the file manifest) as referenceImagePath — the most recently generated image path is usually the one they mean. Images the user attached THIS turn are AUTOMATICALLY used as references. Returns { images: [{ path }] }; each `path` can be passed to web_upload.filePaths or video_generate.referenceImagePath. Prefer a rich, detailed prompt (subject, style, composition, lighting) over the user\'s terse wording. The UI renders images inline — do not echo paths or wrap them in markdown.',
           parameters: z.object({
             prompt: z.string().describe('Detailed image generation prompt'),
-            n: z.number().nullable().optional().describe('Number of images, 1-4 (clamped). Omit or null for default 1.'),
-            size: z.string().nullable().optional().describe('Image size like 1024x1024. Omit or null for default.')
+            n: z.number().nullable().optional().describe('Number of images, 1-4 (clamped). Omit or null for the user default.'),
+            size: z.string().nullable().optional().describe('Image size like 1024x1024. Omit or null for the user default.'),
+            referenceImagePath: z.string().nullable().optional().describe('Absolute path to a reference image to base this generation on (image-to-image / edit). Use a path from the file manifest, e.g. the most recently generated image. Omit for pure text-to-image.')
           }),
-          execute: async ({ prompt, n, size }) => {
+          execute: async ({ prompt, n, size, referenceImagePath }) => {
             const myIdx = stepIndex++
-            const actualN = n ?? 1
-            const actualSize = size ?? '1024x1024'
-            emit({ stepIndex: myIdx, stepName: 'Image Generation', toolName: 'image_generate', status: 'running', message: `Generating ${actualN} image(s)...` })
+            // Honor the user's per-turn rules (count/size/quality) when the model omits them.
+            const actualN = Math.min(Math.max(n ?? imageCount ?? 1, 1), 4)
+            const actualSize = size ?? imageSize ?? '1024x1024'
+            // Reference images = this turn's image attachments + any explicit manifest
+            // path the model chose (deduped). Lets the model "continue from" a prior image.
+            const attachmentRefs = (attachments ?? []).filter(a => a.mimeType?.startsWith('image/')).map(a => a.path)
+            const refs = [...new Set([...attachmentRefs, ...(referenceImagePath ? [referenceImagePath] : [])])]
+            const refMsg = refs.length ? `, ${refs.length} reference${refs.length > 1 ? 's' : ''}` : ''
+            emit({ stepIndex: myIdx, stepName: 'Image Generation', toolName: 'image_generate', status: 'running', message: `Generating ${actualN} image${actualN > 1 ? 's' : ''} (${actualSize}${refMsg})...` })
             try {
-              const result = await generateImage({ prompt, n: actualN, size: actualSize, settings })
+              const result = await generateImage({ prompt, n: actualN, size: actualSize, quality: imageQuality, settings, referenceImagePaths: refs.length ? refs : undefined })
               for (const img of result.images) {
                 await saveGalleryItem({
                   type: 'image', filePath: img.path, prompt,
@@ -921,7 +941,7 @@ export async function runAgent(
                 emit({ stepIndex: myIdx, stepName: 'Image Generation', toolName: 'image_generate', status: 'done',
                   artifact: { type: 'image', path: img.path } })
               }
-              toolCallLog.push({ toolName: 'image_generate', args: { prompt, n: actualN, size: actualSize }, result })
+              toolCallLog.push({ toolName: 'image_generate', args: { prompt, n: actualN, size: actualSize, referenceImagePath: referenceImagePath ?? undefined }, result })
               return result
             } catch (err) {
               // Return the error as a tool result instead of letting it abort the
@@ -2291,8 +2311,11 @@ async function runDirectImageGeneration(opts: {
       ? `Generating ${actualN} image${actualN > 1 ? 's' : ''} (${size}, ${refCount} reference${refCount > 1 ? 's' : ''})…`
       : `Generating ${actualN} image${actualN > 1 ? 's' : ''} (${size})…` })
   try {
-    // Use the provider selected in ChatHeader, not the global default image provider
-    const imageSettings = { ...settings, defaultImageProviderId: providerId }
+    // Generate with the provider/model passed in: either the session's selected
+    // image model (classic image mode) or the global default image model (when the
+    // 强制本轮生成图片 toggle fired on top of a chat model). Set BOTH explicitly so the
+    // forced path never silently falls back to whatever settings.defaultImageModel is.
+    const imageSettings = { ...settings, defaultImageProviderId: providerId, defaultImageModel: model }
     const result = await generateImage({
       prompt: message, n: actualN, size, quality: imageQuality, settings: imageSettings,
       referenceImagePaths: refCount ? referenceImagePaths : undefined
@@ -2300,7 +2323,7 @@ async function runDirectImageGeneration(opts: {
     for (const img of result.images) {
       await saveGalleryItem({
         type: 'image', filePath: img.path, prompt: message,
-        source: 'chat', sessionId, modelName: settings.defaultImageModel
+        source: 'chat', sessionId, modelName: model
       })
       emit({ stepIndex: 0, stepName: 'Image Generation', toolName: 'image_generate', status: 'done',
         artifact: { type: 'image', path: img.path } })
