@@ -10,6 +10,38 @@ import { FLAVOR } from '../../src/shared/flavor'
 import { BRAND } from '../../src/shared/brand'
 import type { ShellOpenTarget } from './services/system-integration'
 
+// ── Per-brand storage isolation (MUST run before anything reads userData / the
+// electron-store is created) ────────────────────────────────────────────────
+// Electron's default userData is %APPDATA%/<app.getName()>, and BOTH SuperStudio
+// and DWork resolve app.getName() to "superstudio" (the DWork build only overrides
+// `version`, never `name`). Without this they share ONE config.json (providers, API
+// keys, settings) on the same machine and corrupt each other. Pin userData to the
+// brand's namespace; SuperStudio's namespace already equals the default, so it's a
+// no-op there — only DWork diverges, with a one-time config migration.
+try {
+  const brandUserData = path.join(app.getPath('appData'), BRAND.dataNamespace)
+  const defaultUserData = app.getPath('userData')
+  if (path.resolve(brandUserData) !== path.resolve(defaultUserData)) {
+    try {
+      fs.mkdirSync(brandUserData, { recursive: true })
+      // Seed the brand dir with the old shared config so existing installs keep
+      // their providers/keys, then diverge from here on.
+      const oldCfg = path.join(defaultUserData, 'config.json')
+      const newCfg = path.join(brandUserData, 'config.json')
+      if (fs.existsSync(oldCfg) && !fs.existsSync(newCfg)) fs.copyFileSync(oldCfg, newCfg)
+      // Also carry over the DB when it lived in the OLD userData (i.e. no custom
+      // dataDirectory was set) — otherwise moving userData would orphan the user's
+      // sessions/gallery/history. (When a custom dataDirectory IS set the DB is
+      // there instead, and db/sqlite.ts seeds the brand DB from it.)
+      const oldDb = path.join(defaultUserData, 'superstudio.db')
+      const newDb = path.join(brandUserData, `${BRAND.dataNamespace}.db`)
+      if (fs.existsSync(oldDb) && !fs.existsSync(newDb)) fs.copyFileSync(oldDb, newDb)
+    } catch (e) { console.warn('[brand-isolation] config migration failed:', (e as Error).message) }
+    app.setPath('userData', brandUserData)
+    console.log('[brand-isolation] userData →', brandUserData)
+  }
+} catch (e) { console.warn('[brand-isolation] failed:', (e as Error).message) }
+
 installFetchLogger()
 
 // Force Chromium to use the OS's high-quality font subpixel rendering on Windows

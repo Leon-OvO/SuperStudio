@@ -2,6 +2,7 @@ import initSqlJs, { Database } from 'sql.js'
 import { app } from 'electron'
 import path from 'path'
 import fs from 'fs'
+import { BRAND } from '../../../src/shared/brand'
 
 let db: Database
 let dbPath: string
@@ -21,7 +22,16 @@ export async function initDb(dataDir?: string): Promise<void> {
   if (!fs.existsSync(baseDir)) {
     fs.mkdirSync(baseDir, { recursive: true })
   }
-  dbPath = path.join(baseDir, 'superstudio.db')
+  // Per-brand DB filename so SuperStudio and DWork never open the SAME file when
+  // they share a custom dataDirectory (sql.js rewrites the whole file on save →
+  // last-writer-wins corruption). SuperStudio's namespace IS "superstudio.db", so
+  // it's unchanged; DWork uses "dwork.db", seeded once from the shared legacy DB.
+  dbPath = path.join(baseDir, `${BRAND.dataNamespace}.db`)
+  const legacyDbPath = path.join(baseDir, 'superstudio.db')
+  if (BRAND.dataNamespace !== 'superstudio' && !fs.existsSync(dbPath) && fs.existsSync(legacyDbPath)) {
+    try { fs.copyFileSync(legacyDbPath, dbPath); console.log('[db] seeded', dbPath, 'from legacy', legacyDbPath) }
+    catch (e) { console.warn('[db] legacy DB seed failed:', (e as Error).message) }
+  }
   console.log('[db] using database at', dbPath)
 
   const wasmPath = path.join(__dirname, '../../node_modules/sql.js/dist/sql-wasm.wasm')
