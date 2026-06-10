@@ -3,9 +3,9 @@
 # Standalone electron-builder config used by `npm run dist:dwork:*`. Mirrors the
 # SuperStudio `build` block in package.json, but:
 #   - DWork app identity (appId / productName / copyright / icons)
-#   - extraResources INCLUDES resources/talent-pool.enc — the 人才库 is part of
-#     the paid DWork deliverable, so it MUST ship. build:dwork runs pack-talent
-#     first to regenerate it. DO NOT drop it again.
+#   - extraResources INCLUDES resources/talent-pool.enc — the 人才库 ships with
+#     the DWork build, so it MUST be packed. build:dwork runs pack-talent first to
+#     regenerate it. DO NOT drop it again.
 #   - no `publish` target — DWork is delivered as source / via its own host.
 #
 # The JS bundle must be built with FLAVOR=dwork first (build:dwork) so the
@@ -64,7 +64,7 @@ asarUnpack:
 extraResources:
   - from: build/dwork/icon.ico
     to: icon.ico
-  # 人才库（客户已购买，必须随 DWork 交付）。build:dwork 会先 pack-talent 生成它。
+  # 人才库：随 DWork 一同打包；build:dwork 会先 pack-talent 生成它，勿删。
   - from: resources/talent-pool.enc
     to: talent-pool.enc
 compression: maximum
