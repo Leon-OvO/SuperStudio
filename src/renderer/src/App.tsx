@@ -85,8 +85,8 @@ export default function App() {
     return () => { off?.() }
   }, [cuConfirm])
 
-  // Local script execution: each new (command, cwd) asks for confirmation. Gated
-  // additionally by the off-by-default localScriptsEnabled setting.
+  // Local script execution: runs without prompting by default. This confirm
+  // dialog only fires when the user opts into localScriptsConfirmEachRun.
   useEffect(() => {
     const off = window.api.onLocalScriptConfirm?.(async (req) => {
       const ok = await cuConfirm.confirm({

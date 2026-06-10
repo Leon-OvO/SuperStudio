@@ -1,6 +1,7 @@
 import { app } from 'electron'
 import path from 'path'
 import fs from 'fs'
+import os from 'os'
 
 // ============================================================================
 // Skill bundle download + on-disk management.
@@ -181,6 +182,10 @@ export function importLocalSkillBundle(sourcePath: string): ImportedBundle {
   try { st = fs.statSync(sourcePath) }
   catch { throw new Error('所选路径不存在或无法访问') }
 
+  // A picked/dropped .zip → extract to a temp folder and import that folder.
+  // Lets an exported bundle (see buildSkillExportZip) round-trip straight back in.
+  if (st.isFile() && sourcePath.toLowerCase().endsWith('.zip')) return importZipSkillBundle(sourcePath)
+
   // A single picked/dropped FILE → import just that file as a one-file skill.
   // We must NOT walk its parent directory: a loose SKILL.md often sits in
   // Downloads / Desktop / a project folder with GBs of unrelated files, which is
@@ -242,6 +247,55 @@ function importSingleFileSkill(filePath: string): ImportedBundle {
   fs.mkdirSync(dir, { recursive: true })
   fs.writeFileSync(path.join(dir, 'SKILL.md'), content, 'utf8')
   return { id, name: baseName, installPath: dir, files: ['SKILL.md'], skillMd: content }
+}
+
+/** Extract a .zip skill bundle into a temp folder (guarding zip-slip via
+ *  safeJoin) and import that folder, then clean up the temp copy. */
+function importZipSkillBundle(zipPath: string): ImportedBundle {
+  const AdmZip = require('adm-zip')
+  const zip = new AdmZip(zipPath)
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'skill-import-'))
+  try {
+    for (const entry of zip.getEntries() as Array<{ isDirectory: boolean; entryName: string; getData: () => Buffer }>) {
+      if (entry.isDirectory) continue
+      const dest = safeJoin(tmp, entry.entryName) // throws on path-traversal escape
+      fs.mkdirSync(path.dirname(dest), { recursive: true })
+      fs.writeFileSync(dest, entry.getData())
+    }
+    return importLocalSkillBundle(tmp) // tmp is a dir now → folder branch (size caps re-applied)
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+}
+
+/**
+ * Build a re-importable .zip of an installed skill. Runtime skills (with an
+ * on-disk bundle) are zipped wholesale (SKILL.md + resources); a prompt-only
+ * skill gets a synthesized SKILL.md from its manifest. The returned buffer is
+ * written to a user-chosen path by the SKILLS_EXPORT IPC handler.
+ */
+export function buildSkillExportZip(skill: {
+  id: string; name: string; description: string; version: string; author: string
+  runtime: boolean; installPath: string | null; skillBody?: string; systemPrompt?: string
+}): Buffer {
+  const AdmZip = require('adm-zip')
+  const zip = new AdmZip()
+  if (skill.runtime && skill.installPath && fs.existsSync(skill.installPath)) {
+    zip.addLocalFolder(skill.installPath)
+  } else {
+    const fm = [
+      '---',
+      `name: ${skill.name || skill.id}`,
+      `description: ${(skill.description || '').replace(/\n/g, ' ')}`,
+      `version: ${skill.version || '0.0.0'}`,
+      `author: ${skill.author || ''}`,
+      '---',
+      '',
+      skill.skillBody || skill.systemPrompt || ''
+    ].join('\n')
+    zip.addFile('SKILL.md', Buffer.from(fm, 'utf8'))
+  }
+  return zip.toBuffer()
 }
 
 /** Locate the manifest file: SKILL.md (exact) → case-insensitive skill.md → README.md. */

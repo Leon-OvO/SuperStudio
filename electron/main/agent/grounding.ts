@@ -83,12 +83,20 @@ const CLAIM_RULES: ClaimRule[] = [
   {
     label: '搜索/检索',
     re: /根据[^。！\n]{0,4}(搜索|检索)[^。！\n]{0,4}结果|(已|刚)[^。！\n]{0,4}?(搜索|检索|查了|查到|搜了一下|搜了)/,
-    backed: (s) => s.has('web_search') || s.has('web_open'),
+    // file_read covers local retrieval too (xlsx value-search, grep-in-file).
+    backed: (s) => s.has('web_search') || s.has('web_open') || s.has('file_read'),
   },
   {
     label: '打开/抓取网页',
     re: /(已|刚)[^。！\n]{0,4}?(打开|访问|抓取|爬取|读取了)[^。！\n]{0,4}(网页|页面|网站|链接|url)/i,
     backed: (s) => s.has('web_open') || s.has('web_snapshot'),
+  },
+  {
+    // Catches "把脚本贴给用户代跑" disguised as "已执行/已跑" — the script-
+    // offloading anti-pattern. Backed only by a REAL local/remote exec call.
+    label: '执行脚本/命令',
+    re: /(已|刚)[^。！\n]{0,4}?(执行|运行|跑了?|跑完|跑通)[^。！\n]{0,10}(脚本|命令|python|bash|shell|\.bat|\.sh|\.py|node|程序)/i,
+    backed: (s) => s.has('run_script') || s.has('ssh_exec') || s.has('bash'),
   },
 ]
 

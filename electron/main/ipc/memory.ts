@@ -1,4 +1,5 @@
-import { ipcMain } from 'electron'
+import { ipcMain, BrowserWindow, dialog } from 'electron'
+import fs from 'fs'
 import { IPC } from '../../../src/shared/ipc-types'
 import { dbAll } from '../db/sqlite'
 import { getMainWindow } from '../index'
@@ -31,6 +32,33 @@ export function memoryHandlers(): void {
   // Import external memory assets (.json/.jsonl/.md). Paths come from
   // openFileDialog (already session-approved); we read them in-process.
   ipcMain.handle(IPC.MEMORY_IMPORT, (_e, paths: string[]) => importMemories({ paths: paths || [] }))
+
+  // Export all active memories to a JSON file the user picks. Shape mirrors what
+  // importMemories accepts ({ memories: [{ kind, scopeKey, title, content, tags,
+  // pinned, confidence, source }] }) so an export round-trips cleanly back in.
+  ipcMain.handle(IPC.MEMORY_EXPORT, async (e) => {
+    const win = BrowserWindow.fromWebContents(e.sender)
+    const stamp = new Date().toISOString().slice(0, 10) // YYYY-MM-DD
+    const opts = {
+      defaultPath: `memories-${stamp}.json`,
+      filters: [{ name: 'JSON', extensions: ['json'] }]
+    }
+    const dlg = win ? await dialog.showSaveDialog(win, opts) : await dialog.showSaveDialog(opts)
+    if (dlg.canceled || !dlg.filePath) return { canceled: true }
+    const memories = listMemories({ status: 'active' }).map(r => ({
+      kind: r.kind,
+      scopeKey: r.scope_key,
+      title: r.title,
+      content: r.content,
+      tags: (() => { try { return JSON.parse(r.tags || '[]') as string[] } catch { return [] } })(),
+      pinned: !!r.pinned,
+      confidence: r.confidence ?? undefined,
+      source: r.source ?? undefined,
+    }))
+    const payload = { exportedAt: new Date().toISOString(), version: 1, count: memories.length, memories }
+    fs.writeFileSync(dlg.filePath, JSON.stringify(payload, null, 2), 'utf8')
+    return { canceled: false, filePath: dlg.filePath, count: memories.length }
+  })
 
   ipcMain.handle(IPC.MEMORY_SET_PINNED, (_e, args: { id: string; pinned: boolean }) => {
     setMemoryPinned(args.id, args.pinned)

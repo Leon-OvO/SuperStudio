@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import {
   Plus, Trash2, Pin, PinOff, Archive, ArchiveRestore, Search, Eye, Edit3,
-  User, FolderGit2, History, Sparkles, Brain, X, ShieldCheck, Upload, Loader2
+  User, FolderGit2, History, Sparkles, Brain, X, ShieldCheck, Upload, Download, Loader2
 } from 'lucide-react'
 import { cn, formatDate } from '../../lib/utils'
 import { renderMarkdown } from '../../lib/markdown'
@@ -106,6 +106,16 @@ export function MemoryPage() {
     }
   }
 
+  // Export all active memories to a JSON file (round-trips back via 导入).
+  async function exportMems() {
+    try {
+      const r = await window.api.exportMemories()
+      if (!r.canceled) toast.success(`已导出 ${r.count ?? 0} 条记忆到 ${r.filePath}`)
+    } catch (e) {
+      toast.error('导出失败：' + (e as Error).message)
+    }
+  }
+
   return (
     <div className="flex h-full">
       {/* Kind groups */}
@@ -170,6 +180,13 @@ export function MemoryPage() {
               className={cn('flex items-center justify-center gap-1 px-2 py-1 rounded text-xs border border-border hover:bg-accent disabled:opacity-50', showArchived && 'flex-1')}
             >
               {importing ? <Loader2 size={12} className="animate-spin" /> : <Upload size={12} />} 导入
+            </button>
+            <button
+              onClick={exportMems}
+              title="导出全部记忆为 JSON（可再导入）"
+              className={cn('flex items-center justify-center gap-1 px-2 py-1 rounded text-xs border border-border hover:bg-accent', showArchived && 'flex-1')}
+            >
+              <Download size={12} /> 导出
             </button>
           </div>
         </div>

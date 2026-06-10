@@ -113,10 +113,22 @@ function anthropicRejectsTemperature(modelId: string): boolean {
   return /opus/i.test(modelId)  // Opus 4.x+; extend here if more models follow
 }
 
+/** Normalize a provider baseURL so it ends with an API version segment. The SDKs
+ *  POST `{baseURL}/messages` (Anthropic) or `{baseURL}/chat/completions` (OpenAI), so
+ *  a gateway configured as `https://host` (no /v1) gets hit at `/messages` /
+ *  `/chat/completions` — many gateways then return an empty 200. Append `/v1` when no
+ *  `/vN` segment is present; leave `…/v1` (supercode etc.) and empty (SDK default)
+ *  untouched. Tolerates users who omit the `/v1` suffix. */
+export function withApiVersion(baseUrl?: string): string | undefined {
+  if (!baseUrl) return undefined
+  const b = baseUrl.replace(/\/+$/, '')
+  return /\/v\d+$/.test(b) ? b : `${b}/v1`
+}
+
 /** Build an Anthropic-native client, stripping `temperature` for models that
  *  reject it. baseURL lets a relay (supercode) serve /v1/messages. */
 function buildAnthropicModel(provider: ProviderConfig, modelId: string): LanguageModel {
-  const client = createAnthropic({ apiKey: provider.apiKey, baseURL: provider.baseUrl || undefined, fetch: llmFetch })
+  const client = createAnthropic({ apiKey: provider.apiKey, baseURL: withApiVersion(provider.baseUrl), fetch: llmFetch })
   const model = client(modelId as Parameters<typeof client>[0])
   return anthropicRejectsTemperature(modelId)
     ? wrapLanguageModel({ model, middleware: stripTemperatureMiddleware })
@@ -138,7 +150,7 @@ export function buildModel(provider: ProviderConfig, modelId: string): LanguageM
       // without which streaming responses don't carry token counts.
       const client = createOpenAI({
         apiKey: provider.apiKey,
-        baseURL: provider.baseUrl,
+        baseURL: withApiVersion(provider.baseUrl),
         compatibility: 'strict',
         fetch: llmFetch
       })
@@ -151,7 +163,7 @@ export function buildModel(provider: ProviderConfig, modelId: string): LanguageM
       // it'd need a per-provider opt-out — add one then.
       const client = createOpenAI({
         apiKey: provider.apiKey,
-        baseURL: provider.baseUrl || 'https://api.openai.com/v1',
+        baseURL: withApiVersion(provider.baseUrl) || 'https://api.openai.com/v1',
         compatibility: 'strict',
         fetch: llmFetch
       })

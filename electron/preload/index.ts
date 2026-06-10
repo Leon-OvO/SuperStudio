@@ -220,6 +220,8 @@ const api = {
   captureSessionMemory: (sessionId: string) => ipcRenderer.invoke(IPC.MEMORY_CAPTURE_SESSION, sessionId),
   importMemories: (paths: string[]) =>
     ipcRenderer.invoke(IPC.MEMORY_IMPORT, paths) as Promise<{ imported: number; skipped: number; errors: string[] }>,
+  exportMemories: () =>
+    ipcRenderer.invoke(IPC.MEMORY_EXPORT) as Promise<{ canceled: boolean; filePath?: string; count?: number }>,
   onMemoryCaptured: (cb: (info: { count: number; memories: unknown[] }) => void) => {
     const listener = (_e: unknown, info: { count: number; memories: unknown[] }) => cb(info)
     ipcRenderer.on(IPC.MEMORY_CAPTURED, listener)
@@ -369,6 +371,8 @@ const api = {
   listSkills: () => ipcRenderer.invoke(IPC.SKILLS_LIST),
   installSkill: (args: { sourceUrl: string; entry: unknown }) => ipcRenderer.invoke(IPC.SKILLS_INSTALL, args),
   importLocalSkill: (sourcePath: string) => ipcRenderer.invoke(IPC.SKILLS_IMPORT_LOCAL, sourcePath),
+  exportSkill: (id: string) =>
+    ipcRenderer.invoke(IPC.SKILLS_EXPORT, id) as Promise<{ canceled: boolean; filePath?: string; error?: string }>,
   discoverLocalSkills: (projectPath?: string) => ipcRenderer.invoke(IPC.SKILLS_DISCOVER_LOCAL, { projectPath }),
   uninstallSkill: (id: string) => ipcRenderer.invoke(IPC.SKILLS_UNINSTALL, id),
   setSkillEnabled: (args: { id: string; enabled: boolean }) => ipcRenderer.invoke(IPC.SKILLS_SET_ENABLED, args),

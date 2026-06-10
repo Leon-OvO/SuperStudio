@@ -1024,17 +1024,32 @@ export async function runAgent(
           description: 'Read and extract text content from a document by absolute path. Supported: ' +
             'PDF; Office (.xlsx/.xls, .docx, .pptx); OpenDocument (.ods, .odt, .odp); .epub; .rtf; ' +
             'and any plain-text / code / data file (.txt/.md/.csv/.tsv/.json/.html/.xml/.yaml/.sql/源代码 等). ' +
-            'For images use vision_analyze instead; for old binary .doc/.ppt, ask the user to convert to .docx/.pptx.',
-          parameters: z.object({ filePath: z.string().describe('Absolute path to the file') }),
-          execute: async ({ filePath }) => {
+            'For images use vision_analyze instead; for old binary .doc/.ppt, ask the user to convert to .docx/.pptx.\n' +
+            '【大表/Excel 智能读取】对 .xlsx/.xls/.ods：不带参数读会返回「sheet 清单+行列数」（表大时）或整表（表小时）。' +
+            '查具体内容用参数精确取，别把几十万 token 的大表一次性灌进来：\n' +
+            '  · sheetSearch="<ID/关键字>"：返回所有单元格含该值的行（带表头+行号）——查"某ID在哪些行/如何被引用"首选；可配 sheetName 限定某 sheet。\n' +
+            '  · sheetName="<表名>"：读整张 sheet，可配 startRow/endRow（1 起算、含表头）分段读。',
+          parameters: z.object({
+            filePath: z.string().describe('Absolute path to the file'),
+            sheetName: z.string().nullable().optional().describe('xlsx only: 只读这个 sheet（按名）'),
+            sheetSearch: z.string().nullable().optional().describe('xlsx only: 只返回任意单元格包含该子串的行（不区分大小写），附表头与行号'),
+            startRow: z.number().nullable().optional().describe('xlsx only: 行范围起（1 起算、含表头），需配 sheetName'),
+            endRow: z.number().nullable().optional().describe('xlsx only: 行范围止（含），需配 sheetName'),
+          }),
+          execute: async ({ filePath, sheetName, sheetSearch, startRow, endRow }) => {
             const myIdx = stepIndex++
+            const xlsxQuery = (sheetName || sheetSearch || startRow != null || endRow != null)
+              ? { sheet: sheetName ?? undefined, search: sheetSearch ?? undefined, startRow: startRow ?? undefined, endRow: endRow ?? undefined }
+              : undefined
+            const logArgs = xlsxQuery ? { filePath, xlsx: xlsxQuery } : { filePath }
             if (!isApproved(filePath)) {
               const msg = `路径未授权：${filePath}。只能读取用户附加的文件或本应用生成的文件；请让用户先把文件拖入或粘贴进来。`
               emit({ stepIndex: myIdx, stepName: 'File Read', toolName: 'file_read', status: 'error', message: msg })
-              toolCallLog.push({ toolName: 'file_read', args: { filePath }, result: { error: msg } })
+              toolCallLog.push({ toolName: 'file_read', args: logArgs, result: { error: msg } })
               return `[file_read error] ${msg}`
             }
-            emit({ stepIndex: myIdx, stepName: 'File Read', toolName: 'file_read', status: 'running', message: path.basename(filePath) })
+            const tag = xlsxQuery?.search ? ` (搜:${xlsxQuery.search})` : xlsxQuery?.sheet ? ` (${xlsxQuery.sheet})` : ''
+            emit({ stepIndex: myIdx, stepName: 'File Read', toolName: 'file_read', status: 'running', message: path.basename(filePath) + tag })
             // abort.signal lets Stop interrupt a long PDF/PPTX parse.
             // Wrap in try/catch like every other tool: a corrupt PDF / encrypted
             // or malformed zip (epub/odt/odp/xlsx) / unsupported type would
@@ -1043,15 +1058,15 @@ export async function runAgent(
             // model can read and react to (e.g. tell the user the file is broken).
             let result: Awaited<ReturnType<typeof readFile>>
             try {
-              result = await readFile(filePath, abort.signal)
+              result = await readFile(filePath, abort.signal, xlsxQuery)
             } catch (readErr) {
               const msg = (readErr as Error)?.message || String(readErr)
               emit({ stepIndex: myIdx, stepName: 'File Read', toolName: 'file_read', status: 'error', message: msg })
-              toolCallLog.push({ toolName: 'file_read', args: { filePath }, result: { error: msg } })
+              toolCallLog.push({ toolName: 'file_read', args: logArgs, result: { error: msg } })
               return `[file_read error] ${msg}`
             }
             emit({ stepIndex: myIdx, stepName: 'File Read', toolName: 'file_read', status: 'done' })
-            toolCallLog.push({ toolName: 'file_read', args: { filePath }, result })
+            toolCallLog.push({ toolName: 'file_read', args: logArgs, result })
             // Cap the model-facing copy so a huge PDF/XLSX dump can't blow the
             // context window; the full result stays in toolCallLog for export.
             return truncateToolResult(result)
@@ -1261,8 +1276,9 @@ export async function runAgent(
         description:
           '在【预配置的 SSH 连接】上的远程服务器执行一条 shell 命令，返回 { host, exitCode, stdout, stderr }。' +
           `可用连接：${connList}。connection 传连接名（或其 id）。` +
+          'connection 传 "localhost"（或 127.0.0.1 / 本机）则直接在【本机】执行（走本地 shell，无需配置 SSH，等价于 run_script）。' +
           '凭据由本机加密保管，你不会也无需知道密码/私钥。每条命令独立执行（不保留工作目录），' +
-          '需要切目录就用 `cd /path && 命令`。某连接首次执行会弹窗请用户确认。' +
+          '需要切目录就用 `cd /path && 命令`。远程连接首次执行会弹窗请用户确认。' +
           '危险/不可逆操作（删除、重启、改配置等）执行前应在回复里向用户说明。',
         parameters: z.object({
           connection: z.string().describe('已配置的 SSH 连接名称或 id'),
@@ -1270,11 +1286,51 @@ export async function runAgent(
         }),
         execute: async ({ connection, command }) => {
           const myIdx = stepIndex++
+          const connLc = (connection || '').trim().toLowerCase()
+          const isLocalhost = connLc === 'localhost' || connLc === '127.0.0.1' || connLc === '::1' || connLc === 'local' || connLc === '本机' || connLc === '本地'
+          // Resolve a configured connection FIRST, so a connection a user really
+          // named "localhost" still wins; only fall through to local execution
+          // when nothing matches (the common bare-"localhost" case).
           const { conn, error: resolveErr } = resolveSshConnection(connection, getSshConnections())
+          if (!conn && isLocalhost) {
+            // localhost / 本机 → run on THIS machine via the same engine as run_script.
+            if (settings.localScriptsEnabled === false) {
+              const msg = 'connection=localhost 表示在本机执行，但「本地脚本执行」已被关闭。请在 设置→插件 开启后重试，或把 connection 改为一个真实的远程 SSH 连接。'
+              emit({ stepIndex: myIdx, stepName: 'SSH', toolName: 'ssh_exec', status: 'error', message: msg })
+              toolCallLog.push({ toolName: 'ssh_exec', args: { connection, command }, result: { error: msg } })
+              return `[ssh_exec error] ${msg}`
+            }
+            const dir = os.homedir()
+            emit({ stepIndex: myIdx, stepName: 'SSH', toolName: 'ssh_exec', status: 'running', message: `本机: ${command.slice(0, 80)}` })
+            const allowed = settings.localScriptsConfirmEachRun ? await confirmRunScript(command, dir) : true
+            if (!allowed) {
+              const msg = '已取消：用户未授权在本机执行该命令。'
+              emit({ stepIndex: myIdx, stepName: 'SSH', toolName: 'ssh_exec', status: 'error', message: msg })
+              toolCallLog.push({ toolName: 'ssh_exec', args: { connection, command }, result: { error: msg } })
+              return `[ssh_exec error] ${msg}`
+            }
+            try {
+              const r = await runShell(command, dir, abort.signal, settings.localScriptsTimeoutMs ?? 300_000)
+              const result = { host: 'localhost', exitCode: r.code, stdout: r.stdout, stderr: r.stderr, timedOut: r.timedOut }
+              emit({ stepIndex: myIdx, stepName: 'SSH', toolName: 'ssh_exec', status: r.code === 0 ? 'done' : 'error', message: `exit ${r.code}${r.timedOut ? ' (timeout)' : ''}` })
+              toolCallLog.push({ toolName: 'ssh_exec', args: { connection, command }, result })
+              return result
+            } catch (e) {
+              const msg = (e as Error).message || String(e)
+              emit({ stepIndex: myIdx, stepName: 'SSH', toolName: 'ssh_exec', status: 'error', message: msg })
+              toolCallLog.push({ toolName: 'ssh_exec', args: { connection, command }, result: { error: msg } })
+              return `[ssh_exec error] ${msg}`
+            }
+          }
           if (!conn) {
+            // Host isn't configured — point the model at the localhost path rather
+            // than dead-ending on "go add a connection".
+            const hint = settings.localScriptsEnabled !== false
+              ? '\n提示：要在本机执行就把 connection 设为 "localhost"（直接走本地 shell，无需配置 SSH）。'
+              : ''
             emit({ stepIndex: myIdx, stepName: 'SSH', toolName: 'ssh_exec', status: 'error', message: resolveErr })
             toolCallLog.push({ toolName: 'ssh_exec', args: { connection, command }, result: { error: resolveErr } })
-            return `[ssh_exec error] ${resolveErr}`
+            return `[ssh_exec error] ${resolveErr}${hint}`
           }
           emit({ stepIndex: myIdx, stepName: 'SSH', toolName: 'ssh_exec', status: 'running', message: `${conn.name}: ${command.slice(0, 80)}` })
           const allowed = await confirmSshExec(conn.id, conn.host, command)
@@ -1301,14 +1357,15 @@ export async function runAgent(
     }
 
     // run_script — execute a local command / script (python/.bat/.sh/node …) on
-    // the user's machine. OFF unless `localScriptsEnabled` is set; even then EACH
-    // new (command, cwd) is confirmed by the user via a dialog.
-    if (settings.localScriptsEnabled) {
+    // the user's machine. ON by default (`localScriptsEnabled !== false`); runs
+    // without prompts unless the user opts into `localScriptsConfirmEachRun`.
+    if (settings.localScriptsEnabled !== false) {
       allTools.run_script = tool({
         description:
           '在本机执行一条命令 / 运行本地脚本（如 `python x.py`、`x.bat`、`bash x.sh`、`node x.js`，走系统 shell）。' +
           '真实执行、非口头描述；返回 { code, stdout, stderr, timedOut }。默认工作目录是用户主目录，' +
-          '可用 cwd 指定，或在命令里用 `cd /path && 命令`。受用户设置开关管控，且每条新命令都会弹窗请用户确认；' +
+          '可用 cwd 指定，或在命令里用 `cd /path && 命令`。默认无需用户确认即可执行——遇到需要跑脚本/命令的任务（如用 ' +
+          'Python 处理数据、查大表）就直接调它，不要把脚本贴给用户让其自行运行；' +
           '危险/不可逆操作（删除、格式化、改系统配置等）执行前应在回复里先向用户说明。',
         parameters: z.object({
           command: z.string().describe('要执行的命令 / 脚本调用'),
@@ -1318,7 +1375,9 @@ export async function runAgent(
           const myIdx = stepIndex++
           const dir = (cwd && cwd.trim()) ? cwd.trim() : os.homedir()
           emit({ stepIndex: myIdx, stepName: '脚本', toolName: 'run_script', status: 'running', message: command.slice(0, 80) })
-          const allowed = await confirmRunScript(command, dir)
+          // Default: run without prompting. Only ask if the user opted into
+          // per-command confirmation via localScriptsConfirmEachRun.
+          const allowed = settings.localScriptsConfirmEachRun ? await confirmRunScript(command, dir) : true
           if (!allowed) {
             const msg = '已取消：用户未授权执行该本地命令。'
             emit({ stepIndex: myIdx, stepName: '脚本', toolName: 'run_script', status: 'error', message: msg })
@@ -1485,7 +1544,10 @@ export async function runAgent(
     // The volatile suffix (current time + per-turn KB) sits after the breakpoint
     // so it never busts the cache. Other providers keep the plain `system:` field
     // (their caching, if any, is server-side and automatic).
-    const useAnthropicCache = providerType === 'anthropic' && systemPrompt.stable.length > 0
+    // Compat mode (per-provider): skip prompt caching + the cache-control system
+    // restructuring so strict gateways that return an empty 200 on those enhancements work.
+    const relayCompat = providerConfig?.relayCompat === true
+    const useAnthropicCache = providerType === 'anthropic' && systemPrompt.stable.length > 0 && !relayCompat
 
     // Stall watchdog: 一条挂死的流(模型/网络/代理异常)若无人打断，会一直占着并发槽、
     // 界面永远「加载中」。用独立的 stallCtl —— 绝不动共享的 abort，否则会被 isStaleRun
@@ -1505,7 +1567,8 @@ export async function runAgent(
     }
 
     // 扩展思考策略(B)：按设置把 Anthropic 的 thinking providerOptions 注入。auto=不动。
-    const thinkOpts = thinkingStreamOpts(providerType, settings.chatThinkingMode, effectiveModel)
+    // 兼容模式下完全不注入(连 maxTokens 也不带)，发送最精简请求。
+    const thinkOpts = relayCompat ? {} : thinkingStreamOpts(providerType, settings.chatThinkingMode, effectiveModel)
 
     const MAX_STEPS = 30
     let stepCount = 0
@@ -2069,6 +2132,7 @@ function buildSystemPrompt(kbContext: string, mcpTools: McpTool[] = [], skills: 
     `- 不要只回一句"好的，我来做…"然后停笔；要做就在本回合内【立刻开始调用工具】，一步步真正完成，不要在步骤之间反问或停下。\n` +
     `- 表格 / 清单 / 统计结果里的每一条都必须来自工具的真实返回；不要编造账号、ID、粉丝数、城市、链接或引用。\n` +
     `- 写文件【铁律】：只有当你在【本回合】真实调用了 file_write 且其返回结果成功（包含 modified/created、没有 error）时，才可以说"已生成/已写入/已保存文件"。若本回合没有这样的成功调用，【绝对不许】声称文件已生成（哪怕上一回合写过、哪怕你"打算"写）——要么现在就真的调用 file_write，要么如实说"尚未写入"。同理不要凭空输出形如"[本回合已生成文件: …]"的字样，那是系统记账、不是你来写的。\n` +
+    `- 运行脚本【铁律】：任务需要执行脚本/命令（如"用 Python 处理数据""跑一下这个脚本""查这张大表"）时，必须【真的调用 run_script（本机执行，默认已开）或 ssh_exec】并等待其真实返回，再据结果作答。【严禁】把脚本/命令贴进对话、然后让用户"自己复制去跑 / 双击运行 / 把输出贴回来"——那是把本可自己完成的活儿甩给用户，等于没做。若本地执行确被关闭或多次执行失败，就【如实说明"无法执行"并给出开启/排查方式】，绝不假装已跑、也不要用"这是给你的脚本，你去运行"来搪塞。\n` +
     `- 被要求"重新生成/重做"时，必须重新【真实调用】对应工具产出新结果，不能只用文字复述一遍就当作完成。\n` +
     `- 若工具失败、需要登录、或拿不到足够数据，就【如实说明】并交付你已真实获得的部分结果——绝不用编造来凑数或假装完成。`
 

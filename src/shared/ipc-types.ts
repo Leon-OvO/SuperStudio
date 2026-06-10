@@ -74,6 +74,7 @@ export const IPC = {
   MEMORY_CAPTURE_SESSION: 'memory:capture-session', // renderer → main: 手动从一个会话提炼记忆
   MEMORY_CAPTURED: 'memory:captured',               // main → renderer (event): 自动/手动捕获产出
   MEMORY_IMPORT: 'memory:import',                    // renderer → main: 导入外部记忆资产(.json/.jsonl/.md)
+  MEMORY_EXPORT: 'memory:export',                    // renderer → main: 导出全部活跃记忆为 JSON(可再导入)
 
   // Computer Use arming confirmation (in-app styled dialog via round-trip)
   COMPUTER_USE_CONFIRM: 'computer-use:confirm',           // main → renderer: ask permission { id }
@@ -219,6 +220,7 @@ export const IPC = {
   SKILLS_READ_FILE: 'skills:read-file',
   SKILLS_IMPORT_LOCAL: 'skills:import-local',
   SKILLS_DISCOVER_LOCAL: 'skills:discover-local',   // scan ~/.claude/skills etc. for importable bundles
+  SKILLS_EXPORT: 'skills:export',                    // export an installed skill as a re-importable .zip
 
   // Talent pool (encrypted bundled catalog of agent personas / "招募人才")
   TALENT_BROWSE: 'talent:browse',
@@ -421,6 +423,11 @@ export interface ProviderConfig {
    *  layer knows the endpoint (e.g. an account overlay) — core never infers it
    *  from a brand string. */
   anthropicNative?: boolean
+  /** Compatibility mode for strict / minimal gateways: send the simplest possible
+   *  request — skip Anthropic prompt caching, the cache-control system-message
+   *  restructuring, and extended-thinking options. Some relays return an empty
+   *  200 when they don't support those enhancements; this makes them work. */
+  relayCompat?: boolean
 }
 
 
@@ -497,8 +504,12 @@ export interface AppSettings {
   vibeBashTimeoutMs?: number
 
   /** Master switch for the chat agent's `run_script` tool (run local python/bat/
-   *  sh/node scripts). Default off; even when on, each run prompts for confirmation. */
+   *  sh/node scripts). Default ON — the agent runs scripts without friction.
+   *  Set false to hide the tool entirely. */
   localScriptsEnabled?: boolean
+  /** When true, every new (command, cwd) pops a confirm dialog before running.
+   *  Default OFF — scripts run without per-command prompts. Opt-in for caution. */
+  localScriptsConfirmEachRun?: boolean
   /** Timeout (ms) for `run_script`. Default 300_000 (5 min). */
   localScriptsTimeoutMs?: number
   /** Extra folder to scan for importable local skill bundles (auto-discovery). */
@@ -514,6 +525,9 @@ export interface AppSettings {
    *  and only if nothing else (e.g. shell-open) has navigated away from the
    *  hard-coded default first. */
   startupPage: 'chat' | 'vibe'
+  /** Minimize the window to the system tray (hide from taskbar) instead of a
+   *  normal taskbar minimize. Default ON; toggle in 设置 → 全局 → 系统. */
+  minimizeToTray?: boolean
 
   /** Globally-configured notification bots (DingTalk / Feishu / WeChat Work),
    *  selectable per scheduled task. URLs and secrets are encrypted at rest. */

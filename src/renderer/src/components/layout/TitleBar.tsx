@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react'
-import { Minus, Square, X, Maximize2, Sun, Moon, Languages, Zap } from 'lucide-react'
+import { Minus, Square, X, Maximize2, Palette, Languages, Zap } from 'lucide-react'
 import { TopBarUser } from './TopBarUser'
 import { useUIStore } from '../../stores/ui'
 import { useT, setLanguage, useLanguage } from '../../lib/i18n'
+import { Select } from '../ui/Select'
+import { VISIBLE_SKINS } from '../../lib/skins'
 import { BRAND } from '@shared/brand'
 import { ACCOUNT_MODE } from '@shared/flavor'
 
@@ -11,7 +13,9 @@ export function TitleBar() {
   const isWin = window.api.platform === 'win32'
   const t = useT()
   const lang = useLanguage()
-  const { theme, toggleTheme } = useUIStore()
+  const skin = useUIStore(u => u.skin)
+  const setSkin = useUIStore(u => u.setSkin)
+  const currentSkin = VISIBLE_SKINS.find(s => s.id === skin)
 
   useEffect(() => {
     if (!isWin) return
@@ -53,12 +57,34 @@ export function TitleBar() {
           <Languages size={14} />
           <span className="text-[8px] font-bold leading-none ml-0.5">{lang.toUpperCase()}</span>
         </TopToggle>
-        <TopToggle
-          onClick={toggleTheme}
-          title={theme === 'dark' ? t('nav.themeLight') : t('nav.themeDark')}
-        >
-          {theme === 'dark' ? <Sun size={14} /> : <Moon size={14} />}
-        </TopToggle>
+        <Select
+          value={skin}
+          onChange={setSkin}
+          options={VISIBLE_SKINS.map(s => ({
+            value: s.id,
+            label: s.label,
+            hint: s.base === 'dark' ? '深色' : '浅色',
+            icon: (
+              <span
+                className="w-3.5 h-3.5 rounded-full border border-black/10 shrink-0"
+                style={{ background: s.swatches.primary }}
+              />
+            )
+          }))}
+          title="切换皮肤"
+          popoverWidth={188}
+          placement="bottom"
+          className="h-7 px-1.5 rounded-md inline-flex items-center gap-1 text-foreground/70 hover:bg-foreground/10 hover:text-foreground transition-colors"
+          trigger={() => (
+            <span className="flex items-center gap-1" title="切换皮肤">
+              <Palette size={14} />
+              <span
+                className="w-3 h-3 rounded-full border border-black/10"
+                style={{ background: currentSkin?.swatches.primary }}
+              />
+            </span>
+          )}
+        />
         {ACCOUNT_MODE === 'hosted' && <TopBarUser />}
         {isWin && (
           <div className="flex items-stretch h-full ml-1">

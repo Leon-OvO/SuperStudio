@@ -8,6 +8,7 @@ import { installFetchLogger } from './debug-fetch'
 import { IPC } from '../../src/shared/ipc-types'
 import { FLAVOR } from '../../src/shared/flavor'
 import { BRAND } from '../../src/shared/brand'
+import { getSettings } from './services/store'
 import type { ShellOpenTarget } from './services/system-integration'
 
 // ── Per-brand storage isolation (MUST run before anything reads userData / the
@@ -269,6 +270,13 @@ function createWindow(): void {
   })
   mainWindow.on('unmaximize', () => {
     mainWindow?.webContents.send(IPC.WIN_MAXIMIZE_CHANGED, false)
+  })
+
+  // Minimize-to-tray (default on; toggle in 设置 → 全局 → 系统). On minimize, hide
+  // the window so it leaves the taskbar and lives only in the tray; the tray icon /
+  // its 「显示窗口」 menu restores it (tray.ts does restore()+show()+focus()).
+  mainWindow.on('minimize', () => {
+    if (getSettings().minimizeToTray !== false) mainWindow?.hide()
   })
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {

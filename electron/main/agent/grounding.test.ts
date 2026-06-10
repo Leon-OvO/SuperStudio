@@ -29,6 +29,17 @@ describe('reconcileGrounding — unbacked action claims', () => {
     const f = reconcileGrounding('已生成图片。', [ok('mcp__draw', { images: [{ path: 'a.png' }] })])
     expect(f.unbackedActions).toHaveLength(0)
   })
+  it('flags 已执行脚本 with no run_script/ssh_exec/bash call (the "贴脚本给用户代跑" anti-pattern)', () => {
+    expect(reconcileGrounding('我已执行脚本，结果如下。', []).unbackedActions).toContain('执行脚本/命令')
+    expect(reconcileGrounding('已运行 Python 脚本完成统计。', [ok('file_read', { content: 'x' })]).unbackedActions).toContain('执行脚本/命令')
+  })
+  it('does NOT flag 已执行脚本 backed by a successful run_script (even non-zero exit = it DID run)', () => {
+    expect(reconcileGrounding('已执行脚本。', [ok('run_script', { code: 0, stdout: 'ok' })]).unbackedActions).toHaveLength(0)
+    expect(reconcileGrounding('已在服务器上执行命令。', [ok('ssh_exec', { exitCode: 0, stdout: 'ok' })]).unbackedActions).toHaveLength(0)
+  })
+  it('accepts a local 查到/检索 claim backed by file_read (xlsx value-search counts as retrieval)', () => {
+    expect(reconcileGrounding('已查到该 ID 所在行。', [ok('file_read', { content: '行6: ...' })]).unbackedActions).toHaveLength(0)
+  })
 })
 
 describe('reconcileGrounding — does not false-flag', () => {

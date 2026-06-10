@@ -63,7 +63,7 @@ export function useConfirmDialog() {
             {state.title && (
               <h3 className="font-semibold text-sm mb-2">{state.title}</h3>
             )}
-            <p className="text-sm text-foreground/85 whitespace-pre-wrap break-words leading-relaxed">
+            <p className="text-sm text-foreground/85 whitespace-pre-wrap break-words leading-relaxed max-h-[50vh] overflow-y-auto overflow-x-hidden">
               {state.message}
             </p>
           </div>

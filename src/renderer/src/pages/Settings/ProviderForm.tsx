@@ -21,6 +21,9 @@ export function ProviderForm({ initial, onSave, onCancel }: Props) {
   // route Claude models to /v1/messages instead of the /chat/completions shim — the
   // shim path is what returns an empty response on many gateways for Claude models.
   const [anthropicNative, setAnthropicNative] = useState(initial?.anthropicNative ?? false)
+  // Compatibility mode — send the simplest request (no prompt caching / extended
+  // thinking). Some gateways return an empty response when they don't support those.
+  const [relayCompat, setRelayCompat] = useState(initial?.relayCompat ?? false)
   const [models, setModels] = useState<string[]>(initial?.models || [])
   const [newModel, setNewModel] = useState('')
   const [fetching, setFetching] = useState(false)
@@ -88,7 +91,8 @@ export function ProviderForm({ initial, onSave, onCancel }: Props) {
         id: initial?.id || randomId(),
         name, type, apiKey, baseUrl: baseUrl || undefined, models,
         // Only meaningful for OpenAI-compatible types; native anthropic/gemini ignore it.
-        anthropicNative: (type === 'custom' || type === 'openai') && anthropicNative ? true : undefined
+        anthropicNative: (type === 'custom' || type === 'openai') && anthropicNative ? true : undefined,
+        relayCompat: relayCompat || undefined
       })
     } finally {
       setSaving(false)
@@ -162,6 +166,24 @@ export function ProviderForm({ initial, onSave, onCancel }: Props) {
             <span className="block text-[11px] text-muted-foreground mt-0.5 leading-relaxed">
               勾选后 Claude 模型改用 Anthropic 原生协议，而非 OpenAI 兼容协议。
               若该接口用 OpenAI 协议调 Claude 模型时返回<b>空响应</b>，开启此项通常可解决；仅当接口确实支持 /v1/messages 时勾选。
+            </span>
+          </span>
+        </label>
+      )}
+
+      {(type === 'custom' || type === 'anthropic') && (
+        <label className="flex items-start gap-2.5 cursor-pointer rounded-md border border-border p-2.5">
+          <input
+            type="checkbox"
+            className="mt-0.5 accent-primary shrink-0"
+            checked={relayCompat}
+            onChange={e => setRelayCompat(e.target.checked)}
+          />
+          <span className="min-w-0">
+            <span className="block text-sm font-medium">兼容模式（发送最精简请求）</span>
+            <span className="block text-[11px] text-muted-foreground mt-0.5 leading-relaxed">
+              关闭 prompt 缓存与扩展思考等增强特性，只发最基础的请求。
+              若该接口仍返回<b>空响应</b>（finishReason=unknown、usage 全 0），开启此项常可解决——部分接口不支持这些增强会直接回空。
             </span>
           </span>
         </label>

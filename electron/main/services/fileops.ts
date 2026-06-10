@@ -13,7 +13,24 @@ function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted) throw new AbortedError()
 }
 
-export async function readFile(filePath: string, signal?: AbortSignal): Promise<{ content: string; type: string }> {
+/** Targeted query for spreadsheet reads — lets the agent pull a sheet, a row
+ *  range, or just the rows that mention a value, instead of dumping the whole
+ *  workbook (a wide config table is easily 100k+ tokens). */
+export interface XlsxQuery {
+  /** Read just this sheet (by name). Omit to operate over all sheets. */
+  sheet?: string
+  /** Return only rows where ANY cell contains this substring (case-insensitive),
+   *  each prefixed with its row number and shown with the sheet's header row.
+   *  The cheapest way to answer "which rows mention X / how is X referenced". */
+  search?: string
+  /** 1-indexed inclusive row range within `sheet` (header is row 1). */
+  startRow?: number
+  endRow?: number
+  /** Output byte cap (default 11000 — sized to survive the model-facing trim). */
+  maxBytes?: number
+}
+
+export async function readFile(filePath: string, signal?: AbortSignal, xlsx?: XlsxQuery): Promise<{ content: string; type: string }> {
   if (!fs.existsSync(filePath)) {
     throw new Error(
       `file_read: 文件不存在 "${filePath}". ` +
@@ -26,7 +43,7 @@ export async function readFile(filePath: string, signal?: AbortSignal): Promise<
     case '.xlsx':
     case '.xls':
     case '.ods':            // SheetJS reads OpenDocument spreadsheets too
-      return readXlsx(filePath)
+      return readXlsx(filePath, xlsx)
     case '.docx':
       return readDocx(filePath)
     case '.pptx':
@@ -91,13 +108,109 @@ const IMAGE_EXTS = new Set([
   '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tiff', '.tif', '.ico', '.heic', '.heif', '.avif'
 ])
 
-function readXlsx(filePath: string): { content: string; type: string } {
+const XLSX_MAX_BYTES = 11000 // keep under truncateToolResult's 12000-char model cap
+
+/**
+ * Read a spreadsheet for the agent. Without a query: returns the whole workbook
+ * if it's small, otherwise a STRUCTURE summary (sheet list + row/col counts) so a
+ * 100k-token table can't blow the context — the agent then drills in with a
+ * query. With a query: value-search rows, a named sheet, or a row range.
+ */
+function readXlsx(filePath: string, q?: XlsxQuery): { content: string; type: string } {
   const workbook = XLSX.readFile(filePath)
+  const names = workbook.SheetNames
+  const maxBytes = Math.min(Math.max(q?.maxBytes ?? XLSX_MAX_BYTES, 1000), 200_000)
+
+  // blankrows:true keeps empty rows as [] so the array index maps 1:1 to the
+  // real spreadsheet row — "行N" labels and startRow/endRow then mean the actual
+  // row, not a position in a compacted list.
+  const rowsOf = (name: string): string[][] =>
+    (XLSX.utils.sheet_to_json(workbook.Sheets[name], { header: 1, blankrows: true, defval: '' }) as unknown[][])
+      .map(r => (r || []).map(c => String(c ?? '')))
+
+  const dims = (name: string): { rows: number; cols: number } => {
+    const ref = workbook.Sheets[name]?.['!ref']
+    if (!ref) return { rows: 0, cols: 0 }
+    const r = XLSX.utils.decode_range(ref)
+    return { rows: r.e.r - r.s.r + 1, cols: r.e.c - r.s.c + 1 }
+  }
+
+  const summary = (): { content: string; type: string } => {
+    const list = names.map(n => { const d = dims(n); return `  • ${n}  (${d.rows} 行 × ${d.cols} 列)` }).join('\n')
+    return {
+      content:
+        `【该表较大，已只返回结构，请按需精确读取，避免一次性灌入上下文】\n` +
+        `共 ${names.length} 个 sheet：\n${list}\n\n` +
+        `下一步用 file_read 的 xlsx 参数精确取（同一个 filePath）：\n` +
+        `  · 按值查行（最省、推荐）：sheetSearch="<要找的ID/关键字>"（可加 sheetName 限定）——返回所有命中行+表头\n` +
+        `  · 整张表/分段：sheetName="<表名>"（可加 startRow/endRow，1 起算、含表头）`,
+      type: 'xlsx',
+    }
+  }
+
+  // --- value search: which rows mention X (one sheet, or all) ---
+  if (q?.search && q.search.trim()) {
+    const needle = q.search.trim().toLowerCase()
+    const targets = q.sheet ? [q.sheet] : names
+    const out: string[] = []
+    let bytes = 0, shown = 0, capped = false
+    for (const name of targets) {
+      if (capped) break
+      if (!workbook.Sheets[name]) continue
+      const rows = rowsOf(name)
+      const header = rows.length ? rows[0].join(',') : ''
+      let headerEmitted = false
+      for (let i = 0; i < rows.length; i++) {
+        const line = rows[i].join(',')
+        if (!line.toLowerCase().includes(needle)) continue
+        const prefix = headerEmitted ? '' : `## Sheet: ${name}（表头 行1: ${header}）\n`
+        const piece = `${prefix}行${i + 1}: ${line}`
+        if (bytes + piece.length + 1 > maxBytes) { capped = true; break }
+        out.push(piece); bytes += piece.length + 1; shown++; headerEmitted = true
+      }
+    }
+    const scope = q.sheet ? `sheet=${q.sheet}` : `全部 ${names.length} 个 sheet`
+    const head = capped
+      ? `【在 ${scope} 中搜索 "${q.search}"，已显示 ${shown} 行（结果较多、超出 ${maxBytes} 字节已截断，可能还有更多未显示）】\n\n`
+      : `【在 ${scope} 中搜索 "${q.search}"，命中 ${shown} 行】\n\n`
+    const tail = capped
+      ? `\n\n…[已截断；缩小搜索词或加 sheetName 限定范围以看全]`
+      : (shown === 0 ? '（无匹配行。可先不带参数读该文件看 sheet 清单与表头，确认列名/取值格式后再搜）' : '')
+    return { content: head + out.join('\n') + tail, type: 'xlsx' }
+  }
+
+  // --- single sheet, optionally a row range ---
+  if (q?.sheet) {
+    if (!workbook.Sheets[q.sheet]) {
+      return { content: `指定的 sheet "${q.sheet}" 不存在。可用 sheet：${names.join('、')}`, type: 'xlsx' }
+    }
+    const rows = rowsOf(q.sheet)
+    const total = rows.length
+    const start = Math.max((q.startRow ?? 1) - 1, 0)              // 0-based, clamped ≥0
+    const end = Math.min(Math.max(q.endRow ?? total, 1), total)  // 1-based inclusive, clamped to 1..total
+    if (end <= start) {
+      return { content: `参数有误：行范围为空（startRow=${q.startRow ?? 1}, endRow=${q.endRow ?? total}）。startRow 需 ≤ endRow，且都在 1–${total} 内。`, type: 'xlsx' }
+    }
+    let csv = rows.slice(start, end).map(r => r.join(',')).join('\n')
+    let capped = false
+    if (csv.length > maxBytes) { csv = csv.slice(0, maxBytes); capped = true }
+    const head = `## Sheet: ${q.sheet}  [共 ${total} 行，本次第 ${start + 1}–${end} 行]\n`
+    const tail = capped ? `\n…[超出 ${maxBytes} 字节已截断；用 startRow/endRow 取下一段，或用 search 直接定位目标行]` : ''
+    return { content: head + csv + tail, type: 'xlsx' }
+  }
+
+  // --- no query: whole workbook if small, else a structure summary. Skip
+  // serialization entirely when the cell count alone is clearly over budget, so
+  // a huge table isn't fully turned into CSV just to measure it. ---
+  const totalCells = names.reduce((s, n) => { const d = dims(n); return s + d.rows * d.cols }, 0)
+  if (totalCells > maxBytes) return summary()
   const parts: string[] = []
-  for (const sheetName of workbook.SheetNames) {
-    const sheet = workbook.Sheets[sheetName]
-    const csv = XLSX.utils.sheet_to_csv(sheet)
-    parts.push(`## Sheet: ${sheetName}\n${csv}`)
+  let acc = 0
+  for (const n of names) {
+    const part = `## Sheet: ${n}\n${XLSX.utils.sheet_to_csv(workbook.Sheets[n])}`
+    acc += part.length + 2
+    if (acc > maxBytes) return summary()
+    parts.push(part)
   }
   return { content: parts.join('\n\n'), type: 'xlsx' }
 }
@@ -278,9 +391,10 @@ function globToRegExp(glob: string): RegExp {
  * MUST have authorized `dirPath` (isApproved) — this is a pure fs walk with no
  * sandbox check of its own.
  *
- *  - `pattern`: simple name glob (only * and ?) matched against each file's
- *    basename. Directories are always included (so the model can drill down)
- *    even when a pattern is given.
+ *  - `pattern`: simple name glob (only * and ?) matched against each entry's
+ *    basename — applied to BOTH files and directories, so it actually filters the
+ *    listing. Recursive DESCENT is independent: subfolders are still walked even
+ *    when their name doesn't match, so a deep `*.xlsx` search reaches them.
  *  - `recursive`: walk subfolders, depth-capped (MAX_DEPTH) to avoid pathological
  *    trees; node_modules / .git / dotfolders are not descended into.
  *  - Total entries are capped (MAX_ENTRIES); `truncated` flags when the cap hit,
@@ -324,7 +438,12 @@ export function listDir(params: { dirPath: string; pattern?: string; recursive?:
       if (entries.length >= MAX_ENTRIES) { truncated = true; return }
       const full = path.join(dir, d.name)
       if (d.isDirectory()) {
-        entries.push({ name: d.name, type: 'dir', path: toFwd(full) })
+        // A pattern filters which entries are LISTED (dirs included) — fixes
+        // "*技能* and *J* return the same dirs". Descent is independent: still
+        // recurse into non-matching dirs so a deep `*.xlsx` search can find them.
+        if (!matcher || matcher.test(d.name)) {
+          entries.push({ name: d.name, type: 'dir', path: toFwd(full) })
+        }
         if (recursive && depth < MAX_DEPTH && !SKIP_DESCEND.has(d.name) && !d.name.startsWith('.') && withinRoot(full)) {
           walk(full, depth + 1)
         }

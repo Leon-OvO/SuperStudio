@@ -260,7 +260,7 @@ export function SkillsPage() {
     // there go through drag-and-drop, which the importer now handles correctly.
     const paths = await window.api.openFileDialog({
       properties: ['openFile', 'openDirectory', 'multiSelections'],
-      filters: [{ name: 'Skill', extensions: ['md'] }]
+      filters: [{ name: 'Skill', extensions: ['md', 'zip'] }]
     })
     if (paths?.length) await importLocalFromPaths(paths)
   }
@@ -748,6 +748,21 @@ function SkillCard({
           </a>
         )}
         <div className="flex-1" />
+        <button
+          onClick={async () => {
+            try {
+              const r = await window.api.exportSkill(skill.id)
+              if (r?.canceled) { if (r.error) toast.error('导出失败：' + r.error); return }
+              toast.success('已导出技能到 ' + r.filePath)
+            } catch (e) {
+              toast.error('导出失败：' + (e as Error).message)
+            }
+          }}
+          className="text-muted-foreground hover:text-foreground inline-flex items-center gap-1 transition-colors"
+          title="导出为 .zip 技能包（可再导入）"
+        >
+          <Download size={10} /> 导出
+        </button>
         {canUpgrade && (
           <button
             onClick={onUpgrade}

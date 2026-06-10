@@ -1,4 +1,5 @@
-import { ipcMain } from 'electron'
+import { ipcMain, BrowserWindow, dialog } from 'electron'
+import fs from 'fs'
 import { IPC } from '../../../src/shared/ipc-types'
 import {
   listInstalledSkills, installSkill, installRuntimeSkill, uninstallSkill, setSkillEnabled,
@@ -7,7 +8,7 @@ import {
   type SkillScenario
 } from '../services/skills-db'
 import { fetchRegistry, fetchManifest, ensureBundledInstalled, type RegistryEntry, type FetchedRegistry, type BrowseParams } from '../services/skills-registry'
-import { downloadSkillBundle, importLocalSkillBundle, parseSkillMd, readSkillResource } from '../services/skill-files'
+import { downloadSkillBundle, importLocalSkillBundle, parseSkillMd, readSkillResource, buildSkillExportZip } from '../services/skill-files'
 import { discoverLocalSkills } from '../services/skill-discover'
 
 export function skillsHandlers(): void {
@@ -75,6 +76,24 @@ export function skillsHandlers(): void {
   // project's .claude/skills, and a custom folder). Read-only scan.
   ipcMain.handle(IPC.SKILLS_DISCOVER_LOCAL, (_e, args?: { projectPath?: string }) => {
     return discoverLocalSkills(args?.projectPath)
+  })
+
+  // Export an installed skill as a re-importable .zip bundle (round-trips via
+  // SKILLS_IMPORT_LOCAL, which now accepts .zip).
+  ipcMain.handle(IPC.SKILLS_EXPORT, async (e, skillId: string) => {
+    const skill = getInstalledSkill(skillId)
+    if (!skill) return { canceled: true, error: '技能不存在' }
+    const win = BrowserWindow.fromWebContents(e.sender)
+    const safe = (skill.name || skill.id).replace(/[\\/:*?"<>|]/g, '_').trim().slice(0, 60) || 'skill'
+    const opts = { defaultPath: `${safe}-${skill.version || '0.0.0'}.zip`, filters: [{ name: 'Zip', extensions: ['zip'] }] }
+    const dlg = win ? await dialog.showSaveDialog(win, opts) : await dialog.showSaveDialog(opts)
+    if (dlg.canceled || !dlg.filePath) return { canceled: true }
+    try {
+      fs.writeFileSync(dlg.filePath, buildSkillExportZip(skill))
+      return { canceled: false, filePath: dlg.filePath }
+    } catch (err) {
+      return { canceled: true, error: (err as Error).message }
+    }
   })
 
   ipcMain.handle(IPC.SKILLS_UNINSTALL, (_e, id: string) => {
