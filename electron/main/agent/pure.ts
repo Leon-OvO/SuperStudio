@@ -67,7 +67,18 @@ export function friendlyError(message: string, cause?: unknown): string {
   if (full.includes('timeout') || full.includes('timed out')) {
     return `请求超时。模型响应时间过长，请重试或尝试更短的输入。\n\n原始信息：${message}`
   }
-  if (full.includes('context length') || full.includes('token') || full.includes('maximum context')) {
+  // Context-overflow detection. `token` must CO-OCCUR with overflow wording — a
+  // bare "token" match wrongly flagged empty-response errors whose diagnostic dump
+  // contains usage={"promptTokens":…} as "context too long".
+  const ctxOverflow =
+    full.includes('context length') ||
+    full.includes('context window') ||
+    full.includes('maximum context') ||
+    full.includes('context_length_exceeded') ||
+    full.includes('string too long') ||
+    /(maximum|exceed|too many|too long|reduce|limit of)[^.]{0,40}tokens?\b/.test(full) ||
+    /tokens?\b[^.]{0,40}(exceed|limit|maximum|too long|too many)/.test(full)
+  if (ctxOverflow) {
     return `输入内容超过模型最大上下文长度。请缩短消息或开启新会话。\n\n原始信息：${message}`
   }
 

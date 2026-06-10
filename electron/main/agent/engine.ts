@@ -1704,14 +1704,19 @@ export async function runAgent(
     }
 
     if (!fullText && chunkCount === 0) {
-      // Model returned nothing — try to get response metadata for a useful error
-      let detail = '模型返回了空响应（0 个文本片段）。'
+      // Model/endpoint produced no text at all. Keep finishReason/usage as a
+      // bracketed diagnostic so friendlyError can't misread the usage dump (which
+      // contains "promptTokens") as a context-length overflow.
+      let diag = ''
       try {
         const finishReason = await result.finishReason
         const usage = await result.usage
-        detail += ` finishReason=${finishReason}, usage=${JSON.stringify(usage)}`
+        diag = ` [finishReason=${finishReason}, usage=${JSON.stringify(usage)}]`
       } catch {/* ignore */}
-      throw new Error(detail)
+      throw new Error(
+        `服务返回了空响应（没有任何文本输出）。可能原因：所选「接口协议」与该模型不匹配、内容被安全策略拦截、上游超时，或推理内容未透传。` +
+        `请重试，或在对话顶部切换模型 / 在「设置 → 提供商」改用与该模型匹配的接口协议。${diag}`
+      )
     }
 
     // Save assistant message with tool call log and metadata (asstMsgId was

@@ -17,6 +17,10 @@ export function ProviderForm({ initial, onSave, onCancel }: Props) {
   const [type, setType] = useState<ProviderConfig['type']>(initial?.type || 'openai')
   const [apiKey, setApiKey] = useState(initial?.apiKey || '')
   const [baseUrl, setBaseUrl] = useState(initial?.baseUrl || '')
+  // When this OpenAI-compatible endpoint also speaks the Anthropic-native protocol,
+  // route Claude models to /v1/messages instead of the /chat/completions shim — the
+  // shim path is what returns an empty response on many gateways for Claude models.
+  const [anthropicNative, setAnthropicNative] = useState(initial?.anthropicNative ?? false)
   const [models, setModels] = useState<string[]>(initial?.models || [])
   const [newModel, setNewModel] = useState('')
   const [fetching, setFetching] = useState(false)
@@ -32,7 +36,8 @@ export function ProviderForm({ initial, onSave, onCancel }: Props) {
       const probe: ProviderConfig = {
         id: initial?.id || 'probe',
         name: name || 'probe',
-        type, apiKey, baseUrl, models
+        type, apiKey, baseUrl, models,
+        anthropicNative: anthropicNative || undefined
       }
       const result = await window.api.testProvider(probe)
       setTestResult(result)
@@ -48,7 +53,7 @@ export function ProviderForm({ initial, onSave, onCancel }: Props) {
     setFetching(true)
     try {
       const id = initial?.id || 'temp_' + randomId()
-      const tempProvider: ProviderConfig = { id, name: name || 'temp', type, apiKey, baseUrl, models }
+      const tempProvider: ProviderConfig = { id, name: name || 'temp', type, apiKey, baseUrl, models, anthropicNative: anthropicNative || undefined }
       await window.api.saveProvider(tempProvider)
       const fetched = await window.api.fetchModels(id)
       if (Array.isArray(fetched)) {
@@ -81,7 +86,9 @@ export function ProviderForm({ initial, onSave, onCancel }: Props) {
     try {
       await onSave({
         id: initial?.id || randomId(),
-        name, type, apiKey, baseUrl: baseUrl || undefined, models
+        name, type, apiKey, baseUrl: baseUrl || undefined, models,
+        // Only meaningful for OpenAI-compatible types; native anthropic/gemini ignore it.
+        anthropicNative: (type === 'custom' || type === 'openai') && anthropicNative ? true : undefined
       })
     } finally {
       setSaving(false)
@@ -141,6 +148,24 @@ export function ProviderForm({ initial, onSave, onCancel }: Props) {
           autoComplete="off"
         />
       </Field>
+
+      {(type === 'custom' || type === 'openai') && (
+        <label className="flex items-start gap-2.5 cursor-pointer rounded-md border border-border p-2.5">
+          <input
+            type="checkbox"
+            className="mt-0.5 accent-primary shrink-0"
+            checked={anthropicNative}
+            onChange={e => setAnthropicNative(e.target.checked)}
+          />
+          <span className="min-w-0">
+            <span className="block text-sm font-medium">该接口支持 Anthropic 原生协议（/v1/messages）</span>
+            <span className="block text-[11px] text-muted-foreground mt-0.5 leading-relaxed">
+              勾选后 Claude 模型改用 Anthropic 原生协议，而非 OpenAI 兼容协议。
+              若该接口用 OpenAI 协议调 Claude 模型时返回<b>空响应</b>，开启此项通常可解决；仅当接口确实支持 /v1/messages 时勾选。
+            </span>
+          </span>
+        </label>
+      )}
 
       <Field label="可用模型">
         <div className="space-y-2">
