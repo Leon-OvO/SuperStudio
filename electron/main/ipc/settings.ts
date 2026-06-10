@@ -74,8 +74,8 @@ export function settingsHandlers(): void {
     const providers = getProviders()
     const provider = providers.find(p => p.id === providerId)
     if (!provider) throw new Error('Provider not found')
-    if (provider.type !== 'openai' && provider.type !== 'custom') {
-      throw new Error('Auto-fetch only supported for OpenAI-compatible providers')
+    if (provider.type === 'gemini') {
+      throw new Error('Google Gemini 暂不支持自动拉取模型列表，请手动填写模型 ID。')
     }
 
     // The saved apiKey may be masked (e.g. "sk-d8d66...3b43") if an earlier sync
@@ -91,11 +91,14 @@ export function settingsHandlers(): void {
     if (!apiKey || apiKey.length < 8) {
       throw new Error('API Key 为空或无效，请在「设置 → API 提供商」中重新填写。')
     }
-    const baseUrl = (provider.baseUrl || 'https://api.openai.com').replace(/\/v1\/?$/, '')
+    // Anthropic's /v1/models uses x-api-key + anthropic-version instead of Bearer.
+    // Relays declared as 'anthropic' usually accept the same; openai/custom use Bearer.
+    const isAnthropic = provider.type === 'anthropic'
+    const authHeaders = (key: string): Record<string, string> =>
+      isAnthropic ? { 'x-api-key': key, 'anthropic-version': '2023-06-01' } : { Authorization: `Bearer ${key}` }
+    const baseUrl = (provider.baseUrl || (isAnthropic ? 'https://api.anthropic.com' : 'https://api.openai.com')).replace(/\/v1\/?$/, '')
     console.log(`[settings] fetch-models for ${providerId}: ${baseUrl}/v1/models (key length=${apiKey.length})`)
-    let res = await fetch(`${baseUrl}/v1/models`, {
-      headers: { Authorization: `Bearer ${apiKey}` }
-    })
+    let res = await fetch(`${baseUrl}/v1/models`, { headers: authHeaders(apiKey) })
     // One retry: if the upstream 401s, the stored key may be stale. Ask the
     // recovery seam to refresh and try again (no-op for BYOK providers).
     if (res.status === 401 && looksLikeRealKey(apiKey)) {
@@ -103,9 +106,7 @@ export function settingsHandlers(): void {
       if (refreshed && refreshed !== apiKey) {
         console.log(`[settings] retrying /v1/models with refreshed key for ${providerId}`)
         apiKey = refreshed
-        res = await fetch(`${baseUrl}/v1/models`, {
-          headers: { Authorization: `Bearer ${apiKey}` }
-        })
+        res = await fetch(`${baseUrl}/v1/models`, { headers: authHeaders(apiKey) })
       }
     }
     if (!res.ok) {
