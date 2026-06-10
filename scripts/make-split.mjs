@@ -46,6 +46,9 @@ const NEVER_SHIP = [
   'sources/', // ~840 talent personas in raw .md (kept private; the packed .enc ships)
   'bp/',      // business plan
   'demo/',    // internal demos
+  'mobile-app/',     // separate Capacitor Android workstream — not part of the DWork desktop deliverable
+  'mobile-shell/',   // separate Capacitor Android workstream — not part of the DWork desktop deliverable
+  'mobile-backend/', // mobile BFF (references supercode) — must NOT ship to the DWork core
   '.github/', // GitHub Actions CI — belongs to the SuperStudio build, useless on the DWork (Gogs) repo
   // talent-crypto + the packed resources/talent-pool.enc SHIP to entitled DWork
   // customers (paid content), so they are NOT excluded here.
@@ -185,7 +188,7 @@ function scrubText(text) {
 function transformPackageJson(text) {
   const pkg = JSON.parse(text)
   pkg.name = 'dwork'
-  pkg.version = '0.1.5'
+  pkg.version = '0.1.6'
   pkg.description = 'DWork — AI Productivity Suite'
   if (pkg.scripts) {
     // Core IS the DWork product → default flavor is dwork.
