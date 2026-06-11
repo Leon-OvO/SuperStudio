@@ -99,18 +99,49 @@ export function effectiveProtocol(provider: ProviderConfig, modelId: string): 'a
   return 'openai'
 }
 
-// Newer Anthropic models (Opus 4.x+) REJECT `temperature` outright
+// Newer top-tier models (Opus 4.x+, Fable 5) REJECT `temperature` outright
 // ("`temperature` is deprecated for this model"). The AI SDK v4 injects
 // temperature:0 by default (see ai/dist prepareCallSettings), and this app never
-// sets one, so every request carries temperature:0 → a hard 400 on Opus. Strip it
-// via middleware for those models; they use their own default sampling. Sonnet /
+// sets one, so every request carries temperature:0 → a hard 400. Strip it via
+// middleware for those models; they use their own default sampling. Sonnet /
 // Haiku still accept temperature:0, so we leave them untouched (keeps determinism
 // + classify's explicit temperature:0).
 const stripTemperatureMiddleware: LanguageModelV1Middleware = {
   transformParams: async ({ params }) => ({ ...params, temperature: undefined })
 }
-function anthropicRejectsTemperature(modelId: string): boolean {
-  return /opus/i.test(modelId)  // Opus 4.x+; extend here if more models follow
+function modelRejectsTemperature(modelId: string): boolean {
+  return /opus|fable/i.test(modelId)  // Opus 4.x+ / Fable 5; extend here if more models follow
+}
+/** Wrap a built model so it drops `temperature` when the model rejects it.
+ *  Applies on every protocol path (anthropic-native AND openai-compatible), since
+ *  the same model can route either way depending on the provider. */
+function stripTemperatureIfRejected(model: LanguageModel, modelId: string): LanguageModel {
+  return modelRejectsTemperature(modelId)
+    ? wrapLanguageModel({ model, middleware: stripTemperatureMiddleware })
+    : model
+}
+
+// Some relays/gateways emit an Anthropic `reasoning-signature` (the thinking
+// block's signature) with NO preceding reasoning content. The AI SDK then throws
+// `InvalidStreamPart: reasoning-signature without reasoning` and aborts the WHOLE
+// turn (user sees nothing). Drop the orphan signature so the stream survives.
+// No-op for well-behaved endpoints: real reasoning always precedes its signature,
+// so `sawReasoning` is true and the signature passes through untouched.
+const tolerateOrphanReasoningSignature: LanguageModelV1Middleware = {
+  wrapStream: async ({ doStream }) => {
+    const { stream, ...rest } = await doStream()
+    let sawReasoning = false
+    return {
+      ...rest,
+      stream: stream.pipeThrough(new TransformStream({
+        transform(part, controller) {
+          if (part.type === 'reasoning') sawReasoning = true
+          if (part.type === 'reasoning-signature' && !sawReasoning) return // drop orphan
+          controller.enqueue(part)
+        }
+      }))
+    }
+  }
 }
 
 /** Normalize a provider baseURL so it ends with an API version segment. The SDKs
@@ -130,9 +161,11 @@ export function withApiVersion(baseUrl?: string): string | undefined {
 function buildAnthropicModel(provider: ProviderConfig, modelId: string): LanguageModel {
   const client = createAnthropic({ apiKey: provider.apiKey, baseURL: withApiVersion(provider.baseUrl), fetch: llmFetch })
   const model = client(modelId as Parameters<typeof client>[0])
-  return anthropicRejectsTemperature(modelId)
-    ? wrapLanguageModel({ model, middleware: stripTemperatureMiddleware })
-    : model
+  // Always tolerate orphan reasoning-signatures (relay robustness); strip
+  // temperature only for models that reject it.
+  const middleware: LanguageModelV1Middleware[] = [tolerateOrphanReasoningSignature]
+  if (modelRejectsTemperature(modelId)) middleware.push(stripTemperatureMiddleware)
+  return wrapLanguageModel({ model, middleware })
 }
 
 export function buildModel(provider: ProviderConfig, modelId: string): LanguageModel {
@@ -144,6 +177,21 @@ export function buildModel(provider: ProviderConfig, modelId: string): LanguageM
     return buildAnthropicModel(provider, modelId)
   }
 
+  // Compat mode (per-provider): use the SDK's 'compatible' profile so it does NOT
+  // append `stream_options: { include_usage: true }`. Strict gateways / subscription
+  // relays whose upstream rejects that field can return 502/empty; turning it off
+  // sends the simplest request. Costs token-usage accounting, hence opt-in.
+  const openaiCompat: 'strict' | 'compatible' = provider.relayCompat ? 'compatible' : 'strict'
+  // Disable OpenAI "strict" function calling (structured outputs for tools). For
+  // reasoning models (o1/o3/gpt-5.x) the SDK turns this ON by default, stamping
+  // every tool with `strict:true` + `additionalProperties:false`. Strict schemas
+  // require `required` to list EVERY property — but our tools use optional params,
+  // so the upstream rejects them with a 400 (relays surface it as 502). With
+  // maxRetries the whole turn then hangs and the user sees "无响应". Non-reasoning
+  // models never get strict tools, so forcing it off is a no-op for them and the
+  // exact fix for gpt-5.x. We still get normal function calling, just not the
+  // schema-strict variant (which the chat agent doesn't rely on).
+  const openaiModelSettings = { structuredOutputs: false as const }
   switch (provider.type) {
     case 'openai': {
       // `strict` makes the SDK send `stream_options: { include_usage: true }`,
@@ -151,23 +199,22 @@ export function buildModel(provider: ProviderConfig, modelId: string): LanguageM
       const client = createOpenAI({
         apiKey: provider.apiKey,
         baseURL: withApiVersion(provider.baseUrl),
-        compatibility: 'strict',
+        compatibility: openaiCompat,
         fetch: llmFetch
       })
-      return client(modelId)
+      return stripTemperatureIfRejected(client(modelId, openaiModelSettings), modelId)
     }
     case 'custom': {
       // Same as 'openai' — most modern OpenAI-compatible proxies (OpenRouter,
       // Together, Groq, aggregator gateways, etc.) honor `stream_options` and
-      // need it on to return usage. If a downstream proxy chokes on the field,
-      // it'd need a per-provider opt-out — add one then.
+      // need it on to return usage. Compat mode drops it for picky upstreams.
       const client = createOpenAI({
         apiKey: provider.apiKey,
         baseURL: withApiVersion(provider.baseUrl) || 'https://api.openai.com/v1',
-        compatibility: 'strict',
+        compatibility: openaiCompat,
         fetch: llmFetch
       })
-      return client(modelId)
+      return stripTemperatureIfRejected(client(modelId, openaiModelSettings), modelId)
     }
     case 'anthropic': {
       // baseURL lets users point at an Anthropic-native gateway that serves

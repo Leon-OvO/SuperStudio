@@ -242,6 +242,7 @@ function encryptSshConn(c: SshConnection): SshConnection {
     password: c.password ? encryptString(c.password) : c.password,
     privateKey: c.privateKey ? encryptString(c.privateKey) : c.privateKey,
     passphrase: c.passphrase ? encryptString(c.passphrase) : c.passphrase,
+    sudoPassword: c.sudoPassword ? encryptString(c.sudoPassword) : c.sudoPassword,
   }
 }
 function decryptSshConn(c: SshConnection): SshConnection {
@@ -250,6 +251,7 @@ function decryptSshConn(c: SshConnection): SshConnection {
     password: c.password ? decryptString(c.password) : c.password,
     privateKey: c.privateKey ? decryptString(c.privateKey) : c.privateKey,
     passphrase: c.passphrase ? decryptString(c.passphrase) : c.passphrase,
+    sudoPassword: c.sudoPassword ? decryptString(c.sudoPassword) : c.sudoPassword,
   }
 }
 

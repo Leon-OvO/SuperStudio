@@ -57,3 +57,30 @@ export function autoPickDataDir(): string {
   fs.mkdirSync(fallback, { recursive: true })
   return fallback
 }
+
+// --- Crash-proof data-directory sidecar --------------------------------------
+//
+// The custom data directory lives in settings (electron-store config.json). If
+// that config is ever reset to defaults (e.g. a decrypt failure after an update
+// — see store.ts), settings.dataDirectory is lost and the DB silently falls back
+// to the default userData → the user's sessions / employees "disappear". We mirror
+// the chosen directory into a PLAIN sidecar file in the default userData so it can
+// be recovered independently of the (encrypted/resettable) config.
+
+function sidecarPath(): string {
+  return path.join(app.getPath('userData'), 'data-dir.path')
+}
+
+/** Persist the active data directory to the sidecar (best-effort, plain text). */
+export function rememberDataDir(dir: string): void {
+  try { if (dir && dir.trim()) fs.writeFileSync(sidecarPath(), dir.trim(), 'utf8') } catch { /* best effort */ }
+}
+
+/** Read the last-remembered data directory, or null if none/unreadable. */
+export function recallDataDir(): string | null {
+  try {
+    const p = sidecarPath()
+    if (!fs.existsSync(p)) return null
+    return fs.readFileSync(p, 'utf8').trim() || null
+  } catch { return null }
+}

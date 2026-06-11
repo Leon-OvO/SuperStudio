@@ -18,6 +18,13 @@ export function settingsHandlers(): void {
   ipcMain.handle(IPC.SETTINGS_GET, () => getSettings())
   ipcMain.handle(IPC.SETTINGS_SET, async (_e, data) => {
     saveSettings(data)
+    // Mirror a custom data directory into the crash-proof sidecar so a later
+    // config reset can't orphan the user's DB (sessions / employees).
+    if (data && typeof data.dataDirectory === 'string' && data.dataDirectory.trim()) {
+      import('../services/data-dir')
+        .then(({ rememberDataDir }) => rememberDataDir(data.dataDirectory))
+        .catch(() => { /* best effort */ })
+    }
     // Live-apply network proxy if any of the proxy fields changed (or just
     // re-apply unconditionally — it's idempotent and cheap). Don't await here
     // so the IPC reply isn't blocked on session.setProxy round-trips.

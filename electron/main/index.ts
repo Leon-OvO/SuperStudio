@@ -449,12 +449,23 @@ app.whenReady().then(async () => {
   const { getSettings: readSettings, saveSettings: writeSettings } = await import('./services/store')
   const startupSettings = readSettings()
   let dataDir = startupSettings.dataDirectory
+  const { autoPickDataDir, rememberDataDir, recallDataDir } = await import('./services/data-dir')
+  // Recover a custom data directory that a config reset silently dropped — without
+  // this the DB falls back to the default userData and the user's sessions /
+  // employees "disappear after update". The plain sidecar survives a config reset.
+  if (!dataDir) {
+    const remembered = recallDataDir()
+    if (remembered && fs.existsSync(path.join(remembered, `${BRAND.dataNamespace}.db`))) {
+      dataDir = remembered
+      try { writeSettings({ dataDirectory: dataDir }) } catch { /* restore best-effort */ }
+      console.warn('[startup] settings.dataDirectory was empty — recovered from sidecar:', dataDir)
+    }
+  }
   // DWork: auto-provision the data directory on first run (freest drive root →
   // <root>/DWorkData) so onboarding never asks the user to choose one. Done
   // BEFORE initDb so the DB lands in the right place with no restart needed.
   if (!dataDir && FLAVOR === 'dwork') {
     try {
-      const { autoPickDataDir } = await import('./services/data-dir')
       dataDir = autoPickDataDir()
       writeSettings({ dataDirectory: dataDir })
       console.log('[startup] DWork auto data directory:', dataDir)
@@ -462,6 +473,8 @@ app.whenReady().then(async () => {
       console.warn('[startup] auto data dir failed, falling back to userData:', (e as Error).message)
     }
   }
+  // Mirror the active custom dir to the sidecar so the next launch can recover it.
+  if (dataDir) rememberDataDir(dataDir)
   await initDb(dataDir || undefined)
 
   // Inject proprietary seam implementations (remote control, talent pool,

@@ -104,10 +104,41 @@ export async function sshExec(connId: string, command: string, signal?: AbortSig
       if (signal.aborted) { onAbort(); return }
       signal.addEventListener('abort', onAbort, { once: true })
     }
-    client.exec(command, (err, stream) => {
+    // Become-root: run the command as root via a BARE `sudo su - root` when the
+    // connection opts in (key-auth boxes where root can't SSH in directly). The
+    // command is piped into su's STDIN rather than passed as `su - root -c "…"`,
+    // because a NOPASSWD sudoers rule (`… NOPASSWD: /bin/su - root`) only matches
+    // the exact `su - root` argv — adding `-c "…"` changes argv and forces a
+    // password prompt even when sudo is supposed to be passwordless. base64 keeps
+    // any quoting / special chars intact through the pipe. Skip if the model
+    // already prefixed sudo/su itself (avoid double escalation).
+    let execCommand = command
+    if (conn.becomeRoot && !/^\s*sudo\b/.test(command) && !/^\s*su\b/.test(command)) {
+      const b64 = Buffer.from(command, 'utf8').toString('base64')
+      execCommand = `echo ${b64} | base64 -d | sudo su - root`
+    }
+    const sudoPw = conn.sudoPassword || conn.password || ''
+    // A PTY is only needed to ANSWER a sudo password prompt. With NOPASSWD sudo
+    // (no password configured) skip it — cleaner output, and su's login shell
+    // won't go interactive on a TTY. When a sudo password IS set we allocate a
+    // PTY (so sudo reads the password from the TTY, leaving stdin free for the
+    // piped command) and auto-feed it on the prompt below.
+    const hasSudo = /(^|[\s;&|(])(sudo|su)([\s;&|)]|$)/.test(execCommand)
+    const needsPty = hasSudo && !!sudoPw
+    const opts = needsPty ? { pty: { cols: 200, rows: 50, term: 'xterm-256color' } } : {}
+    const sudoPromptRe = /\[sudo\]\s*password|password for\s+\S+:|(^|\n)\s*password:\s*$|密码\s*[:：]?\s*$|口令\s*[:：]?\s*$/i
+    let sudoSent = false
+    client.exec(execCommand, opts, (err, stream) => {
       if (err) { fail(err); return }
       stream.on('close', (code: number | null) => done({ code: code ?? 0, stdout: cap(stdout), stderr: cap(stderr), timedOut }))
-      stream.on('data', (d: Buffer) => { if (stdout.length < MAX_OUTPUT) stdout += d.toString('utf8') })
+      stream.on('data', (d: Buffer) => {
+        const s = d.toString('utf8')
+        if (stdout.length < MAX_OUTPUT) stdout += s
+        if (sudoPw && !sudoSent && sudoPromptRe.test(s)) {
+          sudoSent = true
+          try { stream.write(sudoPw + '\n') } catch { /* stream may already be closed */ }
+        }
+      })
       stream.stderr.on('data', (d: Buffer) => { if (stderr.length < MAX_OUTPUT) stderr += d.toString('utf8') })
     })
   })

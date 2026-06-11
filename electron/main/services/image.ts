@@ -4,6 +4,17 @@ import path from 'path'
 import { app } from 'electron'
 import { randomUUID } from 'crypto'
 
+// Image generation can be slow (gpt-image models take 30–120s), but it must NOT
+// hang forever when an upstream/relay accepts the connection then never responds
+// (the "图片接口一直没返回" symptom — no timeout meant an infinite wait). Cap each
+// request with a finite timeout combined with the caller's abort signal.
+const IMAGE_GEN_TIMEOUT_MS = 180_000      // 3 min for the generate/edit call
+const IMAGE_DOWNLOAD_TIMEOUT_MS = 60_000  // 1 min to pull the result image bytes
+function reqSignal(abortSignal: AbortSignal | undefined, ms: number): AbortSignal {
+  const timeout = AbortSignal.timeout(ms)
+  return abortSignal ? AbortSignal.any([abortSignal, timeout]) : timeout
+}
+
 interface GenerateImageParams {
   prompt: string
   n?: number
@@ -122,7 +133,7 @@ async function doOneRequest(
           method: 'POST',
           headers: { Authorization: `Bearer ${provider.apiKey}` },
           body: buildForm(),
-          signal: abortSignal
+          signal: reqSignal(abortSignal, IMAGE_GEN_TIMEOUT_MS)
         })
         if (res.ok) {
           editsOk = true
@@ -159,7 +170,7 @@ async function doOneRequest(
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${provider.apiKey}` },
         body: JSON.stringify({ model: modelName, prompt, size, n: 1, ...(quality ? { quality } : {}) }),
-        signal: abortSignal
+        signal: reqSignal(abortSignal, IMAGE_GEN_TIMEOUT_MS)
       })
     }
   } else {
@@ -170,12 +181,22 @@ async function doOneRequest(
     if (quality) body.quality = quality
     console.log('[image] generate request', `${baseUrl}/v1/images/generations`,
       `prompt=${prompt.slice(0, 60)} size=${size} n=${requestedN}`)
-    res = await fetch(`${baseUrl}/v1/images/generations`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${provider.apiKey}` },
-      body: JSON.stringify(body),
-      signal: abortSignal
-    })
+    try {
+      res = await fetch(`${baseUrl}/v1/images/generations`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${provider.apiKey}` },
+        body: JSON.stringify(body),
+        signal: reqSignal(abortSignal, IMAGE_GEN_TIMEOUT_MS)
+      })
+    } catch (e) {
+      if ((e as Error)?.name === 'TimeoutError') {
+        throw new Error(
+          `生图超时：${Math.round(IMAGE_GEN_TIMEOUT_MS / 1000)} 秒内 ${baseUrl}/v1/images/generations 无响应` +
+          `（provider=「${provider.name}」, model=${modelName}）。该接口可能不支持此图片模型、或服务端过慢/暂不可用，请换图片模型/接口或稍后重试。`
+        )
+      }
+      throw e // user-abort / real network error
+    }
   }
 
   if (!res) throw new Error('Image generation request did not produce a response')
@@ -197,7 +218,7 @@ async function doOneRequest(
     console.log('[image] item keys:', Object.keys(item), 'hasUrl:', !!item.url, 'hasB64:', !!item.b64_json)
 
     if (item.url) {
-      const imgRes = await fetch(item.url, { signal: abortSignal })
+      const imgRes = await fetch(item.url, { signal: reqSignal(abortSignal, IMAGE_DOWNLOAD_TIMEOUT_MS) })
       const buffer = await imgRes.arrayBuffer()
       fs.writeFileSync(filePath, Buffer.from(buffer))
       console.log('[image] saved from url, size:', buffer.byteLength, 'path:', filePath)

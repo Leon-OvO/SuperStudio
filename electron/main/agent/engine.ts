@@ -1278,7 +1278,10 @@ export async function runAgent(
           `可用连接：${connList}。connection 传连接名（或其 id）。` +
           'connection 传 "localhost"（或 127.0.0.1 / 本机）则直接在【本机】执行（走本地 shell，无需配置 SSH，等价于 run_script）。' +
           '凭据由本机加密保管，你不会也无需知道密码/私钥。每条命令独立执行（不保留工作目录），' +
-          '需要切目录就用 `cd /path && 命令`。远程连接首次执行会弹窗请用户确认。' +
+          '需要切目录就用 `cd /path && 命令`。' +
+          '提权：若该连接在设置里开了「登录后切 root」，你只管发普通命令即可，系统会自动以 root 运行（无需你写 sudo）。' +
+          '需手动提权时，优先 `sudo -u 目标用户 命令`；不要写 `sudo su - 用户 -c "…"`——多出的 -c 参数会让 NOPASSWD 免密规则失配反而要密码。' +
+          '远程连接首次执行会弹窗请用户确认。' +
           '危险/不可逆操作（删除、重启、改配置等）执行前应在回复里向用户说明。',
         parameters: z.object({
           connection: z.string().describe('已配置的 SSH 连接名称或 id'),
@@ -1567,8 +1570,11 @@ export async function runAgent(
     }
 
     // 扩展思考策略(B)：按设置把 Anthropic 的 thinking providerOptions 注入。auto=不动。
-    // 兼容模式下完全不注入(连 maxTokens 也不带)，发送最精简请求。
-    const thinkOpts = relayCompat ? {} : thinkingStreamOpts(providerType, settings.chatThinkingMode, effectiveModel)
+    // 兼容模式：【显式关闭】扩展思考（等同 fast）——只「不传」并不能关掉默认就思考的模型
+    // (Fable 5 / Opus)，而这些中转的 reasoning 流常不规范会炸整轮。关掉思考最稳。
+    const thinkOpts = relayCompat
+      ? thinkingStreamOpts(providerType, 'fast', effectiveModel)
+      : thinkingStreamOpts(providerType, settings.chatThinkingMode, effectiveModel)
 
     const MAX_STEPS = 30
     let stepCount = 0

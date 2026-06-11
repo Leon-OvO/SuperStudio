@@ -75,7 +75,11 @@ export async function readFile(filePath: string, signal?: AbortSignal, xlsx?: Xl
           `要理解图片内容请改用 vision_analyze 工具。`
         )
       }
-      if (TEXT_EXTS.has(ext)) {
+      // Extensionless files (SSH private keys id_rsa/id_ed25519, Dockerfile,
+      // Makefile, LICENSE…) and allowlisted text/code/data extensions are read
+      // as UTF-8 text. Without the `ext === ''` branch, picking a no-extension
+      // private key in the SSH importer threw "Unsupported file type: .".
+      if (ext === '' || TEXT_EXTS.has(ext)) {
         const raw = fs.readFileSync(filePath, 'utf-8')
         const cap = 1_000_000 // guard context: don't dump a multi-MB file wholesale
         const content = raw.length > cap
@@ -99,7 +103,8 @@ const TEXT_EXTS = new Set([
   // extended: more languages / config / markup people routinely hand the agent
   '.tex', '.rst', '.cs', '.kt', '.kts', '.swift', '.scala', '.dart', '.lua',
   '.r', '.pl', '.pm', '.gradle', '.properties', '.scss', '.less',
-  '.graphql', '.gql', '.proto', '.cfg', '.srt', '.vtt'
+  '.graphql', '.gql', '.proto', '.cfg', '.srt', '.vtt',
+  '.pem', '.key', '.pub', '.crt', '.cer'  // SSH keys / PEM certs (plain text)
 ])
 
 // Image files: file_read can't extract text from them — steer the agent to

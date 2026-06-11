@@ -1051,6 +1051,16 @@ export interface SshConnection {
   password?: string
   privateKey?: string
   passphrase?: string
+  /** Password fed to `sudo` when a command prompts for it (non-interactive sudo).
+   *  Optional — falls back to `password` (login password) when empty. Needed for
+   *  key-auth connections, or when the sudo password differs from the login one.
+   *  Encrypted at rest like the other secrets. */
+  sudoPassword?: string
+  /** Run EVERY command on this connection as root via `sudo su - root` (for boxes
+   *  where you log in as a normal user with a key and root can't be SSH'd into
+   *  directly). The sudo prompt is auto-answered with sudoPassword/password. The
+   *  model's command is wrapped transparently — it need not prefix sudo itself. */
+  becomeRoot?: boolean
   /** Optional folder/group for list organization (e.g. a MobaXterm subfolder). */
   group?: string
   /** When true, the Agent runs commands on this connection WITHOUT the per-run

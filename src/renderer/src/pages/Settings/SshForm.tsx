@@ -22,6 +22,8 @@ export function SshForm({ initial, onSave, onCancel }: Props) {
   const [password, setPassword] = useState(initial?.password || '')
   const [privateKey, setPrivateKey] = useState(initial?.privateKey || '')
   const [passphrase, setPassphrase] = useState(initial?.passphrase || '')
+  const [sudoPassword, setSudoPassword] = useState(initial?.sudoPassword || '')
+  const [becomeRoot, setBecomeRoot] = useState(initial?.becomeRoot ?? false)
   const [autoConfirm, setAutoConfirm] = useState(initial?.autoConfirm ?? false)
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
@@ -38,6 +40,8 @@ export function SshForm({ initial, onSave, onCancel }: Props) {
       password: authType === 'password' ? password : undefined,
       privateKey: authType === 'privateKey' ? privateKey : undefined,
       passphrase: authType === 'privateKey' && passphrase ? passphrase : undefined,
+      sudoPassword: sudoPassword || undefined,
+      becomeRoot: becomeRoot || undefined,
       group: group.trim() || undefined,
       autoConfirm,
       createdAt: initial?.createdAt,
@@ -151,6 +155,30 @@ export function SshForm({ initial, onSave, onCancel }: Props) {
           </Field>
         </>
       )}
+
+      <Field label="sudo 密码（可选）">
+        <input type="password" value={sudoPassword} onChange={e => setSudoPassword(e.target.value)} placeholder="执行 sudo 命令时自动输入；留空则用登录密码" className="input" autoComplete="off" />
+        <span className="block text-[11px] text-muted-foreground mt-1 leading-relaxed">
+          需要 <b>sudo</b>（如 <code>sudo su - root -c "…"</code>）且服务器要求密码时，Agent 会自动输入这里的密码。
+          密码登录的连接留空即可（默认用登录密码）；密钥登录或 sudo 密码与登录密码不同的，在此填写。
+        </span>
+      </Field>
+
+      <label className="flex items-start gap-2.5 cursor-pointer rounded-md border border-border p-2.5">
+        <input
+          type="checkbox"
+          className="mt-0.5 accent-primary shrink-0"
+          checked={becomeRoot}
+          onChange={e => setBecomeRoot(e.target.checked)}
+        />
+        <span className="min-w-0">
+          <span className="block text-sm font-medium">登录后用 sudo 切换到 root 执行</span>
+          <span className="block text-[11px] text-muted-foreground mt-0.5 leading-relaxed">
+            适合「普通用户密钥登录、root 不能直接登录」的机器：开启后此连接上<b>每条命令都自动以 root 运行</b>
+            （`sudo su - root` + 自动输入上面的 sudo 密码），Agent 无需自己加 sudo。需先填好「sudo 密码」。
+          </span>
+        </span>
+      </label>
 
       <label className={cn(
         'flex items-start gap-2.5 cursor-pointer rounded-md border p-2.5 transition-colors',
