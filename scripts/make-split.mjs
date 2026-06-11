@@ -49,6 +49,7 @@ const NEVER_SHIP = [
   'mobile-app/',     // separate Capacitor Android workstream — not part of the DWork desktop deliverable
   'mobile-shell/',   // separate Capacitor Android workstream — not part of the DWork desktop deliverable
   'mobile-backend/', // mobile BFF (references supercode) — must NOT ship to the DWork core
+  'mobile-admin/',   // separate admin-console workstream (imports pages/Login + pages/Dashboard) — not part of the DWork desktop deliverable
   '.github/', // GitHub Actions CI — belongs to the SuperStudio build, useless on the DWork (Gogs) repo
   // talent-crypto + the packed resources/talent-pool.enc SHIP to entitled DWork
   // customers (paid content), so they are NOT excluded here.
