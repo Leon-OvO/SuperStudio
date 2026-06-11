@@ -1,0 +1,89 @@
+name: Mac Build (manual)
+
+# Manually-triggered macOS build. Produces SuperStudio dmg + zip for BOTH
+# x64 (Intel) and arm64 (Apple Silicon) on a macOS runner and uploads them as
+# workflow artifacts (NO publish — avoids the cross-repo GITHUB_TOKEN limit, so
+# you just download the installers from the run and attach them to a Release
+# yourself). Trigger from the Actions tab → "Mac Build (manual)" → Run workflow,
+# or via `gh workflow run mac-build.yml`.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mac:
+    name: Build macOS (x64 + arm64)
+    runs-on: macos-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      # @lancedb/lancedb ships per-platform native bindings as separate
+      # optionalDependencies — npm only installs the host arch's. The runner is
+      # arm64, so cross-building the x64 dmg needs the darwin-x64 binding fetched
+      # manually (a plain `npm install` would get reconciled away). Same fix the
+      # Release workflow uses.
+      - name: Bundle darwin-x64 lancedb binding
+        run: |
+          set -euo pipefail
+          LANCE_VERSION=$(node -p "require('./node_modules/@lancedb/lancedb/package.json').version")
+          echo "lance version: $LANCE_VERSION"
+          DEST=node_modules/@lancedb/lancedb-darwin-x64
+          rm -rf "$DEST"
+          mkdir -p "$DEST" tmp-lancedb
+          (cd tmp-lancedb && npm pack "@lancedb/lancedb-darwin-x64@${LANCE_VERSION}")
+          tar -xzf tmp-lancedb/*.tgz -C "$DEST" --strip-components=1
+          rm -rf tmp-lancedb
+          ls -la "$DEST"
+
+      # mac.icon points at build/icon.icns, which isn't committed (only the
+      # 1024x1024 build/icon.png is). Generate a proper multi-resolution icns
+      # from it with the macOS-native iconutil so electron-builder doesn't fail
+      # on the missing icon.
+      - name: Generate mac icon (icns) from png
+        run: |
+          set -euo pipefail
+          rm -rf icon.iconset && mkdir -p icon.iconset
+          for s in 16 32 128 256 512; do
+            sips -z $s $s        build/icon.png --out "icon.iconset/icon_${s}x${s}.png"
+            sips -z $((s*2)) $((s*2)) build/icon.png --out "icon.iconset/icon_${s}x${s}@2x.png"
+          done
+          iconutil -c icns icon.iconset -o build/icon.icns
+          ls -la build/icon.icns
+
+      - name: Build macOS installers (dmg + zip, x64 + arm64)
+        run: |
+          npm run build
+          npx electron-builder --mac --publish never
+        env:
+          # monaco + all language modes blow past the default ~2GB V8 heap during
+          # the Vite bundle step; bump it for headroom (matches Release workflow).
+          NODE_OPTIONS: --max-old-space-size=8192
+
+      - name: List built artifacts
+        run: ls -la dist/ | grep -Ei 'dmg|zip|yml|blockmap' || true
+
+      - name: Upload mac installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: superstudio-mac
+          path: |
+            dist/*.dmg
+            dist/*.zip
+            dist/*.blockmap
+            dist/latest-mac.yml
+          if-no-files-found: error
+          retention-days: 7
