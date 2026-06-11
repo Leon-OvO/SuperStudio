@@ -31,24 +31,6 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # @lancedb/lancedb ships per-platform native bindings as separate
-      # optionalDependencies — npm only installs the host arch's. The runner is
-      # arm64, so cross-building the x64 dmg needs the darwin-x64 binding fetched
-      # manually (a plain `npm install` would get reconciled away). Same fix the
-      # Release workflow uses.
-      - name: Bundle darwin-x64 lancedb binding
-        run: |
-          set -euo pipefail
-          LANCE_VERSION=$(node -p "require('./node_modules/@lancedb/lancedb/package.json').version")
-          echo "lance version: $LANCE_VERSION"
-          DEST=node_modules/@lancedb/lancedb-darwin-x64
-          rm -rf "$DEST"
-          mkdir -p "$DEST" tmp-lancedb
-          (cd tmp-lancedb && npm pack "@lancedb/lancedb-darwin-x64@${LANCE_VERSION}")
-          tar -xzf tmp-lancedb/*.tgz -C "$DEST" --strip-components=1
-          rm -rf tmp-lancedb
-          ls -la "$DEST"
-
       # mac.icon points at build/icon.icns, which isn't committed (only the
       # 1024x1024 build/icon.png is). Generate a proper multi-resolution icns
       # from it with the macOS-native iconutil so electron-builder doesn't fail

@@ -38,31 +38,20 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # @lancedb/lancedb ships per-platform native bindings as separate
-      # optionalDependencies — npm only installs the one matching the host
-      # arch. The macOS runner is arm64, so darwin-arm64 lands automatically
-      # via `npm ci` but the darwin-x64 binding is missing when we cross-build
-      # for Intel Macs, and the app crashes at startup with:
-      #   "Cannot find module '@lancedb/lancedb-darwin-x64'"
-      #
-      # Two sequential `npm install --no-save` calls don't work: npm's
-      # reconciliation removes the first install's additions when the second
-      # runs (you'll see "removed 1 package" in the log). Instead, fetch the
-      # darwin-x64 tarball with `npm pack` and extract directly into
-      # node_modules so npm has nothing left to undo.
-      - name: Bundle darwin-x64 lancedb binding (macOS)
+      # mac.icon points at build/icon.icns, which isn't committed (only the
+      # 1024x1024 build/icon.png is). Generate a proper multi-resolution icns
+      # from it with the macOS-native iconutil so electron-builder doesn't fail.
+      - name: Generate mac icon (icns) from png
         if: matrix.os == 'macos-latest'
         run: |
           set -euo pipefail
-          LANCE_VERSION=$(node -p "require('./node_modules/@lancedb/lancedb/package.json').version")
-          echo "lance version: $LANCE_VERSION"
-          DEST=node_modules/@lancedb/lancedb-darwin-x64
-          rm -rf "$DEST"
-          mkdir -p "$DEST" tmp-lancedb
-          (cd tmp-lancedb && npm pack "@lancedb/lancedb-darwin-x64@${LANCE_VERSION}")
-          tar -xzf tmp-lancedb/*.tgz -C "$DEST" --strip-components=1
-          rm -rf tmp-lancedb
-          ls -la "$DEST"
+          rm -rf icon.iconset && mkdir -p icon.iconset
+          for s in 16 32 128 256 512; do
+            sips -z $s $s        build/icon.png --out "icon.iconset/icon_${s}x${s}.png"
+            sips -z $((s*2)) $((s*2)) build/icon.png --out "icon.iconset/icon_${s}x${s}@2x.png"
+          done
+          iconutil -c icns icon.iconset -o build/icon.icns
+          ls -la build/icon.icns
 
       - name: Build artifacts (Windows)
         if: matrix.os == 'windows-latest'
