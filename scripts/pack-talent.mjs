@@ -182,9 +182,13 @@ function packSource(packDir, pack) {
     // 全中文命名：profession(workbuddy 真职位) → 规整 zh 名(gamedev-zh) → 英文角色翻译。
     // 注意 workbuddy 的 display_name.zh 是萌系昵称(如"链审审")，故 profession 优先。
     const name = en.profession || en.nameZh || translateRoleName(localId, fm.name)
-    // 部门：兼顾中英关键词（含 profession / 中文名 / 描述）。
+    // 部门：现有包沿用启发式优先（保持既有分类不动）；agency-agents 的 domains 是
+    // 逐个精确设定的，domains 权威优先——否则本地化后中文描述里的「运营」等词会被
+    // marketing 启发式抢桶。无 domains 时仍走启发式兜底。
     const heur = deptHeuristic(pack, `${localId} ${fm.name || ''} ${en.profession || ''} ${en.nameZh || ''} ${en.descZh || ''}`)
-    const dept = heur !== 'engineering' ? heur : (en.dept || 'engineering')
+    const dept = (pack === 'agency-agents' && en.dept)
+      ? en.dept
+      : (heur !== 'engineering' ? heur : (en.dept || 'engineering'))
     // 描述：有中文用中文；英文包生成中文简介（卡片展示用，面试里仍看英文原 prompt）。
     const description = en.descZh
       ? en.descZh.slice(0, 300)

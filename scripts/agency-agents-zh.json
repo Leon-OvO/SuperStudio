@@ -1,0 +1,577 @@
+[
+ {
+  "id": "academic-anthropologist",
+  "name_zh": "文化人类学家",
+  "desc_zh": "精通文化系统、亲属关系、信仰与仪式及民族志方法，构建功能自洽、可信鲜活的社会文化体系。"
+ },
+ {
+  "id": "academic-geographer",
+  "name_zh": "地理学家",
+  "desc_zh": "精通自然与人文地理、气候系统、地形水文与空间分析，构建地形气候资源与聚落布局皆合科学逻辑的世界。"
+ },
+ {
+  "id": "academic-historian",
+  "name_zh": "历史学家",
+  "desc_zh": "精通历史分析、分期、物质文化与史学方法，校验史实自洽、揪出时代错置，用真实细节充实场景。"
+ },
+ {
+  "id": "academic-narratologist",
+  "name_zh": "叙事学家",
+  "desc_zh": "精通叙事理论、故事结构与人物弧光，从普罗普到坎贝尔等成熟框架出发剖析并优化故事。"
+ },
+ {
+  "id": "academic-psychologist",
+  "name_zh": "心理学家",
+  "desc_zh": "精通人类行为、人格理论、动机与认知模式，依临床与研究框架塑造可信的人物心理与人际互动。"
+ },
+ {
+  "id": "accounts-payable-agent",
+  "name_zh": "应付账款专员",
+  "desc_zh": "自主处理供应商付款、承包商发票与周期账单，支持加密货币与法币等多种支付通道，杜绝重复付款并保全审计链路。"
+ },
+ {
+  "id": "business-strategist",
+  "name_zh": "商业战略顾问",
+  "desc_zh": "资深管理咨询专家，擅长竞争分析、市场进入、商业模式与增长规划，把复杂市场转化为可落地的制胜战略。"
+ },
+ {
+  "id": "change-management-consultant",
+  "name_zh": "变革管理顾问",
+  "desc_zh": "运用ADKAR、科特与Prosci框架，引领系统上线、重组、文化转型与并购整合，化解阻力、提升采纳并让变革持久。"
+ },
+ {
+  "id": "chief-financial-officer",
+  "name_zh": "首席财务官",
+  "desc_zh": "统筹资本配置、资金管理、财务规划、并购财务与投资者关系，将财务复杂性化为清晰决策并守护资产负债表与数字公信力。"
+ },
+ {
+  "id": "corporate-training-designer",
+  "name_zh": "企业培训设计师",
+  "desc_zh": "精通培训需求分析、课程体系与混合式学习设计，依柯氏四级评估打造真正驱动行为改变的培训方案。"
+ },
+ {
+  "id": "customer-service",
+  "name_zh": "客户服务专员",
+  "desc_zh": "亲和专业的全行业客服，处理咨询、投诉、账户支持与升级转接，以温度与效率把问题转化为客户忠诚。"
+ },
+ {
+  "id": "customer-success-manager",
+  "name_zh": "客户成功经理",
+  "desc_zh": "主导客户引导、健康度评分、业务复盘、流失预防与续约扩展，提升净收入留存，让客户实现可衡量的成果。"
+ },
+ {
+  "id": "data-consolidation-agent",
+  "name_zh": "销售数据整合专员",
+  "desc_zh": "将分散的销售数据汇聚为实时报表看板，按区域、销售代表与销售漏斗输出业绩排名、趋势与全景洞察，支撑决策。"
+ },
+ {
+  "id": "data-privacy-officer",
+  "name_zh": "数据隐私官",
+  "desc_zh": "企业数据保护官，构建GDPR/CCPA等全球隐私合规体系，覆盖数据测绘、隐私影响评估、同意管理、泄露应对与监管沟通。"
+ },
+ {
+  "id": "esg-sustainability-officer",
+  "name_zh": "ESG可持续发展官",
+  "desc_zh": "企业可持续发展策略师，依GRI/SASB/TCFD等框架做ESG披露、减碳与重要性评估，每项主张可溯源审计，杜绝洗绿。"
+ },
+ {
+  "id": "finance-bookkeeper-controller",
+  "name_zh": "会计核算与财务总监",
+  "desc_zh": "精通日常账务、对账、月末结账与内控，保障财务记录准确完整及时，符合GAAP并随时可经受审计。"
+ },
+ {
+  "id": "finance-financial-analyst",
+  "name_zh": "财务分析师",
+  "desc_zh": "擅长财务建模、预测与情景分析，将原始财务数据转化为可行动的商业洞察，以清晰假设和敏感性区间支撑战略决策。"
+ },
+ {
+  "id": "finance-fpa-analyst",
+  "name_zh": "财务计划分析师",
+  "desc_zh": "FP&A专家，精于预算编制、差异分析与滚动预测，连接数字与业务叙事，驱动绩效改善与战略性资源配置。"
+ },
+ {
+  "id": "finance-investment-researcher",
+  "name_zh": "投资研究员",
+  "desc_zh": "擅长市场调研、尽职调查、组合分析与资产估值，做严谨的基本面与量化研究，识别机会、量化风险，支撑数据驱动的投资决策。"
+ },
+ {
+  "id": "finance-tax-strategist",
+  "name_zh": "税务筹划专家",
+  "desc_zh": "精通税务优化、跨辖区合规、转让定价与战略税务规划，在全面合规前提下合法降低税负，提升税后回报。"
+ },
+ {
+  "id": "government-digital-presales-consultant",
+  "name_zh": "政务数字化售前顾问",
+  "desc_zh": "深耕中国政务信息化(ToG)售前，精通政策解读、方案设计、标书撰写、POC验证与等保/密评/信创合规，助团队拿下政府项目。"
+ },
+ {
+  "id": "grant-writer",
+  "name_zh": "项目申报书撰写专家",
+  "desc_zh": "服务非营利组织与科研机构，精于资助方调研、立项函与完整提案撰写、预算说明及项目结题报告，提升获资助成功率。"
+ },
+ {
+  "id": "healthcare-customer-service",
+  "name_zh": "医疗客户服务专员",
+  "desc_zh": "富有同理心的患者支持专员，处理账单、预约、保险与投诉，遵循HIPAA合规沟通，妥善向临床或行政人员升级转接。"
+ },
+ {
+  "id": "healthcare-marketing-compliance",
+  "name_zh": "医疗营销合规专家",
+  "desc_zh": "精通中国《广告法》《医疗广告管理办法》等法规，覆盖药械、医美、保健品与互联网医疗的内容审核、风控与隐私保护。"
+ },
+ {
+  "id": "hospitality-guest-services",
+  "name_zh": "酒店宾客服务专家",
+  "desc_zh": "精通酒店、餐厅及活动场所的预订、入住退房、礼宾、投诉处理与会员维护，全程打造五星宾客体验、提升忠诚度与营收。"
+ },
+ {
+  "id": "hr-onboarding",
+  "name_zh": "员工入职专员",
+  "desc_zh": "统筹新员工入职引导、文件合规、福利登记与文化融入，打造从首日到首年的顺畅体验，提升留存率与产出效率。"
+ },
+ {
+  "id": "language-translator",
+  "name_zh": "中西英口译专家",
+  "desc_zh": "精通西班牙语与英语实时互译，熟知地域方言与文化语境，在旅行、商务、医疗、法律等场景传达精准达意的译文。"
+ },
+ {
+  "id": "legal-billing-time-tracking",
+  "name_zh": "律所计费与工时专员",
+  "desc_zh": "精通工时记录、账单生成、收款催缴与信托账户合规，最大化营收回收，兼顾客户关系与执业道德。"
+ },
+ {
+  "id": "legal-client-intake",
+  "name_zh": "律所客户接案专员",
+  "desc_zh": "专精潜在客户筛选、案情采集、利益冲突核查与咨询预约，提供律师可直接使用的接案摘要，提升委托转化率。"
+ },
+ {
+  "id": "legal-document-review",
+  "name_zh": "法律文件审阅专家",
+  "desc_zh": "精审合同、诉讼及房产文件，归纳要点、标记风险条款、比对版本并核查合规，为律师提供高质量初审（不替代法律意见）。"
+ },
+ {
+  "id": "loan-officer-assistant",
+  "name_zh": "信贷专员助理",
+  "desc_zh": "覆盖住房、商业及消费信贷，协助借款人受理、预审、材料收集、流程跟踪、合规监控与放款协调，确保按时合规放款。"
+ },
+ {
+  "id": "ma-integration-manager",
+  "name_zh": "并购整合经理",
+  "desc_zh": "设计并执行并购后整合方案，主抓首日就绪、百日计划、协同效应跟踪、文化融合与过渡服务协议管理，确保交割后平稳运营。"
+ },
+ {
+  "id": "macos-spatial-metal-engineer",
+  "name_zh": "macOS空间渲染工程师",
+  "desc_zh": "精通Swift与Metal，打造高性能3D渲染与空间计算体验，通过合成器服务将立体画面串流至Vision Pro。"
+ },
+ {
+  "id": "marketing-baidu-seo-specialist",
+  "name_zh": "百度SEO优化专家",
+  "desc_zh": "专攻百度算法与中文搜索排名，整合百度生态、ICP合规与移动优先收录，助力品牌在中国搜索市场建立可见度。"
+ },
+ {
+  "id": "marketing-bilibili-content-strategist",
+  "name_zh": "B站内容策略师",
+  "desc_zh": "精通UP主成长、弹幕文化与B站算法，深耕ACG与Z世代社区，打造原生感品牌内容，驱动社区优先的增长。"
+ },
+ {
+  "id": "marketing-china-ecommerce-operator",
+  "name_zh": "中国电商运营专家",
+  "desc_zh": "精通淘宝、天猫、拼多多、京东运营，擅长商品优化、直播带货、店铺运营与618/双11大促的跨平台策略。"
+ },
+ {
+  "id": "marketing-china-market-localization-strategist",
+  "name_zh": "中国市场本地化策略师",
+  "desc_zh": "全栈式中国市场本地化专家，实时捕捉抖音、小红书、微信、B站等平台趋势信号，转化为可落地的选品、内容与渠道增长策略。"
+ },
+ {
+  "id": "marketing-cross-border-ecommerce",
+  "name_zh": "跨境电商运营专家",
+  "desc_zh": "贯通亚马逊、Shopee、Lazada、速卖通、Temu、TikTok Shop全链路运营，精通国际物流海外仓、合规税务、多语种listing与品牌出海独立站。"
+ },
+ {
+  "id": "marketing-douyin-strategist",
+  "name_zh": "抖音运营策略师",
+  "desc_zh": "深谙抖音推荐算法的短视频营销专家，擅长爆款选题、直播带货流程与内容矩阵，驱动品牌全链路增长。"
+ },
+ {
+  "id": "marketing-kuaishou-strategist",
+  "name_zh": "快手运营策略师",
+  "desc_zh": "深耕下沉市场的快手营销专家，擅长老铁信任经营、直播带货与社群忠诚度，助力草根账号高效起量。"
+ },
+ {
+  "id": "marketing-livestream-commerce-coach",
+  "name_zh": "直播带货操盘教练",
+  "desc_zh": "实战派直播电商教练，覆盖抖音、快手、淘宝直播、视频号；精通话术脚本、选品排品、付免流量配比与实时数据复盘。"
+ },
+ {
+  "id": "marketing-private-domain-operator",
+  "name_zh": "私域流量运营专家",
+  "desc_zh": "企业微信私域生态搭建专家，精通SCRM系统、分层社群运营、小程序商城打通与用户全生命周期转化。"
+ },
+ {
+  "id": "marketing-short-video-editing-coach",
+  "name_zh": "短视频剪辑教练",
+  "desc_zh": "实操型剪辑教练，精通剪映、Premiere、达芬奇、FCP，覆盖镜头语言、调色、声音、特效、字幕与多平台导出全流程。"
+ },
+ {
+  "id": "marketing-video-optimization-specialist",
+  "name_zh": "视频优化专家",
+  "desc_zh": "专注YouTube算法的视频营销策略师，擅长观众留存、章节结构、封面创意、视频SEO与跨平台分发，最大化曝光与互动。"
+ },
+ {
+  "id": "marketing-wechat-official-account",
+  "name_zh": "微信公众号运营经理",
+  "desc_zh": "微信公众号内容营销专家，精通多形态内容、菜单架构与自动化运营，靠持续价值输出沉淀忠诚粉丝并提升转化。"
+ },
+ {
+  "id": "marketing-weibo-strategist",
+  "name_zh": "微博运营策略师",
+  "desc_zh": "微博全域运营专家，精通热搜机制、超话社群、舆情监测、粉丝经济与广告投放，助品牌引爆话题并持续增长。"
+ },
+ {
+  "id": "marketing-xiaohongshu-specialist",
+  "name_zh": "小红书运营专家",
+  "desc_zh": "专注生活方式内容与美学叙事的小红书营销专家，擅长趋势捕捉、笔记爆款打造与真诚社群运营，驱动自然爆发增长。"
+ },
+ {
+  "id": "marketing-zhihu-strategist",
+  "name_zh": "知乎运营策略师",
+  "desc_zh": "专注思想领导力与专业可信度的知乎营销专家，精通高价值问答策略与专栏建设，以真才实学沉淀品牌权威并获取优质线索。"
+ },
+ {
+  "id": "medical-billing-coding-specialist",
+  "name_zh": "医疗账单编码专员",
+  "desc_zh": "精通ICD-10/CPT/HCPCS编码、理赔申报、拒赔申诉与收入周期优化,为医疗机构提升净理赔率、追回流失收入并保障合规。"
+ },
+ {
+  "id": "operations-manager",
+  "name_zh": "运营经理",
+  "desc_zh": "运用精益、六西格玛与系统思维做流程梳理、产能规划与KPI治理,消除浪费、标准化流程,让组织可复制、可衡量地规模化运转。"
+ },
+ {
+  "id": "organizational-psychologist",
+  "name_zh": "组织心理学家",
+  "desc_zh": "以循证框架诊断团队动力、心理安全感、倦怠风险与文化健康,助力领导者打造高绩效、有韧性且心理安全的组织。"
+ },
+ {
+  "id": "paid-media-auditor",
+  "name_zh": "付费媒体审计师",
+  "desc_zh": "以200+检查点系统审计Google、微软、Meta广告账户,涵盖结构、追踪、出价与创意,产出带优先级和预期收益的整改报告。"
+ },
+ {
+  "id": "paid-media-creative-strategist",
+  "name_zh": "广告创意策略师",
+  "desc_zh": "专注广告文案、响应式搜索广告优化与素材测试,横跨Google、Meta、微软及程序化平台,用数据驱动创意,把转化变成可复制的科学。"
+ },
+ {
+  "id": "paid-media-paid-social-strategist",
+  "name_zh": "付费社媒策略师",
+  "desc_zh": "跨Meta、领英、TikTok等平台设计全漏斗社媒广告,从拉新到再营销,针对各平台定制原生创意与受众策略,让每分预算更高效。"
+ },
+ {
+  "id": "paid-media-ppc-strategist",
+  "name_zh": "竞价广告策略师",
+  "desc_zh": "精通Google、微软、亚马逊大规模搜索、购物与Performance Max投放,设计可从万元扩展到千万级月预算的账户架构与出价策略。"
+ },
+ {
+  "id": "paid-media-programmatic-buyer",
+  "name_zh": "程序化展示广告采买师",
+  "desc_zh": "跨展示广告网络、DV360、Trade Desk等平台规模化采买展示与视频流量,以受众优先与ABM策略精准触达,兼顾覆盖、频次与可见度。"
+ },
+ {
+  "id": "paid-media-search-query-analyst",
+  "name_zh": "搜索词分析师",
+  "desc_zh": "专精搜索词分析、否定关键词架构与搜索意图映射,将原始查询数据转为可执行优化,剔除无效消耗、放大高意图流量。"
+ },
+ {
+  "id": "paid-media-tracking-specialist",
+  "name_zh": "追踪与衡量专员",
+  "desc_zh": "精通GTM、GA4、Meta CAPI及服务端部署的转化追踪、标签管理与归因建模,确保每次转化准确计数、每分广告投入皆可衡量。"
+ },
+ {
+  "id": "personal-growth-mentor",
+  "name_zh": "个人成长导师",
+  "desc_zh": "跨领域成长教练,助你厘清目标、设计习惯、做战略决策并落实问责;系统优先、行动至上,不灌鸡汤。"
+ },
+ {
+  "id": "product-behavioral-nudge-engine",
+  "name_zh": "行为激励引擎",
+  "desc_zh": "基于行为心理学与习惯养成,动态调整软件交互节奏与风格,降低认知负荷、积累正向动能,最大化用户的动力与成功率。"
+ },
+ {
+  "id": "product-feedback-synthesizer",
+  "name_zh": "用户反馈洞察师",
+  "desc_zh": "汇聚多渠道用户反馈，做情感分析与主题归类，把定性声音转为可量化的优先级与产品决策建议。"
+ },
+ {
+  "id": "product-manager",
+  "name_zh": "产品经理",
+  "desc_zh": "统管产品全生命周期，从洞察、策略、路线图到上线与成效衡量，平衡商业、用户与技术，做对的事。"
+ },
+ {
+  "id": "product-sprint-prioritizer",
+  "name_zh": "迭代优先级规划师",
+  "desc_zh": "精通敏捷冲刺规划，用RICE、Kano等框架做特性排序与资源分配，最大化团队产能与业务价值交付。"
+ },
+ {
+  "id": "product-trend-researcher",
+  "name_zh": "趋势研究分析师",
+  "desc_zh": "市场情报分析专家，识别新兴趋势、竞争格局与机会，输出可落地洞察驱动产品策略与创新决策。"
+ },
+ {
+  "id": "project-management-experiment-tracker",
+  "name_zh": "实验追踪专家",
+  "desc_zh": "精于实验设计与执行追踪，管理A/B测试与假设验证，以严谨统计和数据驱动结论替代直觉决策。"
+ },
+ {
+  "id": "project-management-jira-workflow-steward",
+  "name_zh": "Jira 工作流管家",
+  "desc_zh": "交付运维专家，强制Jira关联的Git流程，确保提交可追溯、PR规范、分支策略安全无碍发布。"
+ },
+ {
+  "id": "project-management-meeting-notes-specialist",
+  "name_zh": "会议纪要专家",
+  "desc_zh": "从会议记录或零散笔记中精准提取决策、行动项与待解问题，整理成四段式结构化纪要，只提炼不臆造。"
+ },
+ {
+  "id": "project-management-project-shepherd",
+  "name_zh": "跨职能项目统筹师",
+  "desc_zh": "精于跨职能协调、时间线管理与干系人对齐，护送复杂项目从立项到交付，管控资源、风险与沟通。"
+ },
+ {
+  "id": "project-management-studio-operations",
+  "name_zh": "工作室运营经理",
+  "desc_zh": "专注日常运营效率与流程优化，消除瓶颈、协调资源调度，以工具和制度支撑各团队稳定高产。"
+ },
+ {
+  "id": "project-management-studio-producer",
+  "name_zh": "工作室制片总监",
+  "desc_zh": "资深战略领导者，统筹多项目组合与资源分配，对齐创意愿景与商业目标，驱动创新与竞争定位。"
+ },
+ {
+  "id": "project-manager-senior",
+  "name_zh": "资深项目经理",
+  "desc_zh": "将规格说明转化为可执行开发任务清单，严控真实范围，不镀金不臆想，并沉淀过往项目经验。"
+ },
+ {
+  "id": "real-estate-buyer-seller",
+  "name_zh": "房产买卖经纪人",
+  "desc_zh": "全流程地产经纪助手，覆盖买卖方代理、房源管理、报价谈判与成交协调，提供从看房到过户的优质服务。"
+ },
+ {
+  "id": "recruitment-specialist",
+  "name_zh": "招聘运营专家",
+  "desc_zh": "精通国内主流招聘平台、人才测评体系与劳动法合规，助企业高效吸引、筛选、留住人才并打造雇主品牌。"
+ },
+ {
+  "id": "report-distribution-agent",
+  "name_zh": "报表分发助理",
+  "desc_zh": "按区域规则自动将汇总销售报表精准推送给对应销售代表，支持定时与按需发送，全程记录可追溯。"
+ },
+ {
+  "id": "retail-customer-returns",
+  "name_zh": "零售退换货专员",
+  "desc_zh": "覆盖门店、电商及全渠道的退换货与退款处理，兼顾政策执行、防欺诈、客户挽留与退货分析。"
+ },
+ {
+  "id": "sales-account-strategist",
+  "name_zh": "客户增长策略师",
+  "desc_zh": "专注成交后客户经营，通过组织图谱、季度业务回顾与多线触达实现增购扩展与净留存提升。"
+ },
+ {
+  "id": "sales-coach",
+  "name_zh": "销售教练",
+  "desc_zh": "以苏格拉底式提问辅导销售成长，主持管道复盘、通话辅导与赢单策略，提升打法纪律与预测准确度。"
+ },
+ {
+  "id": "sales-data-extraction-agent",
+  "name_zh": "销售数据提取助理",
+  "desc_zh": "实时监控并解析 Excel 销售报表，提取月度、年度及年末预测等关键指标，规范化入库供下游报表使用。"
+ },
+ {
+  "id": "sales-deal-strategist",
+  "name_zh": "商机策略师",
+  "desc_zh": "运用 MEDDPICC 方法论严格评估复杂 B2B 商机，量化风险、竞争卡位、多线推进，让预测经得起复盘。"
+ },
+ {
+  "id": "sales-discovery-coach",
+  "name_zh": "需求挖掘教练",
+  "desc_zh": "辅导销售团队精通需求挖掘：问题设计、现状梳理、缺口量化与通话结构，挖出真实购买动机。"
+ },
+ {
+  "id": "sales-engineer",
+  "name_zh": "售前技术工程师",
+  "desc_zh": "专注技术需求挖掘、演示设计、POC 规划与竞品对比，将产品能力对接业务价值，赢下技术决策促成交。"
+ },
+ {
+  "id": "sales-offer-lead-gen-strategist",
+  "name_zh": "获客与方案策略师",
+  "desc_zh": "专注漏斗顶端，设计高吸引力价值主张与引流诱饵，规划多渠道获客并放大触达规模。"
+ },
+ {
+  "id": "sales-outbound-strategist",
+  "name_zh": "主动外呼策略师",
+  "desc_zh": "基于购买信号设计多渠道触达序列，定义理想客户画像，以研究驱动的个性化而非量级构建销售管道。"
+ },
+ {
+  "id": "sales-outreach",
+  "name_zh": "销售拓客顾问",
+  "desc_zh": "顾问式 B2B 拓客专家，擅长冷启动开发、线索跟进、异议处理、方案撰写与管道管理，以建立关系促成交。"
+ },
+ {
+  "id": "sales-pipeline-analyst",
+  "name_zh": "销售管线分析师",
+  "desc_zh": "营收运营分析专家,精于管线健康诊断、成交速度与预测精度分析,把CRM数据转化为可执行的管线洞察,在季度落空前提前预警风险。"
+ },
+ {
+  "id": "sales-proposal-strategist",
+  "name_zh": "方案策略师",
+  "desc_zh": "标书与商机策略架构师,擅长制胜主题提炼、竞争定位与执行摘要打磨,把RFP响应写成有说服力的制胜叙事而非简单合规填空。"
+ },
+ {
+  "id": "specialized-chief-of-staff",
+  "name_zh": "幕僚长",
+  "desc_zh": "创始人与高管的总协调者,过滤噪音、统管流程、保障一致性、分流决策并放大成果影响,让老板腾出头脑专注核心决策。"
+ },
+ {
+  "id": "specialized-cultural-intelligence-strategist",
+  "name_zh": "文化智能策略师",
+  "desc_zh": "文化智能(CQ)专家,在软件上线前识别界面与文案中的隐性排斥,推动全球优先架构与本地化语义审校,让产品跨文化真实共鸣。"
+ },
+ {
+  "id": "specialized-document-generator",
+  "name_zh": "文档生成专家",
+  "desc_zh": "以代码方式批量生成PDF、PPT、Word、Excel等专业文档,精通各格式排版、图表与数据可视化,产出可复用的模板化交付物。"
+ },
+ {
+  "id": "specialized-french-consulting-market",
+  "name_zh": "法国咨询市场顾问",
+  "desc_zh": "精通法国ESN/SI自由职业生态,解读利润结构、平台机制、薪资代征与费率定位及回款周期,帮自由顾问争取应得收入。"
+ },
+ {
+  "id": "specialized-korean-business-navigator",
+  "name_zh": "韩国商务向导",
+  "desc_zh": "为外籍专业人士解码韩国商务文化,精通禀议决策、眼力察言、KakaoTalk礼仪与等级关系,以关系优先的方式推进签约。"
+ },
+ {
+  "id": "specialized-pricing-analyst",
+  "name_zh": "定价分析师",
+  "desc_zh": "资深定价策略师,通过市场调研、竞品分析、成本结构与利润优化建立定价模型,把定价从拍脑袋变成数据驱动的竞争优势。"
+ },
+ {
+  "id": "study-abroad-advisor",
+  "name_zh": "留学规划顾问",
+  "desc_zh": "覆盖英美加澳欧及港新的全流程留学规划专家,精于本硕博选校、文书、背景提升、标化与签证,为中国学生量身定制方案、拒绝焦虑营销。"
+ },
+ {
+  "id": "supply-chain-strategist",
+  "name_zh": "供应链策略师",
+  "desc_zh": "扎根中国制造生态的供应链与采购专家,精于供应商开发、战略寻源、质量管控与供应链数字化,助企业降本增效、构建韧性供应链。"
+ },
+ {
+  "id": "support-analytics-reporter",
+  "name_zh": "数据分析报告师",
+  "desc_zh": "资深数据分析师,把原始数据转化为可执行的商业洞察,擅长仪表盘搭建、统计分析、KPI追踪与可视化,支撑数据驱动决策。"
+ },
+ {
+  "id": "support-executive-summary-generator",
+  "name_zh": "高管摘要生成师",
+  "desc_zh": "顾问级AI专家,运用麦肯锡SCQA、BCG金字塔等框架,把复杂业务信息提炼成简明可执行的高管摘要,助C级决策者三分钟看懂要点。"
+ },
+ {
+  "id": "support-finance-tracker",
+  "name_zh": "财务管控分析师",
+  "desc_zh": "精通财务规划、预算管理与经营绩效分析，优化现金流、把控投资与财务风险，为业务增长提供战略财务洞察。"
+ },
+ {
+  "id": "support-infrastructure-maintainer",
+  "name_zh": "基础设施运维工程师",
+  "desc_zh": "专注系统可靠性、性能优化与技术运维，构建安全可扩展的架构，保障高可用同时兼顾成本与效率。"
+ },
+ {
+  "id": "support-legal-compliance-checker",
+  "name_zh": "法务合规审查师",
+  "desc_zh": "确保业务、数据处理与内容创作符合多法域法律法规，擅长风险评估、政策制定与合规监控。"
+ },
+ {
+  "id": "support-support-responder",
+  "name_zh": "客户支持专员",
+  "desc_zh": "提供多渠道卓越客服与高效问题解决，主动关怀用户，将每次支持互动转化为正向品牌体验。"
+ },
+ {
+  "id": "terminal-integration-specialist",
+  "name_zh": "终端集成专家",
+  "desc_zh": "专精终端仿真、文本渲染优化与 SwiftTerm 集成，为现代 Swift 应用打造高性能原生终端体验。"
+ },
+ {
+  "id": "visionos-spatial-engineer",
+  "name_zh": "visionOS 空间计算工程师",
+  "desc_zh": "专注 visionOS 原生空间计算，用 SwiftUI 构建体积化界面，落地液态玻璃设计与沉浸式 3D 体验。"
+ },
+ {
+  "id": "xr-cockpit-interaction-specialist",
+  "name_zh": "XR 座舱交互设计师",
+  "desc_zh": "专注 XR 沉浸式座舱与空间操控设计，打造高临场固定视角交互区，兼顾仿真真实感与乘坐舒适度。"
+ },
+ {
+  "id": "xr-immersive-developer",
+  "name_zh": "XR 沉浸式开发工程师",
+  "desc_zh": "精通 WebXR 与浏览器端 AR/VR/XR 开发，实现跨设备手势注视交互、实时物理与高性能 3D 应用。"
+ },
+ {
+  "id": "xr-interface-architect",
+  "name_zh": "XR 界面架构设计师",
+  "desc_zh": "为沉浸式 3D 环境设计直觉化空间交互界面，降低眩晕、增强临场感，让操作贴合人因与本能行为。"
+ },
+ {
+  "id": "security-appsec-engineer",
+  "name_zh": "应用安全工程师",
+  "desc_zh": "深耕代码与SDLC的AppSec专家，精于威胁建模、安全代码审计、SAST/DAST流水线集成与开发者安全赋能，让安全成为编码默认项。"
+ },
+ {
+  "id": "security-architect",
+  "name_zh": "安全架构师",
+  "desc_zh": "以攻击者视角设计安全模型，专长威胁建模、安全设计、信任边界分析、纵深防御与基于风险的安全评审，绘制经得起对抗的安全蓝图。"
+ },
+ {
+  "id": "security-blockchain-security-auditor",
+  "name_zh": "区块链安全审计师",
+  "desc_zh": "智能合约安全研究者，精于漏洞挖掘、形式化验证、漏洞利用分析与审计报告撰写，专守DeFi协议，抢在攻击者之前找出漏洞。"
+ },
+ {
+  "id": "security-cloud-security-architect",
+  "name_zh": "云安全架构师",
+  "desc_zh": "云原生安全专家，设计零信任架构，在AWS/Azure/GCP落地纵深防御，并守护IaC流水线，让安全默认内建于基础设施每一层。"
+ },
+ {
+  "id": "security-compliance-auditor",
+  "name_zh": "合规审计师",
+  "desc_zh": "技术合规审计专家，精通SOC 2、ISO 27001、HIPAA、PCI-DSS，从准备度评估、证据收集到认证落地全程护航。"
+ },
+ {
+  "id": "security-incident-responder",
+  "name_zh": "安全事件响应工程师",
+  "desc_zh": "数字取证与应急响应专家，主导入侵调查、遏制活跃威胁、统筹危机处置，并撰写复盘报告杜绝事件重演。"
+ },
+ {
+  "id": "security-penetration-tester",
+  "name_zh": "渗透测试工程师",
+  "desc_zh": "攻防对抗专家，开展授权渗透测试、红队行动与漏洞评估，覆盖网络、Web应用与云基础设施，用真实攻击链证明风险。"
+ },
+ {
+  "id": "security-senior-secops",
+  "name_zh": "高级安全运营工程师",
+  "desc_zh": "防御型应用安全专家，每次先扫描代码中的密钥与敏感数据泄露，再依安全标准落地认证、授权、CORS、CSP、限流等安全控制。"
+ },
+ {
+  "id": "security-threat-detection-engineer",
+  "name_zh": "威胁检测工程师",
+  "desc_zh": "检测工程专家，精于SIEM规则开发、MITRE ATT&CK覆盖映射、威胁狩猎、告警调优与检测即代码流水线，构筑高保真检测层。"
+ },
+ {
+  "id": "security-threat-intelligence-analyst",
+  "name_zh": "威胁情报分析师",
+  "desc_zh": "网络威胁情报专家，追踪APT组织、将攻击活动映射至MITRE ATT&CK、产出可落地情报报告并编写检测规则，洞先于敌。"
+ }
+]
