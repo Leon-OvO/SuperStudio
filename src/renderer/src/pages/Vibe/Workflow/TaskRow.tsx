@@ -11,11 +11,13 @@ interface Props {
   employees?: EmployeeInfo[]
   /** Reassign this task to an employee (null = unassign → falls back to request/default). */
   onReassign?: (employeeId: string | null) => void
+  /** Revert ONLY this task's file changes (restore to the pre-apply snapshot, keeping other tasks' work). */
+  onRevertTask?: (taskId: string) => void
   /** Disable reassign while a run is in flight. */
   disabled?: boolean
 }
 
-export function TaskRow({ task, isStreaming, onToggleStatus, employees, onReassign, disabled }: Props) {
+export function TaskRow({ task, isStreaming, onToggleStatus, employees, onReassign, onRevertTask, disabled }: Props) {
   function icon() {
     if (isStreaming || task.status === 'running') return <Loader2 size={12} className="text-blue-500 animate-spin shrink-0" />
     if (task.status === 'done') return <CircleCheck size={12} className="text-emerald-500 shrink-0" />
@@ -78,6 +80,15 @@ export function TaskRow({ task, isStreaming, onToggleStatus, employees, onReassi
           title="跳过此任务"
         >
           跳过
+        </button>
+      )}
+      {isDone && onRevertTask && (task.revertFileCount ?? 0) > 0 && !isStreaming && (
+        <button
+          onClick={() => onRevertTask(task.id)}
+          className="opacity-0 group-hover:opacity-100 text-[10px] text-muted-foreground hover:text-destructive shrink-0"
+          title={`撤销此任务改动：还原它改过的 ${task.revertFileCount} 个文件到执行前，保留其他任务的成果`}
+        >
+          撤销
         </button>
       )}
     </div>

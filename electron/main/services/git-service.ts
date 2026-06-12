@@ -457,3 +457,34 @@ async function readCheckpointRef(root: string): Promise<string> {
   try { return (await git(root).raw(['rev-parse', CHECKPOINT_REF])).trim() }
   catch { return '' }
 }
+
+/**
+ * Per-task revert: restore ONLY the given files to a checkpoint, leaving every
+ * other file (other tasks' work) untouched. A file that existed in the snapshot
+ * is restored to it; a file the task newly created (absent from the snapshot) is
+ * deleted. `files` are repo-relative paths.
+ */
+export async function restoreFilesToCheckpoint(
+  root: string, files: string[], checkpointId?: string
+): Promise<{ ok: boolean; error?: string; reverted?: number }> {
+  try {
+    if (!(await isRepo(root))) return { ok: false, error: '不是 git 仓库' }
+    const target = checkpointId || checkpoints.get(norm(root))?.id || await readCheckpointRef(root)
+    if (!target) return { ok: false, error: '没有可用的快照' }
+    const g = git(root)
+    const rels = [...new Set(files.map(f => f.replace(/\\/g, '/').trim()).filter(Boolean))]
+    let reverted = 0
+    for (const rel of rels) {
+      const existed = await g.raw(['cat-file', '-e', `${target}:${rel}`]).then(() => true).catch(() => false)
+      if (existed) {
+        await g.raw(['restore', '--staged', '--worktree', '--source', target, '--', rel]).catch(() => {})
+      } else {
+        try { fs.unlinkSync(path.join(root, rel)) } catch { /* already gone */ }
+      }
+      reverted++
+    }
+    return { ok: true, reverted }
+  } catch (e) {
+    return { ok: false, error: (e as Error).message }
+  }
+}

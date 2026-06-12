@@ -191,6 +191,7 @@ export const IPC = {
   VIBE_TASK_SET_DEPS: 'vibe:task-set-deps',                // 子任务依赖（开工前手动增删）
   VIBE_TASK_LIST: 'vibe:task-list',
   VIBE_TASK_TOGGLE: 'vibe:task-toggle',
+  VIBE_TASK_REVERT: 'vibe:task-revert',                    // 撤销单个任务的改动（只还原该任务碰过的文件）
   VIBE_MESSAGE_LIST: 'vibe:message-list',
   // ---- Git review layer (P0: status/diff/stage/revert/commit + checkpoint rollback) ----
   VIBE_GIT_STATUS: 'vibe:git-status',
@@ -620,6 +621,10 @@ export interface VibeProgressEvent {
   isError?: boolean
   /** task status updates (type === 'task_status') */
   taskStatus?: 'pending' | 'running' | 'done' | 'error' | 'skipped'
+  /** Absolute path of the file written, on a successful code_write / code_edit
+   *  tool_result. Lets the renderer refresh any open editor tab + track which
+   *  files a task touched (for per-task revert). */
+  filePath?: string
 }
 
 export type VibeRequestStatus = 'draft' | 'proposed' | 'applying' | 'done' | 'archived'
@@ -657,6 +662,8 @@ export interface VibeTaskInfo {
   assigneeEmployeeId: string | null
   /** 前置任务 id 列表（必须先完成）；空 = 无依赖，可并行。 */
   deps: string[]
+  /** 本任务可单独回滚的文件数（>0 时 UI 显示「撤销此任务」）。0 = 无可回滚改动。 */
+  revertFileCount?: number
 }
 
 export interface VibeMessageInfo {

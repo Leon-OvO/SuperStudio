@@ -349,6 +349,9 @@ function applyMigrations(): void {
   // 空 / NULL = 无依赖，可与同批任务并行。apply 阶段据此用 topologicalLevels 分层
   // 执行（层内并行、层间串行），取代「无脑全并发」，让有先后顺序的任务正确排队。
   try { db.run(`ALTER TABLE vibe_tasks ADD COLUMN deps TEXT`) } catch { /* already exists */ }
+  // 逐任务回滚：revert_info 存 { cp: 改动前快照 id, files: 本任务碰过的相对路径[] }（JSON），
+  // 让「撤销此任务改动」只还原本任务的文件、保留同批其他任务的成果。
+  try { db.run(`ALTER TABLE vibe_tasks ADD COLUMN revert_info TEXT`) } catch { /* already exists */ }
   // v12: long-term memory replaced the vector knowledge base — drop legacy KB
   // tables (their data lived only here; vectors were in a separate lancedb dir).
   try { db.run(`DROP TABLE IF EXISTS kb_pages`) } catch { /* ignore */ }

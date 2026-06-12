@@ -45,6 +45,7 @@ import {
   deleteRequest, deleteTasksForRequest, slugify, setRequestAssignee,
   createTask, listTasks, updateTaskStatus, setTaskAssignee, getTask,
   setTaskDeps, markTaskBlocked, parseTaskDeps,
+  setTaskRevertInfo, clearTaskRevertInfo, getTaskRevertInfo,
   appendMessage, listMessages,
   type VibeRequestRow, type VibeTaskRow, type VibeMessageRow, type VibeProjectRow
 } from '../services/vibe-db'
@@ -304,7 +305,7 @@ function buildVibeTools(
             fs.mkdirSync(path.dirname(abs), { recursive: true })
             fs.writeFileSync(abs, content, 'utf8')
           })
-          emit({ type: 'tool_result', toolName: 'code_write', toolResultPreview: `已写入 ${rel}` })
+          emit({ type: 'tool_result', toolName: 'code_write', toolResultPreview: `已写入 ${rel}`, filePath: abs })
           return { ok: true, bytes: content.length }
         } catch (e) {
           const msg = (e as Error).message
@@ -334,7 +335,7 @@ function buildVibeTools(
             if (occ > 1) throw new Error(`oldString 在文件中匹配了 ${occ} 次，需要更精确的上下文`)
             fs.writeFileSync(abs, original.replace(oldString, newString), 'utf8')
           })
-          emit({ type: 'tool_result', toolName: 'code_edit', toolResultPreview: `已修改 ${rel}` })
+          emit({ type: 'tool_result', toolName: 'code_edit', toolResultPreview: `已修改 ${rel}`, filePath: abs })
           return { ok: true }
         } catch (e) {
           const msg = (e as Error).message
@@ -619,12 +620,17 @@ function toRequestInfo(r: VibeRequestRow): VibeRequestInfo {
   }
 }
 function toTaskInfo(t: VibeTaskRow): VibeTaskInfo {
+  let revertFileCount = 0
+  try {
+    if (t.revert_info) { const j = JSON.parse(t.revert_info); if (Array.isArray(j?.files)) revertFileCount = j.files.length }
+  } catch { /* malformed */ }
   return {
     id: t.id, requestId: t.request_id, ord: t.ord, title: t.title,
     description: t.description, status: t.status, errorText: t.error_text,
     startedAt: t.started_at, finishedAt: t.finished_at,
     assigneeEmployeeId: t.assignee_employee_id ?? null,
-    deps: parseTaskDeps(t.deps)
+    deps: parseTaskDeps(t.deps),
+    revertFileCount
   }
 }
 
@@ -1128,6 +1134,28 @@ export function vibeHandlers(): void {
     gitSvc.gitInit(assertGitRoot(projectPath)))
   ipcMain.handle(IPC.VIBE_GIT_ROLLBACK, async (_e, a: { projectPath: string; checkpointId?: string }) =>
     gitSvc.rollbackToCheckpoint(assertGitRoot(a.projectPath), a.checkpointId))
+
+  // Per-task revert: restore ONLY the files this task touched to the pre-apply
+  // checkpoint, leaving the parallel tasks' work intact. Returns the affected
+  // ABSOLUTE paths so the renderer can refresh any open editor tabs.
+  ipcMain.handle(IPC.VIBE_TASK_REVERT, async (_e, a: { taskId: string; projectPath: string }) => {
+    const root = assertGitRoot(a.projectPath)
+    const info = getTaskRevertInfo(a.taskId)
+    if (!info || !info.files.length) return { ok: false, error: '该任务没有可单独回滚的改动（可能未改动文件，或改动前未能创建快照）。' }
+    const r = await gitSvc.restoreFilesToCheckpoint(root, info.files, info.cp)
+    const files = info.files.map(f => path.join(root, f))
+    if (r.ok) {
+      clearTaskRevertInfo(a.taskId)
+      updateTaskStatus(a.taskId, 'pending')
+      const task = getTask(a.taskId)
+      const req = task ? getRequest(task.request_id) : null
+      if (req) {
+        // Keep tasks.md in sync; the renderer reloads tasks after this resolves.
+        await withFileLock('tasksmd:' + req.id, () => writeTasksMd({ projectPath: root, slug: req.slug, tasks: listTasks(req.id) })).catch(() => {})
+      }
+    }
+    return { ...r, files }
+  })
 
   // ----- CHAT / EXPLORE / BUGFIX (free-form agent loops) -----------------
   // All three follow the same shape: one request per conversation, optional
@@ -1674,7 +1702,8 @@ export function vibeHandlers(): void {
     snapshot: VibeTaskRow[],
     signal: AbortSignal,
     emit: (e: Omit<VibeProgressEvent, 'projectPath'>) => void,
-    upstreamContext = ''
+    upstreamContext = '',
+    checkpointId: string | null = null
   ): Promise<{ status: 'done' | 'error' | 'cancelled'; summary: string }> {
     if (signal.aborted) return { status: 'cancelled', summary: '' }
 
@@ -1693,8 +1722,15 @@ export function vibeHandlers(): void {
     appendMessage({ requestId: request.id, role: 'system', taskId: task.id, content: `${taskEmp ? taskEmp.name + ' ' : ''}开始任务：${task.title}` })
     if (taskEmp) setEmployeeStatus(taskEmp.id, 'busy')
 
+    // Files this task wrote (repo-relative) — so just this task can be reverted
+    // without touching the parallel tasks' work. Captured from the same filePath
+    // the code_write/code_edit tools now emit (drives the editor-tab refresh too).
+    const touchedFiles = new Set<string>()
     const taskToolEmit = (e: Omit<VibeProgressEvent, 'projectPath'>) => {
       emit({ ...e, taskId: task.id })
+      if (e.type === 'tool_result' && !e.isError && e.filePath && (e.toolName === 'code_write' || e.toolName === 'code_edit')) {
+        touchedFiles.add(path.relative(projectPath, e.filePath).replace(/\\/g, '/'))
+      }
       if (e.type === 'tool_use') {
         appendMessage({ requestId: request.id, role: 'tool', taskId: task.id, content: e.toolArgsPreview ?? '', toolName: e.toolName, isError: false })
       } else if (e.type === 'tool_result') {
@@ -1815,6 +1851,9 @@ export function vibeHandlers(): void {
     }
 
     updateTaskStatus(task.id, 'done')
+    // Record this task's touched files + the pre-apply checkpoint so it can be
+    // reverted on its own later (no checkpoint → not revertable).
+    setTaskRevertInfo(task.id, { cp: checkpointId, files: [...touchedFiles] })
     await withFileLock('tasksmd:' + request.id, () => writeTasksMd({ projectPath, slug: request.slug, tasks: listTasks(request.id) }))
     emit({ type: 'task_status', taskId: task.id, taskStatus: 'done' })
     if (taskEmp) bumpEmployeeStats(taskEmp.id, { out: 1 })
@@ -1914,7 +1953,7 @@ export function vibeHandlers(): void {
         }
 
         const runTask = (task: VibeTaskRow, ctx: string) => agentRunSemaphore.run(async () => {
-          const r = await runOneTask(request, task, projectPath, snapshot, ctl.signal, emit, ctx)
+          const r = await runOneTask(request, task, projectPath, snapshot, ctl.signal, emit, ctx, cp?.id ?? null)
           statusById.set(task.id, r.status)
           if (r.summary) outputById.set(task.id, r.summary)
         })

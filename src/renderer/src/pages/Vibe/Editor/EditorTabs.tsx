@@ -43,6 +43,7 @@ interface Props {
   onStop: () => void
   onToggleTaskStatus: (taskId: string, status: 'pending' | 'done' | 'skipped') => void
   onReassignTask: (taskId: string, employeeId: string | null) => void
+  onRevertTask?: (taskId: string) => void
 
   hasProject: boolean
 
@@ -56,7 +57,7 @@ export function EditorTabs({
   onSwitchTab, onCloseTab, onChangeContent, onSave,
   onCloseOthers, onCloseToRight, onCloseAll, onSaveAll, onReorder, onRevealInSidebar, projectPath,
   requests, tasks, messages, streamingTaskId, running,
-  onRun, onApply, onStop, onToggleTaskStatus, onReassignTask,
+  onRun, onApply, onStop, onToggleTaskStatus, onReassignTask, onRevertTask,
   hasProject, gitRefreshToken, onGitMutate
 }: Props) {
   const active = tabs.find(t => t.key === activeTabKey)
@@ -331,6 +332,7 @@ export function EditorTabs({
             onStop={onStop}
             onToggleTaskStatus={onToggleTaskStatus}
             onReassignTask={onReassignTask}
+            onRevertTask={onRevertTask}
           />
         ) : active?.kind === 'diff' ? (
           <MonacoDiffEditor

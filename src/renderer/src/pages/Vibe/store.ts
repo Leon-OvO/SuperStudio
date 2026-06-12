@@ -93,6 +93,7 @@ interface VibeState {
   reorderTab: (fromKey: string, toKey: string, side: 'left' | 'right') => void
   setFileTabContent: (path: string, next: string) => void
   markFileTabClean: (path: string) => void
+  refreshFileTabFromDisk: (path: string, newContent: string) => void
 
   // Preview
   togglePreview: () => void
@@ -364,6 +365,23 @@ export const useVibeStore = create<VibeState>((set, get) => ({
         : t
     )
     set({ openTabs: updated })
+  },
+
+  // Agent wrote this file on disk → reflect it in an open tab. Clean tab adopts
+  // the new content (so it's never stale); a dirty tab keeps the user's unsaved
+  // edits but updates diskContent (stays dirty, next save still wins).
+  refreshFileTabFromDisk: (path, newContent) => {
+    const s = get()
+    const key = fileTabKey(path)
+    let hit = false
+    const updated = s.openTabs.map(t => {
+      if (t.kind !== 'file' || t.key !== key) return t
+      hit = true
+      return t.dirty
+        ? { ...t, diskContent: newContent }
+        : { ...t, content: newContent, diskContent: newContent, dirty: false }
+    })
+    if (hit) set({ openTabs: updated })
   },
 
   togglePreview: () => set(s => ({ showPreview: !s.showPreview })),

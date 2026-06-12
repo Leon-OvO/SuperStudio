@@ -23,6 +23,8 @@ interface Props {
   onToggleTaskStatus: (taskId: string, status: 'pending' | 'done' | 'skipped') => void
   /** Reassign a sub-task to an employee (null = back to request/default). */
   onReassignTask: (taskId: string, employeeId: string | null) => void
+  /** Revert ONLY this task's file changes (restore to the pre-apply snapshot). */
+  onRevertTask?: (taskId: string) => void
 }
 
 const INTENT_META: Record<VibeIntent, { label: string; Icon: typeof MessageSquare; color: string; bg: string }> = {
@@ -34,7 +36,7 @@ const INTENT_META: Record<VibeIntent, { label: string; Icon: typeof MessageSquar
 
 export function RequestTabContent({
   request, tasks, messages, streamingTaskId, running,
-  onRun, onApply, onStop, onToggleTaskStatus, onReassignTask
+  onRun, onApply, onStop, onToggleTaskStatus, onReassignTask, onRevertTask
 }: Props) {
   const [input, setInput] = useState('')
   // Mode: 'auto' = let the backend classify; a VibeIntent = manual lock.
@@ -318,6 +320,7 @@ export function RequestTabContent({
                   onToggleStatus={running === 'apply' ? undefined : (st) => onToggleTaskStatus(t.id, st)}
                   employees={employees}
                   onReassign={(empId) => onReassignTask(t.id, empId)}
+                  onRevertTask={running === 'apply' ? undefined : onRevertTask}
                   disabled={running === 'apply'}
                 />
               ))}

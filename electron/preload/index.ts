@@ -77,6 +77,7 @@ const api = {
   vibeGitLog: (projectPath: string, limit?: number) => ipcRenderer.invoke(IPC.VIBE_GIT_LOG, { projectPath, limit }),
   vibeGitInit: (projectPath: string) => ipcRenderer.invoke(IPC.VIBE_GIT_INIT, projectPath),
   vibeGitRollback: (projectPath: string, checkpointId?: string) => ipcRenderer.invoke(IPC.VIBE_GIT_ROLLBACK, { projectPath, checkpointId }),
+  vibeTaskRevert: (taskId: string, projectPath: string) => ipcRenderer.invoke(IPC.VIBE_TASK_REVERT, { taskId, projectPath }),
   onVibeProgress: (cb: (event: unknown) => void) => {
     const listener = (_e: unknown, data: unknown) => cb(data)
     ipcRenderer.on(IPC.VIBE_PROGRESS, listener)

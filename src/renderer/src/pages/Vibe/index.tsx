@@ -136,6 +136,14 @@ export function VibeWorkbench() {
       ) {
         scheduleTreeRefresh()
         scheduleGitRefresh()
+        // Refresh any OPEN editor tab for the file the agent just wrote so it
+        // doesn't show stale content (writes go straight to disk, bypassing
+        // Monaco). Re-read from disk; the store keeps unsaved user edits.
+        if (e.filePath) {
+          void (window.api.vibeReadFile?.(e.filePath) as Promise<string> | undefined)
+            ?.then(content => useVibeStore.getState().refreshFileTabFromDisk(e.filePath!, content))
+            .catch(() => { /* file may be gone/binary; ignore */ })
+        }
       }
       // PROPOSE done — open the new request as a tab
       if (e.type === 'request_ready' && e.requestId) {
@@ -475,6 +483,25 @@ export function VibeWorkbench() {
     if (s.activeRequestId) await loadMessagesAndTasks(s.activeRequestId)
   }
 
+  // Revert ONLY this task's file changes (keep other tasks' work). Restores its
+  // touched files to the pre-apply snapshot, then refreshes the tree / git /
+  // open editor tabs so the UI reflects the undo immediately.
+  async function handleRevertTask(taskId: string) {
+    const pp = useVibeStore.getState().projectPath
+    if (!pp) return
+    const r = await window.api.vibeTaskRevert?.(taskId, pp) as { ok?: boolean; error?: string; files?: string[] } | undefined
+    if (r?.error) { s.setErrorBanner('撤销失败：' + r.error); return }
+    for (const abs of (r?.files ?? [])) {
+      void (window.api.vibeReadFile?.(abs) as Promise<string> | undefined)
+        ?.then(content => useVibeStore.getState().refreshFileTabFromDisk(abs, content))
+        .catch(() => { /* file was newly-created and got deleted by the revert */ })
+    }
+    await gitRefreshAll().catch(() => {})
+    await refreshTree()
+    s.bumpPreview()
+    if (s.activeRequestId) await loadMessagesAndTasks(s.activeRequestId)
+  }
+
   async function handleDeleteRequest(id: string) {
     await window.api.vibeRequestDelete?.(id)
     // Close any tab for this request
@@ -687,6 +714,7 @@ export function VibeWorkbench() {
               onStop={handleStop}
               onToggleTaskStatus={handleToggleTaskStatus}
               onReassignTask={handleReassignTask}
+              onRevertTask={handleRevertTask}
               hasProject={!!s.projectPath}
               gitRefreshToken={gitRefreshToken}
               onGitMutate={handleGitMutate}

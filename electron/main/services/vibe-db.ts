@@ -57,6 +57,9 @@ export interface VibeTaskRow {
   assignee_employee_id?: string | null
   /** 前置任务 id 数组（JSON 字符串）；null/空 = 无依赖，可并行。 */
   deps?: string | null
+  /** 本任务改动的可回滚信息（JSON）：{ cp: 改动前快照 id, files: 相对路径[] }。
+   *  null = 无可回滚改动。供「撤销此任务改动」只还原本任务碰过的文件。 */
+  revert_info?: string | null
 }
 
 export type MessageRole = 'user' | 'assistant' | 'tool' | 'system'
@@ -279,6 +282,28 @@ export function updateTaskStatus(taskId: string, status: TaskStatus, error?: str
   } else {
     dbRun(`UPDATE vibe_tasks SET status = ?, started_at = NULL, finished_at = NULL, error_text = NULL WHERE id = ?`, [status, taskId])
   }
+}
+
+/** Record which files a task touched + the pre-apply checkpoint, so just this
+ *  task's changes can be reverted later. Empty files / no checkpoint → cleared. */
+export function setTaskRevertInfo(taskId: string, info: { cp: string | null; files: string[] }): void {
+  const payload = info.cp && info.files.length ? JSON.stringify({ cp: info.cp, files: info.files }) : null
+  dbRun(`UPDATE vibe_tasks SET revert_info = ? WHERE id = ?`, [payload, taskId])
+}
+
+export function clearTaskRevertInfo(taskId: string): void {
+  dbRun(`UPDATE vibe_tasks SET revert_info = NULL WHERE id = ?`, [taskId])
+}
+
+/** Parse a task's revert_info JSON → { cp, files } or null. */
+export function getTaskRevertInfo(taskId: string): { cp: string; files: string[] } | null {
+  const row = dbGet<VibeTaskRow>(`SELECT revert_info FROM vibe_tasks WHERE id = ?`, [taskId])
+  if (!row?.revert_info) return null
+  try {
+    const j = JSON.parse(row.revert_info)
+    if (j && typeof j.cp === 'string' && Array.isArray(j.files)) return { cp: j.cp, files: j.files.filter((f: unknown) => typeof f === 'string') }
+  } catch { /* malformed */ }
+  return null
 }
 
 // ---------------------------------------------------------------------------
