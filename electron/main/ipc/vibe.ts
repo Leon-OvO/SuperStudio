@@ -1192,11 +1192,15 @@ export function vibeHandlers(): void {
 
     ;(async () => {
       try {
-        // Snapshot the worktree before a writing run so "roll back to before
-        // this run" can undo everything (read-only explore skips it). Silent —
-        // the 「更改」 panel surfaces the rollback affordance.
+        // Snapshot the worktree before a writing run so "roll back to before this
+        // run" can undo everything (read-only explore skips it). Surface the result
+        // so the user knows whether rollback is available — and, crucially, when it
+        // is NOT (no git / not a repo), so a bad AI edit isn't silently irreversible.
         if (opts.kind !== 'explore') {
-          await gitSvc.createCheckpoint(projectPath).catch(() => null)
+          const cp = await gitSvc.createCheckpoint(projectPath).catch(() => null)
+          emit(cp
+            ? { type: 'system', text: '已创建改动前快照，可在「更改」面板一键回滚本次改动。' }
+            : { type: 'system', text: '⚠️ 未能创建改动前快照，本次改动将无法一键回滚（项目可能不是 git 仓库，或本机未安装 git——可在「更改」面板「启用版本快照」后再让 AI 改动）。' })
         }
         const model = createLLMClient(modelInfo.providerId, modelInfo.modelId)
         const toolEmit = (e: Omit<VibeProgressEvent, 'projectPath'>) => {
@@ -1856,7 +1860,9 @@ export function vibeHandlers(): void {
         // Snapshot the worktree before the (parallel, autonomous) apply run so
         // the whole batch can be rolled back from the 「更改」 panel.
         const cp = await gitSvc.createCheckpoint(projectPath).catch(() => null)
-        if (cp) emit({ type: 'system', text: '已创建改动前快照（可在「更改」面板一键回滚）' })
+        emit(cp
+          ? { type: 'system', text: '已创建改动前快照，可在「更改」面板一键回滚本次改动。' }
+          : { type: 'system', text: '⚠️ 未能创建改动前快照，本次改动将无法一键回滚（项目可能不是 git 仓库，或本机未安装 git——可在「更改」面板「启用版本快照」）。' })
         updateRequestStatus(request.id, 'applying')
 
         // Re-apply semantics: retry the whole unfinished branch as a unit. Reset

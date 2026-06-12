@@ -8,8 +8,9 @@ import { copyImageToClipboard } from '../../lib/clipboard'
 import { useImageContextMenu } from '../../components/ui/ImageContextMenu'
 import { toast } from '../../components/ui/Toast'
 import { Markdown } from '../../lib/markdown'
-import { Play, X, RotateCcw, Clock, Cpu, Copy, Check, Download, Wand2, Brain, ChevronRight, ChevronDown, ChevronUp, Pencil, Trash2, RefreshCw, Coins, ImagePlus } from 'lucide-react'
+import { Play, X, RotateCcw, Clock, Cpu, Copy, Check, Download, Wand2, Brain, ChevronRight, ChevronDown, ChevronUp, Pencil, Trash2, RefreshCw, Coins, ImagePlus, Wrench, CheckCircle2, XCircle, Loader2 } from 'lucide-react'
 import { formatUsageLine } from '../../lib/format-cost'
+import { scrubAddresses } from '../../../../shared/scrub'
 
 function toFileUrl(p: string): string {
   // Three slashes: local-file:///F:/path — empty authority avoids Chromium treating "F:" as host
@@ -293,6 +294,58 @@ interface BubbleProps {
   onChoose?: (value: string) => void
 }
 
+/** One-line preview of a tool call for the persisted 工作过程 panel: error message,
+ *  else the most informative argument, else a compact JSON of args. Addresses are
+ *  scrubbed so IPs/hosts don't leak into the chat history. */
+function toolPreview(tc: ToolCallRecord): string {
+  if (tc.status === 'error' && tc.error) return scrubAddresses(String(tc.error)).slice(0, 140)
+  const a = (tc.args || {}) as Record<string, unknown>
+  for (const k of ['query', 'path', 'filePath', 'command', 'cmd', 'url', 'prompt', 'name', 'pattern', 'connId']) {
+    const v = a[k]
+    if (typeof v === 'string' && v.trim()) return scrubAddresses(v).slice(0, 140)
+  }
+  try { const s = JSON.stringify(a); if (s && s !== '{}') return scrubAddresses(s).slice(0, 140) } catch { /* ignore */ }
+  return ''
+}
+
+/** Persisted "work process" for a completed assistant turn: a collapsible list of
+ *  the tool calls (with status) it made. Restores the in-flight AgentProgress view
+ *  after the run ends and on session reload (toolCalls are stored on the message,
+ *  but AgentProgress only renders while running). */
+function ToolCallProcess({ toolCalls }: { toolCalls: ToolCallRecord[] }) {
+  const [open, setOpen] = useState(false)
+  const steps = toolCalls.filter(tc => tc.toolName !== '__retry__')
+  if (!steps.length) return null
+  const errCount = steps.filter(s => s.status === 'error').length
+  return (
+    <div className="mt-2 mb-1 text-xs">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="flex items-center gap-1.5 text-muted-foreground hover:text-foreground transition-colors"
+      >
+        {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+        <Wrench size={12} />
+        工作过程（{steps.length} 步{errCount ? ` · ${errCount} 个出错` : ''}）
+      </button>
+      {open && (
+        <div className="mt-1.5 ml-1.5 pl-3 border-l border-border space-y-1">
+          {steps.map((s, i) => (
+            <div key={i} className="flex items-start gap-1.5 leading-relaxed">
+              {s.status === 'done' && <CheckCircle2 size={12} className="text-emerald-500 mt-0.5 shrink-0" />}
+              {s.status === 'error' && <XCircle size={12} className="text-destructive mt-0.5 shrink-0" />}
+              {s.status === 'running' && <Loader2 size={12} className="animate-spin text-primary mt-0.5 shrink-0" />}
+              <div className="min-w-0 flex-1">
+                <span className="font-mono text-[11px] text-foreground/80">{s.toolName}</span>
+                {toolPreview(s) && <span className="ml-1.5 text-muted-foreground break-all">{toolPreview(s)}</span>}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function MessageBubble({
   message, onRetry, openContextMenu, onEditImage, onUseAsReference,
   onDeleteMessage, onRegenerate, onEditUserMessage, isRunning, isLastMsg, onChoose
@@ -404,6 +457,9 @@ function MessageBubble({
           )}
           {reasoning && !thinkingAsAnswer && (
             <ReasoningBlock content={reasoning} streaming={streaming} />
+          )}
+          {!isUser && message.toolCalls && message.toolCalls.some(tc => tc.toolName !== '__retry__') && (
+            <ToolCallProcess toolCalls={message.toolCalls} />
           )}
           {editing && isUser ? (
             <InlineEditor

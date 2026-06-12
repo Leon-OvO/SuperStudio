@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Send, Loader2, Sparkles, FolderOpen, MessageSquare, Search, Bug, Wrench } from 'lucide-react'
+import { Send, Loader2, Sparkles, FolderOpen, MessageSquare, Search, Bug, Wrench, Wand2 } from 'lucide-react'
 import { Select } from '../../../components/ui/Select'
 import type { VibeIntent } from '../../../../../shared/ipc-types'
 
@@ -104,7 +104,7 @@ export function EmptyStateHero({ hasProject, running, onRun }: Props) {
             disabled={isRunning}
             popoverWidth={180}
             options={[
-              { value: 'auto', label: '🪄 自动识别' },
+              { value: 'auto', label: '自动识别', icon: <Wand2 size={13} /> },
               { value: 'chat', label: `${INTENT_META.chat.label}（不读项目）` },
               { value: 'explore', label: `${INTENT_META.explore.label}（只读代码）` },
               { value: 'bugfix', label: `${INTENT_META.bugfix.label}（自动定位修复）` },

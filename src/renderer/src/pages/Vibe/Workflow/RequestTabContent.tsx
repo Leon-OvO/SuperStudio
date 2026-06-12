@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Square, Play, Brain, Zap, MessageSquare, Search, Bug, Wrench, Send, Coins } from 'lucide-react'
+import { Square, Play, Brain, Zap, MessageSquare, Search, Bug, Wrench, Send, Coins, Wand2, User } from 'lucide-react'
 import { cn } from '../../../lib/utils'
 import { TaskRow } from './TaskRow'
 import { MessageBubble } from './MessageBubble'
@@ -191,7 +191,7 @@ export function RequestTabContent({
               <>
                 <span className="text-muted-foreground/60">·</span>
                 <span className="inline-flex items-center gap-1" title="默认承接人：未单独指派的子任务用 TA（用其底层模型与岗位人格执行）">
-                  👤
+                  <User size={12} className="text-muted-foreground/70 shrink-0" />
                   <Select
                     value={assignee ?? ''}
                     onChange={v => changeAssignee(v || null)}
@@ -368,10 +368,10 @@ export function RequestTabContent({
             value={mode}
             onChange={v => setMode(v as 'auto' | VibeIntent)}
             disabled={running !== null}
-            title="🪄 自动让 AI 判断该聊天/探索/修复/拆需求；也可手动锁定某模式"
+            title="自动让 AI 判断该聊天/探索/修复/拆需求；也可手动锁定某模式"
             popoverWidth={180}
             options={[
-              { value: 'auto', label: '🪄 自动识别' },
+              { value: 'auto', label: '自动识别', icon: <Wand2 size={13} /> },
               { value: 'chat', label: `${INTENT_META.chat.label}（不读项目）` },
               { value: 'explore', label: `${INTENT_META.explore.label}（只读代码）` },
               { value: 'bugfix', label: `${INTENT_META.bugfix.label}（自动定位修复）` },
