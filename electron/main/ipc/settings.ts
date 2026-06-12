@@ -116,6 +116,12 @@ export function settingsHandlers(): void {
         res = await fetch(`${baseUrl}/v1/models`, { headers: authHeaders(apiKey) })
       }
     }
+    // Anthropic-protocol endpoints often authenticate via Bearer rather than
+    // x-api-key → fall back to Bearer on an auth failure so /v1/models still works.
+    if ((res.status === 401 || res.status === 403) && isAnthropic) {
+      const r2 = await fetch(`${baseUrl}/v1/models`, { headers: { Authorization: `Bearer ${apiKey}` } }).catch(() => null)
+      if (r2 && r2.ok) res = r2
+    }
     if (!res.ok) {
       const body = await res.text().catch(() => '')
       console.warn(`[settings] fetch-models ${res.status}: ${body.slice(0, 300)}`)
@@ -167,20 +173,25 @@ export function settingsHandlers(): void {
         return { ok: true, modelCount: json.data?.length ?? 0 }
       }
       if (p.type === 'anthropic') {
-        // Anthropic has no public `/v1/models` so we send a tiny ping with a
-        // bogus model and parse the error type to distinguish "bad key" (401)
-        // from other failures.
-        const res = await fetch('https://api.anthropic.com/v1/messages', {
+        // Reachability ping via /v1/messages (no guaranteed public model list).
+        // RESPECT the configured baseUrl — a custom / self-hosted Anthropic-protocol
+        // endpoint must NOT be tested against api.anthropic.com (that 403s with the
+        // endpoint's own key). Use a configured model so it exists upstream.
+        const base = (p.baseUrl || 'https://api.anthropic.com').replace(/\/v1\/?$/, '')
+        const ping = (auth: Record<string, string>) => fetch(`${base}/v1/messages`, {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-api-key': p.apiKey,
-            'anthropic-version': '2023-06-01'
-          },
-          body: JSON.stringify({ model: 'claude-3-haiku-20240307', max_tokens: 1, messages: [{ role: 'user', content: 'hi' }] })
+          headers: { 'Content-Type': 'application/json', 'anthropic-version': '2023-06-01', ...auth },
+          body: JSON.stringify({ model: p.models?.[0] || 'claude-3-haiku-20240307', max_tokens: 1, messages: [{ role: 'user', content: 'hi' }] })
         })
+        let res = await ping({ 'x-api-key': p.apiKey })
+        // Many Anthropic-protocol endpoints authenticate via Bearer, not x-api-key
+        // → retry with Bearer on an auth failure before reporting it.
+        if (res.status === 401 || res.status === 403) {
+          const r2 = await ping({ Authorization: `Bearer ${p.apiKey}` }).catch(() => null)
+          if (r2) res = r2
+        }
         if (res.status === 401) return { ok: false, error: 'API Key 无效（401）' }
-        if (res.status === 403) return { ok: false, error: '权限不足（403）' }
+        if (res.status === 403) return { ok: false, error: '访问被拒绝（403）。请确认「接口地址」与 API Key 填写正确、且该 Key 在该地址有调用权限。' }
         if (!res.ok) {
           const body = await res.text().catch(() => '')
           return { ok: false, error: `HTTP ${res.status}: ${body.slice(0, 200)}` }
