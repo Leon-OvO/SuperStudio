@@ -173,25 +173,41 @@ export function settingsHandlers(): void {
         return { ok: true, modelCount: json.data?.length ?? 0 }
       }
       if (p.type === 'anthropic') {
-        // Reachability ping via /v1/messages (no guaranteed public model list).
         // RESPECT the configured baseUrl — a custom / self-hosted Anthropic-protocol
-        // endpoint must NOT be tested against api.anthropic.com (that 403s with the
-        // endpoint's own key). Use a configured model so it exists upstream.
+        // endpoint must NOT be tested against api.anthropic.com.
         const base = (p.baseUrl || 'https://api.anthropic.com').replace(/\/v1\/?$/, '')
-        const ping = (auth: Record<string, string>) => fetch(`${base}/v1/messages`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'anthropic-version': '2023-06-01', ...auth },
-          body: JSON.stringify({ model: p.models?.[0] || 'claude-3-haiku-20240307', max_tokens: 1, messages: [{ role: 'user', content: 'hi' }] })
-        })
-        let res = await ping({ 'x-api-key': p.apiKey })
-        // Many Anthropic-protocol endpoints authenticate via Bearer, not x-api-key
-        // → retry with Bearer on an auth failure before reporting it.
-        if (res.status === 401 || res.status === 403) {
-          const r2 = await ping({ Authorization: `Bearer ${p.apiKey}` }).catch(() => null)
-          if (r2) res = r2
+        // Fetch with x-api-key; on an auth failure retry with Bearer (endpoints
+        // vary). 20s cap so a hung upstream can't block the UI indefinitely.
+        const withAuth = async (url: string, init: RequestInit): Promise<Response | null> => {
+          const hdr = (a: Record<string, string>) => ({ ...((init.headers as Record<string, string>) || {}), 'anthropic-version': '2023-06-01', ...a })
+          let r = await fetch(url, { ...init, headers: hdr({ 'x-api-key': p.apiKey }), signal: AbortSignal.timeout(20000) }).catch(() => null)
+          if (r && (r.status === 401 || r.status === 403)) {
+            const r2 = await fetch(url, { ...init, headers: hdr({ Authorization: `Bearer ${p.apiKey}` }), signal: AbortSignal.timeout(20000) }).catch(() => null)
+            if (r2) r = r2
+          }
+          return r
         }
+        // 1) /v1/models — cheapest reachability + auth check: no real model call,
+        //    no token spend, and doesn't depend on a specific model being healthy
+        //    upstream (which is exactly what made a /v1/messages ping flaky-502 on
+        //    relays — the bogus/first model couldn't be routed → 20s timeout → 502).
+        let res = await withAuth(`${base}/v1/models`, { method: 'GET' })
+        // 2) Endpoint without /v1/models → fall back to a tiny /v1/messages ping.
+        if (!res || res.status === 404 || res.status === 405) {
+          res = await withAuth(`${base}/v1/messages`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ model: p.models?.[0] || 'claude-3-haiku-20240307', max_tokens: 1, messages: [{ role: 'user', content: 'hi' }] })
+          })
+        }
+        if (!res) return { ok: false, error: '无法连接到接口地址（超时或网络错误）。请检查「接口地址」与网络。' }
         if (res.status === 401) return { ok: false, error: 'API Key 无效（401）' }
-        if (res.status === 403) return { ok: false, error: '访问被拒绝（403）。请确认「接口地址」与 API Key 填写正确、且该 Key 在该地址有调用权限。' }
+        if (res.status === 403) return { ok: false, error: '访问被拒绝（403）。请确认「接口地址」与 API Key 填写正确、且该 Key 有调用权限。' }
+        // 5xx gateway errors prove the endpoint is reachable AND auth passed — the
+        // failure is its UPSTREAM model service, not your Key/URL. Say so clearly.
+        if (res.status === 502 || res.status === 503 || res.status === 504) {
+          return { ok: false, error: `接口可达、鉴权已通过，但上游模型服务暂时不可用（${res.status}）。多为模型过载或上游波动，与你的 Key / 接口地址无关，稍后重试即可。` }
+        }
         if (!res.ok) {
           const body = await res.text().catch(() => '')
           return { ok: false, error: `HTTP ${res.status}: ${body.slice(0, 200)}` }
