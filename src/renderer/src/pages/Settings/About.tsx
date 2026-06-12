@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Loader2, RefreshCw, Zap, ExternalLink, Database, Download, Upload, FileWarning, Trash2, Copy, RotateCcw, FlaskConical } from 'lucide-react'
+import { Loader2, RefreshCw, Zap, ExternalLink, Database, Download, Upload, FileWarning, Trash2, Copy, RotateCcw, FlaskConical, Award } from 'lucide-react'
 import { useT } from '../../lib/i18n'
 import { useConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { toast } from '../../components/ui/Toast'
@@ -147,6 +147,26 @@ export function About({
           </div>
         </section>
       )}
+
+      <section className="space-y-2 border-t border-border pt-5">
+        <h3 className="text-sm font-medium flex items-center gap-1.5"><Award size={13} /> 开源致谢</h3>
+        <p className="text-xs text-muted-foreground/80 leading-relaxed">
+          人才市场中的部分 AI 员工人设，整理自以下 MIT 许可的开源项目，已按许可保留署名：
+        </p>
+        <ul className="text-xs text-muted-foreground space-y-1 pl-0.5">
+          <li className="flex items-center gap-1.5">
+            <a
+              href="https://github.com/msitarzewski/agency-agents"
+              target="_blank"
+              rel="noreferrer"
+              className="text-primary hover:underline inline-flex items-center gap-1"
+            >
+              agency-agents <ExternalLink size={10} />
+            </a>
+            <span className="text-muted-foreground/70">· MIT · © 2025 AgentLand Contributors</span>
+          </li>
+        </ul>
+      </section>
 
       <ErrorLogSection />
 

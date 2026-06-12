@@ -1072,7 +1072,9 @@ export interface SshConnection {
 
 // ── AI Company: talent pool (souls) + employees ─────────────────────────────
 
-export type EmployeeDept = 'engineering' | 'design' | 'product' | 'marketing' | 'qa' | 'data' | 'game'
+export type EmployeeDept =
+  | 'engineering' | 'design' | 'product' | 'marketing' | 'qa' | 'data' | 'game'
+  | 'finance' | 'sales' | 'security' | 'legal' | 'operations' | 'research'
 
 /** One hireable persona from the bundled encrypted catalog (sources/ souls). */
 export interface TalentEntry {

@@ -4,6 +4,7 @@ import {
   Users, UserCheck, CheckCircle2, Coins, Wallet, Gauge, Flame,
   Building2, Workflow, Armchair, Store,
   Code2, Palette, ClipboardList, Megaphone, ShieldCheck, Brain, Gamepad2, Puzzle,
+  Handshake, ShieldAlert, Scale, Briefcase, Microscope,
   type LucideIcon
 } from 'lucide-react'
 import { cn } from '../../lib/utils'
@@ -23,14 +24,22 @@ const DEPT: Record<string, { label: string; color: string; emoji: string }> = {
   marketing:   { label: '营销增长', color: '#f0b429', emoji: '📣' },
   qa:          { label: '测试质量', color: '#3ecf8e', emoji: '🔎' },
   data:        { label: '数据/AI',  color: '#46d3d3', emoji: '🧠' },
-  game:        { label: '游戏',     color: '#ff8a5b', emoji: '🎮' }
+  game:        { label: '游戏',     color: '#ff8a5b', emoji: '🎮' },
+  finance:     { label: '财务',     color: '#2fb344', emoji: '💰' },
+  sales:       { label: '销售',     color: '#ff6b4a', emoji: '🤝' },
+  security:    { label: '安全',     color: '#e03131', emoji: '🛡️' },
+  legal:       { label: '法务合规', color: '#b08968', emoji: '⚖️' },
+  operations:  { label: '运营职能', color: '#b197fc', emoji: '🗂️' },
+  research:    { label: '研究',     color: '#15aabf', emoji: '🔬' }
 }
 const dept = (k: string) => DEPT[k] || { label: k, color: '#8b91a0', emoji: '🧩' }
 
 // 部门 → lucide 线性图标（办公室工位头像用，风格与全局统一，替代 emoji）
 const DEPT_ICON: Record<string, LucideIcon> = {
   engineering: Code2, design: Palette, product: ClipboardList,
-  marketing: Megaphone, qa: ShieldCheck, data: Brain, game: Gamepad2
+  marketing: Megaphone, qa: ShieldCheck, data: Brain, game: Gamepad2,
+  finance: Wallet, sales: Handshake, security: ShieldAlert,
+  legal: Scale, operations: Briefcase, research: Microscope
 }
 const deptIcon = (k: string): LucideIcon => DEPT_ICON[k] || Puzzle
 

@@ -27,20 +27,30 @@ export interface ParsedSoul {
 const DEPT_LABEL: Record<string, string> = {
   engineering: '工程研发', design: '设计', product: '产品',
   marketing: '营销增长', qa: '测试质量', data: '数据/AI', game: '游戏',
+  finance: '财务', sales: '销售', security: '安全',
+  legal: '法务合规', operations: '运营职能', research: '研究',
 }
 
 const ACRONYMS = new Set(['api', 'ui', 'ux', 'ai', 'seo', 'ci', 'cd', 'sql', 'qa', 'llm', 'nlp', 'css', 'html', 'sdk', 'cli', 'gpu'])
 
-// domain (index.yaml) → our 7 buckets. Kept for parity with the packer.
+// domain (index.yaml) → our 13 buckets. Kept for parity with the packer.
 const DOMAIN_DEPT: Record<string, string> = {
   engineering: 'engineering', 'language-specialist': 'engineering', documentation: 'engineering',
-  blockchain: 'engineering', devops: 'engineering', infrastructure: 'engineering', security: 'engineering',
+  blockchain: 'engineering', devops: 'engineering', infrastructure: 'engineering',
   design: 'design',
   product: 'product', planning: 'product', business: 'product',
-  marketing: 'marketing', growth: 'marketing', sales: 'marketing', content: 'marketing',
+  marketing: 'marketing', growth: 'marketing', content: 'marketing', 'paid-media': 'marketing',
   'qa-testing': 'qa', qa: 'qa', testing: 'qa',
-  'ai-ml': 'data', data: 'data', ml: 'data', 'data-ai': 'data', research: 'data',
+  'ai-ml': 'data', data: 'data', ml: 'data', 'data-ai': 'data',
   game: 'game', gamedev: 'game',
+  finance: 'finance', accounting: 'finance', fintech: 'finance',
+  sales: 'sales',
+  security: 'security',
+  legal: 'legal', compliance: 'legal',
+  operations: 'operations', hr: 'operations', recruiting: 'operations',
+  'customer-success': 'operations', 'supply-chain': 'operations', support: 'operations',
+  'project-management': 'operations',
+  research: 'research', academic: 'research',
 }
 
 function deptFromDomains(domains: unknown): string | null {
@@ -50,11 +60,18 @@ function deptFromDomains(domains: unknown): string | null {
   return null
 }
 
-/** Keyword heuristic → one of the 7 departments (mirrors pack-talent.mjs). */
+/** Keyword heuristic → one of the 13 departments (mirrors pack-talent.mjs).
+ *  Secondary safety net only — imported packs classify via index.yaml domains. */
 function deptHeuristic(text: string): EmployeeDept {
   const t = (text || '').toLowerCase()
   if (/game|gamedev|游戏|关卡|数值|玩法/.test(t)) return 'game'
   if (/design|designer|\bui\b|\bux\b|brand|visual|figma|视觉|设计|美术|品牌/.test(t)) return 'design'
+  if (/security|secops|appsec|pentest|penetration|vulnerab|\bthreat\b|渗透|漏洞|网络安全/.test(t)) return 'security'
+  if (/legal|lawyer|attorney|compliance|paralegal|\bgdpr\b|法务|律师|合规|合同/.test(t)) return 'legal'
+  if (/financ|accounting|bookkeep|\bcfo\b|\bfp&?a\b|invoice|payable|treasury|\btax\b|财务|会计|税务|出纳/.test(t)) return 'finance'
+  if (/\bsales\b|\bsdr\b|outbound|prospect|pipeline|\bcrm\b|销售|成单|外呼|客户经理/.test(t)) return 'sales'
+  if (/academic|anthropolog|histor|psycholog|geograph|narratolog|researcher|scholar|学术|研究员|人类学|历史学|心理学/.test(t)) return 'research'
+  if (/operations manager|chief of staff|customer success|onboarding|recruit|\bhr\b|human resources|supply chain|logistics|procurement|招聘|人事|供应链|客户成功|行政/.test(t)) return 'operations'
   if (/\bqa\b|qa-|test|tester|quality|测试|质量|审计/.test(t)) return 'qa'
   if (/market|advertis|\bads?\b|\bseo\b|content|copywrit|growth|social|email|营销|文案|增长|运营|电商|抖音|推广|创意/.test(t)) return 'marketing'
   if (/data-|analyt|\bmlops\b|ml-|llm|ai-engineer|\bnlp\b|\betl\b|数据|分析|算法|模型|报告/.test(t)) return 'data'
