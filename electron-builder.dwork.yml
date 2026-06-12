@@ -15,9 +15,9 @@ appId: com.dwork.app
 productName: DWork
 copyright: Copyright © 2026 DWork
 # DWork versions independently of SuperStudio (main package.json). Overrides the
-# built app's version + artifact name so the DWork installer is e.g. DWork-0.1.7-Setup.
+# built app's version + artifact name so the DWork installer is e.g. DWork-0.1.8-Setup.
 extraMetadata:
-  version: 0.1.7
+  version: 0.1.8
 npmRebuild: false
 directories:
   buildResources: build
