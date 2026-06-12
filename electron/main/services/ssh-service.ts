@@ -104,18 +104,21 @@ export async function sshExec(connId: string, command: string, signal?: AbortSig
       if (signal.aborted) { onAbort(); return }
       signal.addEventListener('abort', onAbort, { once: true })
     }
-    // Become-root: run the command as root via a BARE `sudo su - root` when the
-    // connection opts in (key-auth boxes where root can't SSH in directly). The
-    // command is piped into su's STDIN rather than passed as `su - root -c "…"`,
-    // because a NOPASSWD sudoers rule (`… NOPASSWD: /bin/su - root`) only matches
-    // the exact `su - root` argv — adding `-c "…"` changes argv and forces a
-    // password prompt even when sudo is supposed to be passwordless. base64 keeps
-    // any quoting / special chars intact through the pipe. Skip if the model
-    // already prefixed sudo/su itself (avoid double escalation).
+    // Become-user: run the command as another account via a BARE `sudo su - <user>`
+    // (default root) when the connection opts in (key-auth boxes where the target
+    // account can't SSH in directly). The command is piped into su's STDIN rather
+    // than passed as `su - <user> -c "…"`, because a NOPASSWD sudoers rule
+    // (`… NOPASSWD: /bin/su - <user>`) only matches the exact `su - <user>` argv —
+    // adding `-c "…"` changes argv and forces a password prompt even when sudo is
+    // supposed to be passwordless. base64 keeps any quoting / special chars intact
+    // through the pipe. The target user is sanitized to a Unix-safe charset so it
+    // can't break out of the command. Skip if the model already prefixed sudo/su
+    // itself (avoid double escalation).
     let execCommand = command
     if (conn.becomeRoot && !/^\s*sudo\b/.test(command) && !/^\s*su\b/.test(command)) {
+      const target = (conn.becomeUser || '').trim().replace(/[^A-Za-z0-9._-]/g, '') || 'root'
       const b64 = Buffer.from(command, 'utf8').toString('base64')
-      execCommand = `echo ${b64} | base64 -d | sudo su - root`
+      execCommand = `echo ${b64} | base64 -d | sudo su - ${target}`
     }
     const sudoPw = conn.sudoPassword || conn.password || ''
     // A PTY is only needed to ANSWER a sudo password prompt. With NOPASSWD sudo

@@ -71,6 +71,36 @@ export function SshManager() {
       : `已关闭 ${targets.length} 个连接的免确认执行`)
   }
 
+  async function handleBulkSetBecome(ids: string[], enabled: boolean, user: string) {
+    const u = (user.trim().replace(/[^A-Za-z0-9._-]/g, '')) || 'root'
+    // Only touch connections whose become-state actually changes (toggle, or same
+    // toggle but different target user), so the count reflects real changes.
+    const targets = connections.filter(c => {
+      if (!ids.includes(c.id)) return false
+      if (enabled) return !c.becomeRoot || (c.becomeUser || 'root') !== u
+      return !!c.becomeRoot
+    })
+    if (!targets.length) return
+    // Enabling auto-escalation (every command runs as <u>) is high-risk → confirm.
+    if (enabled) {
+      const ok = await dlg.confirm({
+        message: `确定对选中的 ${targets.length} 个连接开启「sudo 切换到 ${u} 执行」？\n\n开启后，Agent 在这些连接上的每条命令都会自动以 ${u} 身份运行。请确保已为这些连接填好可用的 sudo 密码（或登录密码即 sudo 密码）。`,
+        tone: 'danger',
+        confirmLabel: `开启 ${targets.length} 个`,
+      })
+      if (!ok) return
+    }
+    // SSH_LIST carries decrypted creds; saveSshConnection re-encrypts, so spreading
+    // only changes becomeRoot/becomeUser without losing password/private key.
+    for (const c of targets) {
+      await window.api.sshSaveConnection({ ...c, becomeRoot: enabled || undefined, becomeUser: enabled ? u : undefined })
+    }
+    await reload()
+    toast.success(enabled
+      ? `已对 ${targets.length} 个连接开启 sudo 切换到 ${u}`
+      : `已关闭 ${targets.length} 个连接的 sudo 切换`)
+  }
+
   async function handleDuplicate(c: SshConnection) {
     const copy: SshConnection = { ...c, id: randomId(), name: `${c.name} 副本`, createdAt: undefined }
     await window.api.sshSaveConnection(copy)
@@ -120,6 +150,7 @@ export function SshManager() {
           onDelete={handleDelete}
           onBulkDelete={handleBulkDelete}
           onBulkSetAutoConfirm={handleBulkSetAutoConfirm}
+          onBulkSetBecome={handleBulkSetBecome}
           onDuplicate={handleDuplicate}
           onImport={handleImport}
           importing={importing}

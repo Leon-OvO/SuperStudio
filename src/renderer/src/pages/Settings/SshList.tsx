@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import {
   Plus, Edit2, Trash2, Server, KeyRound, Lock, Upload, Loader2, Copy, Search, X,
-  ChevronDown, ChevronRight, Activity, CheckCircle2, XCircle, FolderClosed, Zap, ShieldCheck
+  ChevronDown, ChevronRight, Activity, CheckCircle2, XCircle, FolderClosed, Zap, ShieldCheck, UserCog
 } from 'lucide-react'
 import type { SshConnection } from '../../../../shared/ipc-types'
 import { Select } from '../../components/ui/Select'
@@ -16,6 +16,7 @@ interface Props {
   onDelete: (id: string) => void
   onBulkDelete: (ids: string[]) => Promise<void> | void
   onBulkSetAutoConfirm: (ids: string[], value: boolean) => Promise<void> | void
+  onBulkSetBecome: (ids: string[], enabled: boolean, user: string) => Promise<void> | void
   onDuplicate: (c: SshConnection) => void
   onCreate: () => void
   onImport: () => void
@@ -31,7 +32,7 @@ async function runPool<T>(items: T[], n: number, fn: (t: T) => Promise<void>): P
   await Promise.all(Array.from({ length: Math.min(n, items.length) }, worker))
 }
 
-export function SshList({ connections, onEdit, onDelete, onBulkDelete, onBulkSetAutoConfirm, onDuplicate, onCreate, onImport, importing }: Props) {
+export function SshList({ connections, onEdit, onDelete, onBulkDelete, onBulkSetAutoConfirm, onBulkSetBecome, onDuplicate, onCreate, onImport, importing }: Props) {
   const [query, setQuery] = useState('')
   const [sortKey, setSortKey] = useState<SortKey>('name')
   const [selected, setSelected] = useState<Set<string>>(new Set())
@@ -39,6 +40,8 @@ export function SshList({ connections, onEdit, onDelete, onBulkDelete, onBulkSet
   const [status, setStatus] = useState<Record<string, TestState>>({})
   const [bulkTesting, setBulkTesting] = useState(false)
   const [settingAuto, setSettingAuto] = useState(false)
+  const [settingBecome, setSettingBecome] = useState(false)
+  const [bulkUser, setBulkUser] = useState('root')
 
   // Filter → group → sort.
   const groups = useMemo(() => {
@@ -109,6 +112,14 @@ export function SshList({ connections, onEdit, onDelete, onBulkDelete, onBulkSet
   async function bulkSetAutoConfirm(value: boolean) {
     setSettingAuto(true)
     try { await onBulkSetAutoConfirm(selectedVisible, value) } finally { setSettingAuto(false) }
+  }
+
+  // Bulk sudo-switch: enable runs every command as <bulkUser> on the selected
+  // connections; disable turns it off. Disable only counts those currently on.
+  const selectedBecomeOn = selectedVisible.filter(id => connections.find(c => c.id === id)?.becomeRoot).length
+  async function bulkSetBecome(enabled: boolean) {
+    setSettingBecome(true)
+    try { await onBulkSetBecome(selectedVisible, enabled, bulkUser) } finally { setSettingBecome(false) }
   }
 
   const StatusDot = ({ id }: { id: string }) => {
@@ -195,6 +206,25 @@ export function SshList({ connections, onEdit, onDelete, onBulkDelete, onBulkSet
                 <ShieldCheck size={12} /> 关闭免确认{toEnable > 0 && toDisable > 0 ? `（${toDisable}）` : ''}
               </button>
               <span className="w-px h-4 bg-border mx-0.5" />
+              <input
+                value={bulkUser}
+                onChange={e => setBulkUser(e.target.value)}
+                placeholder="root"
+                title="sudo 切换的目标用户（批量）"
+                className="h-6 w-16 px-1.5 text-xs rounded border border-border bg-card focus:outline-none focus:ring-1 focus:ring-primary/40"
+                autoCapitalize="none" autoCorrect="off" spellCheck={false}
+              />
+              <button onClick={() => bulkSetBecome(true)} disabled={settingBecome}
+                title={`对选中连接开启「sudo 切换到 ${bulkUser.trim() || 'root'} 执行」`}
+                className="flex items-center gap-1 px-2.5 py-1 rounded border border-blue-500/40 text-blue-700 dark:text-blue-400 hover:bg-blue-500/10 text-xs disabled:opacity-40 disabled:cursor-not-allowed">
+                <UserCog size={12} /> 批量切 {bulkUser.trim() || 'root'}
+              </button>
+              <button onClick={() => bulkSetBecome(false)} disabled={selectedBecomeOn === 0 || settingBecome}
+                title="对选中连接关闭 sudo 切换（恢复以登录用户执行）"
+                className="flex items-center gap-1 px-2.5 py-1 rounded border border-border bg-card hover:bg-accent text-xs disabled:opacity-40 disabled:cursor-not-allowed">
+                关闭切换{selectedBecomeOn > 0 ? `（${selectedBecomeOn}）` : ''}
+              </button>
+              <span className="w-px h-4 bg-border mx-0.5" />
               <button onClick={bulkDelete}
                 className="flex items-center gap-1 px-2.5 py-1 rounded border border-destructive/40 text-destructive hover:bg-destructive/10 text-xs">
                 <Trash2 size={12} /> 批量删除
@@ -242,6 +272,12 @@ export function SshList({ connections, onEdit, onDelete, onBulkDelete, onBulkSet
                                 <span title="免确认执行：Agent 在此连接上执行命令不弹窗确认"
                                   className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-700 dark:text-amber-400 inline-flex items-center gap-1 shrink-0">
                                   <Zap size={9} /> 免确认
+                                </span>
+                              )}
+                              {c.becomeRoot && (
+                                <span title={`登录后自动 sudo 切换到 ${c.becomeUser || 'root'} 执行`}
+                                  className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-700 dark:text-blue-400 inline-flex items-center gap-1 shrink-0">
+                                  <UserCog size={9} /> →{c.becomeUser || 'root'}
                                 </span>
                               )}
                             </div>

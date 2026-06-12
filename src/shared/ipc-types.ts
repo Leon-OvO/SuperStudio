@@ -1056,11 +1056,16 @@ export interface SshConnection {
    *  key-auth connections, or when the sudo password differs from the login one.
    *  Encrypted at rest like the other secrets. */
   sudoPassword?: string
-  /** Run EVERY command on this connection as root via `sudo su - root` (for boxes
-   *  where you log in as a normal user with a key and root can't be SSH'd into
-   *  directly). The sudo prompt is auto-answered with sudoPassword/password. The
-   *  model's command is wrapped transparently — it need not prefix sudo itself. */
+  /** Run EVERY command on this connection as another user via `sudo su - <user>`
+   *  (for boxes where you log in as a normal user with a key and the target
+   *  account — root by default — can't be SSH'd into directly). The sudo prompt is
+   *  auto-answered with sudoPassword/password. The model's command is wrapped
+   *  transparently — it need not prefix sudo itself. */
   becomeRoot?: boolean
+  /** Target user for the sudo-switch when `becomeRoot` is on. Empty/undefined → root.
+   *  Lets a connection run every command as a non-root account (e.g. `deploy`,
+   *  `www-data`). Sanitized to [A-Za-z0-9._-] before use. */
+  becomeUser?: string
   /** Optional folder/group for list organization (e.g. a MobaXterm subfolder). */
   group?: string
   /** When true, the Agent runs commands on this connection WITHOUT the per-run

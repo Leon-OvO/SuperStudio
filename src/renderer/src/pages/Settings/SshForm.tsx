@@ -24,6 +24,7 @@ export function SshForm({ initial, onSave, onCancel }: Props) {
   const [passphrase, setPassphrase] = useState(initial?.passphrase || '')
   const [sudoPassword, setSudoPassword] = useState(initial?.sudoPassword || '')
   const [becomeRoot, setBecomeRoot] = useState(initial?.becomeRoot ?? false)
+  const [becomeUser, setBecomeUser] = useState(initial?.becomeUser || '')
   const [autoConfirm, setAutoConfirm] = useState(initial?.autoConfirm ?? false)
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
@@ -42,6 +43,7 @@ export function SshForm({ initial, onSave, onCancel }: Props) {
       passphrase: authType === 'privateKey' && passphrase ? passphrase : undefined,
       sudoPassword: sudoPassword || undefined,
       becomeRoot: becomeRoot || undefined,
+      becomeUser: becomeRoot ? (becomeUser.trim() || undefined) : undefined,
       group: group.trim() || undefined,
       autoConfirm,
       createdAt: initial?.createdAt,
@@ -164,21 +166,38 @@ export function SshForm({ initial, onSave, onCancel }: Props) {
         </span>
       </Field>
 
-      <label className="flex items-start gap-2.5 cursor-pointer rounded-md border border-border p-2.5">
-        <input
-          type="checkbox"
-          className="mt-0.5 accent-primary shrink-0"
-          checked={becomeRoot}
-          onChange={e => setBecomeRoot(e.target.checked)}
-        />
-        <span className="min-w-0">
-          <span className="block text-sm font-medium">登录后用 sudo 切换到 root 执行</span>
-          <span className="block text-[11px] text-muted-foreground mt-0.5 leading-relaxed">
-            适合「普通用户密钥登录、root 不能直接登录」的机器：开启后此连接上<b>每条命令都自动以 root 运行</b>
-            （`sudo su - root` + 自动输入上面的 sudo 密码），Agent 无需自己加 sudo。需先填好「sudo 密码」。
+      <div className="rounded-md border border-border p-2.5 space-y-2.5">
+        <label className="flex items-start gap-2.5 cursor-pointer">
+          <input
+            type="checkbox"
+            className="mt-0.5 accent-primary shrink-0"
+            checked={becomeRoot}
+            onChange={e => setBecomeRoot(e.target.checked)}
+          />
+          <span className="min-w-0">
+            <span className="block text-sm font-medium">登录后用 sudo 切换用户执行</span>
+            <span className="block text-[11px] text-muted-foreground mt-0.5 leading-relaxed">
+              适合「普通用户密钥登录、目标账号不能直接登录」的机器：开启后此连接上<b>每条命令都自动以下方目标用户运行</b>
+              （`sudo su - 目标用户` + 自动输入上面的 sudo 密码），Agent 无需自己加 sudo。需先填好「sudo 密码」。
+            </span>
           </span>
-        </span>
-      </label>
+        </label>
+        {becomeRoot && (
+          <div className="pl-7">
+            <label className="block text-[11px] font-medium text-muted-foreground mb-1">目标用户</label>
+            <input
+              value={becomeUser}
+              onChange={e => setBecomeUser(e.target.value)}
+              placeholder="root（留空即 root）"
+              className="input max-w-[220px]"
+              autoCapitalize="none" autoCorrect="off" spellCheck={false}
+            />
+            <span className="block text-[11px] text-muted-foreground/70 mt-1">
+              切换到的账号，默认 <code>root</code>；也可填 <code>deploy</code> / <code>www-data</code> 等。
+            </span>
+          </div>
+        )}
+      </div>
 
       <label className={cn(
         'flex items-start gap-2.5 cursor-pointer rounded-md border p-2.5 transition-colors',
