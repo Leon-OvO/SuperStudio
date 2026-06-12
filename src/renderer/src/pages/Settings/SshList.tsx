@@ -1,7 +1,7 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Plus, Edit2, Trash2, Server, KeyRound, Lock, Upload, Loader2, Copy, Search, X,
-  ChevronDown, ChevronRight, Activity, CheckCircle2, XCircle, FolderClosed, Zap, ShieldCheck, UserCog
+  ChevronDown, ChevronRight, Activity, CheckCircle2, XCircle, FolderClosed, Zap, UserCog, SlidersHorizontal
 } from 'lucide-react'
 import type { SshConnection } from '../../../../shared/ipc-types'
 import { Select } from '../../components/ui/Select'
@@ -42,6 +42,18 @@ export function SshList({ connections, onEdit, onDelete, onBulkDelete, onBulkSet
   const [settingAuto, setSettingAuto] = useState(false)
   const [settingBecome, setSettingBecome] = useState(false)
   const [bulkUser, setBulkUser] = useState('root')
+  const [bulkMenuOpen, setBulkMenuOpen] = useState(false)
+  const bulkMenuRef = useRef<HTMLDivElement>(null)
+
+  // Close the 批量设置 popover on an outside click.
+  useEffect(() => {
+    if (!bulkMenuOpen) return
+    const onDoc = (e: MouseEvent) => {
+      if (bulkMenuRef.current && !bulkMenuRef.current.contains(e.target as Node)) setBulkMenuOpen(false)
+    }
+    document.addEventListener('mousedown', onDoc)
+    return () => document.removeEventListener('mousedown', onDoc)
+  }, [bulkMenuOpen])
 
   // Filter → group → sort.
   const groups = useMemo(() => {
@@ -183,53 +195,74 @@ export function SshList({ connections, onEdit, onDelete, onBulkDelete, onBulkSet
             </label>
           </div>
 
-          {/* selection action bar */}
+          {/* selection action bar — compact: count + 测试 / 批量设置▾ / 删除.
+              The toggle-style bulk settings live in a tidy grouped popover so the
+              bar never crowds into an unreadable row. */}
           {selectedVisible.length > 0 && (
-            <div className="flex items-center gap-2 flex-wrap text-sm bg-accent/60 border border-border rounded-md px-3 py-2">
-              <span className="text-foreground font-medium">已选 {selectedVisible.length}</span>
+            <div className="flex items-center gap-2 text-sm bg-accent/60 border border-border rounded-md px-3 py-2">
+              <span className="text-foreground font-medium">已选 {selectedVisible.length} 项</span>
+              <button onClick={() => setSelected(new Set())} className="text-xs text-muted-foreground hover:text-foreground">清除</button>
               <div className="flex-1" />
               <button onClick={bulkTest} disabled={bulkTesting}
-                className="flex items-center gap-1 px-2.5 py-1 rounded border border-border bg-card hover:bg-accent text-xs disabled:opacity-50">
-                {bulkTesting ? <Loader2 size={12} className="animate-spin" /> : <Activity size={12} />} 批量测试
+                className="flex items-center gap-1 px-2.5 py-1 rounded-md border border-border bg-card hover:bg-accent text-xs disabled:opacity-50">
+                {bulkTesting ? <Loader2 size={12} className="animate-spin" /> : <Activity size={12} />} 测试
               </button>
-              <span className="w-px h-4 bg-border mx-0.5" />
-              <button onClick={() => bulkSetAutoConfirm(true)}
-                disabled={toEnable === 0 || settingAuto}
-                title="对选中连接开启免确认执行（Agent 执行命令不再弹窗）"
-                className="flex items-center gap-1 px-2.5 py-1 rounded border border-amber-500/40 text-amber-700 dark:text-amber-400 hover:bg-amber-500/10 text-xs disabled:opacity-40 disabled:cursor-not-allowed">
-                <Zap size={12} /> 开启免确认{toEnable > 0 && toDisable > 0 ? `（${toEnable}）` : ''}
-              </button>
-              <button onClick={() => bulkSetAutoConfirm(false)}
-                disabled={toDisable === 0 || settingAuto}
-                title="对选中连接关闭免确认执行（恢复每条命令弹窗确认）"
-                className="flex items-center gap-1 px-2.5 py-1 rounded border border-border bg-card hover:bg-accent text-xs disabled:opacity-40 disabled:cursor-not-allowed">
-                <ShieldCheck size={12} /> 关闭免确认{toEnable > 0 && toDisable > 0 ? `（${toDisable}）` : ''}
-              </button>
-              <span className="w-px h-4 bg-border mx-0.5" />
-              <input
-                value={bulkUser}
-                onChange={e => setBulkUser(e.target.value)}
-                placeholder="root"
-                title="sudo 切换的目标用户（批量）"
-                className="h-6 w-16 px-1.5 text-xs rounded border border-border bg-card focus:outline-none focus:ring-1 focus:ring-primary/40"
-                autoCapitalize="none" autoCorrect="off" spellCheck={false}
-              />
-              <button onClick={() => bulkSetBecome(true)} disabled={settingBecome}
-                title={`对选中连接开启「sudo 切换到 ${bulkUser.trim() || 'root'} 执行」`}
-                className="flex items-center gap-1 px-2.5 py-1 rounded border border-blue-500/40 text-blue-700 dark:text-blue-400 hover:bg-blue-500/10 text-xs disabled:opacity-40 disabled:cursor-not-allowed">
-                <UserCog size={12} /> 批量切 {bulkUser.trim() || 'root'}
-              </button>
-              <button onClick={() => bulkSetBecome(false)} disabled={selectedBecomeOn === 0 || settingBecome}
-                title="对选中连接关闭 sudo 切换（恢复以登录用户执行）"
-                className="flex items-center gap-1 px-2.5 py-1 rounded border border-border bg-card hover:bg-accent text-xs disabled:opacity-40 disabled:cursor-not-allowed">
-                关闭切换{selectedBecomeOn > 0 ? `（${selectedBecomeOn}）` : ''}
-              </button>
-              <span className="w-px h-4 bg-border mx-0.5" />
+
+              <div className="relative" ref={bulkMenuRef}>
+                <button onClick={() => setBulkMenuOpen(o => !o)}
+                  className={cn(
+                    'flex items-center gap-1 px-2.5 py-1 rounded-md border text-xs transition-colors',
+                    bulkMenuOpen ? 'border-primary/50 bg-primary/10 text-primary' : 'border-border bg-card hover:bg-accent'
+                  )}>
+                  <SlidersHorizontal size={12} /> 批量设置
+                  <ChevronDown size={11} className={cn('transition-transform', bulkMenuOpen && 'rotate-180')} />
+                </button>
+                {bulkMenuOpen && (
+                  <div className="absolute right-0 top-full mt-1.5 z-50 w-72 rounded-lg border border-border bg-popover shadow-xl p-3.5 space-y-3.5 cursor-default">
+                    {/* 免确认执行 */}
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-1.5 text-xs font-medium"><Zap size={13} className="text-amber-500" /> 免确认执行</div>
+                      <p className="text-[11px] text-muted-foreground/80 leading-snug">开启后 Agent 在这些连接上执行命令不再逐次弹窗（含删除/重启等高危操作）。</p>
+                      <div className="flex gap-2">
+                        <button onClick={() => { setBulkMenuOpen(false); bulkSetAutoConfirm(true) }} disabled={toEnable === 0 || settingAuto}
+                          className="flex-1 px-2 py-1.5 rounded-md border border-amber-500/40 text-amber-700 dark:text-amber-400 hover:bg-amber-500/10 text-xs disabled:opacity-40 disabled:cursor-not-allowed">
+                          开启{toEnable > 0 ? `（${toEnable}）` : ''}
+                        </button>
+                        <button onClick={() => { setBulkMenuOpen(false); bulkSetAutoConfirm(false) }} disabled={toDisable === 0 || settingAuto}
+                          className="flex-1 px-2 py-1.5 rounded-md border border-border bg-card hover:bg-accent text-xs disabled:opacity-40 disabled:cursor-not-allowed">
+                          关闭{toDisable > 0 ? `（${toDisable}）` : ''}
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="border-t border-border" />
+
+                    {/* sudo 切换用户 */}
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-1.5 text-xs font-medium"><UserCog size={13} className="text-blue-500" /> 登录后 sudo 切换用户</div>
+                      <p className="text-[11px] text-muted-foreground/80 leading-snug">每条命令自动以目标用户运行（需各连接已填 sudo 密码或登录密码即 sudo 密码）。</p>
+                      <div className="flex items-center gap-2">
+                        <input value={bulkUser} onChange={e => setBulkUser(e.target.value)} placeholder="root"
+                          className="h-7 flex-1 min-w-0 px-2 text-xs rounded-md border border-border bg-card focus:outline-none focus:ring-1 focus:ring-primary/40"
+                          autoCapitalize="none" autoCorrect="off" spellCheck={false} />
+                        <button onClick={() => { setBulkMenuOpen(false); bulkSetBecome(true) }} disabled={settingBecome}
+                          className="px-3 py-1.5 rounded-md border border-blue-500/40 text-blue-700 dark:text-blue-400 hover:bg-blue-500/10 text-xs disabled:opacity-40 whitespace-nowrap">
+                          切到 {bulkUser.trim() || 'root'}
+                        </button>
+                      </div>
+                      <button onClick={() => { setBulkMenuOpen(false); bulkSetBecome(false) }} disabled={selectedBecomeOn === 0 || settingBecome}
+                        className="w-full px-2 py-1.5 rounded-md border border-border bg-card hover:bg-accent text-xs disabled:opacity-40 disabled:cursor-not-allowed">
+                        关闭切换{selectedBecomeOn > 0 ? `（${selectedBecomeOn}）` : ''}
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
               <button onClick={bulkDelete}
-                className="flex items-center gap-1 px-2.5 py-1 rounded border border-destructive/40 text-destructive hover:bg-destructive/10 text-xs">
-                <Trash2 size={12} /> 批量删除
+                className="flex items-center gap-1 px-2.5 py-1 rounded-md border border-destructive/40 text-destructive hover:bg-destructive/10 text-xs">
+                <Trash2 size={12} /> 删除
               </button>
-              <button onClick={() => setSelected(new Set())} className="text-xs text-muted-foreground hover:text-foreground px-1">清除</button>
             </div>
           )}
 
