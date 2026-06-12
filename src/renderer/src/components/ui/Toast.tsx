@@ -78,7 +78,7 @@ export function ToastHost() {
           {t.tone === 'success' && <CheckCircle2 size={14} className="shrink-0 mt-0.5" />}
           {t.tone === 'error' && <AlertCircle size={14} className="shrink-0 mt-0.5" />}
           {t.tone === 'info' && <Info size={14} className="shrink-0 mt-0.5" />}
-          <span className="flex-1 whitespace-pre-wrap break-words">{t.message}</span>
+          <span className="flex-1 min-w-0 whitespace-pre-wrap break-words max-h-[60vh] overflow-y-auto">{t.message}</span>
           <button
             onClick={() => setItems(prev => prev.filter(x => x.id !== t.id))}
             className="text-muted-foreground/60 hover:text-foreground -mr-1 mt-0.5 shrink-0"
