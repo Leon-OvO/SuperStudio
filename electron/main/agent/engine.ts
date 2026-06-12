@@ -1675,9 +1675,23 @@ export async function runAgent(
     if (abortedByErrorStreak && !stalled && !streamErr) {
       streamErr = new Error(`连续多次工具调用失败，已自动停止本轮以避免空转。已交付此前获得的部分结果；请调整需求或稍后再试。`)
     }
-    try { usage = await result.usage } catch (e) { console.warn('[Agent] usage await threw:', (e as Error).message) }
+    // Hard failure with nothing produced (401/auth, network, …) → surface it NOW.
+    // Awaiting result.usage / finishReason on an errored stream can hang on some
+    // providers, and the stall watchdog is already cleared by here — that would
+    // leave the run (and the renderer's「执行中」spinner) stuck forever. Fail fast.
+    if (streamErr && !fullText.trim()) throw streamErr
+    // Defense-in-depth: even on the partial-text path, never let these awaits hang
+    // the whole run — cap them so the turn always finishes (and the spinner stops).
+    const POST_STREAM_TIMEOUT_MS = 12000
+    usage = await Promise.race([
+      Promise.resolve(result.usage).catch(() => null),
+      new Promise<null>(res => { const t = setTimeout(() => res(null), POST_STREAM_TIMEOUT_MS); (t as { unref?: () => void }).unref?.() })
+    ])
     let finishReasonForLog: string | undefined
-    try { finishReasonForLog = await result.finishReason } catch (e) { console.warn('[Agent] finishReason await threw:', (e as Error).message) }
+    finishReasonForLog = await Promise.race([
+      Promise.resolve(result.finishReason).catch(() => undefined as string | undefined),
+      new Promise<string | undefined>(res => { const t = setTimeout(() => res(undefined), POST_STREAM_TIMEOUT_MS); (t as { unref?: () => void }).unref?.() })
+    ])
 
     // Layer 2 — one-shot deterministic continuation. If the model genuinely ran
     // out of room (finishReason='length') or hit the per-turn step ceiling while
@@ -1942,10 +1956,9 @@ export async function runAgent(
     } else if ((err as Error)?.name === 'AbortError') {
       win.webContents.send(IPC.AGENT_DONE, { sessionId, content: '任务已中断', cancelled: true })
     } else {
-      const e = err as Error
+      const e = err as Error & { cause?: unknown; statusCode?: number }
       const rawDetail = e?.message || String(err)
-      const cause = (e as Error & { cause?: unknown })?.cause
-      const detail = friendlyError(rawDetail, cause)
+      const detail = friendlyError(rawDetail, e?.cause, e?.statusCode)
       win.webContents.send(IPC.AGENT_ERROR, { sessionId, error: detail })
     }
   } finally {

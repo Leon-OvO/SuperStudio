@@ -42,18 +42,30 @@ export function parseSizeFromMessage(msg: string): string {
 }
 
 /** Map a raw provider/SDK error into a localized, actionable message. */
-export function friendlyError(message: string, cause?: unknown): string {
+export function friendlyError(message: string, cause?: unknown, statusCode?: number): string {
   const causeStr = cause ? String(cause) : ''
   const full = `${message} ${causeStr}`.toLowerCase()
 
-  if (full.includes('temporarily unavailable') || full.includes('service unavailable') || full.includes('503')) {
+  if (statusCode === 503 || full.includes('temporarily unavailable') || full.includes('service unavailable') || full.includes('503')) {
     return `服务暂时不可用（503）。这通常是模型服务过载，请稍等片刻后重试。\n\n原始信息：${message}`
   }
-  if (full.includes('rate limit') || full.includes('429') || full.includes('too many requests')) {
+  if (statusCode === 429 || full.includes('rate limit') || full.includes('429') || full.includes('too many requests')) {
     return `请求频率超限（429 Rate Limit）。请稍等几秒后重试，或切换到其他模型。\n\n原始信息：${message}`
   }
-  if (full.includes('401') || full.includes('invalid api key') || full.includes('unauthorized')) {
-    return `API Key 无效或未授权（401）。请到「设置 → 提供商」检查 API Key 是否正确。\n\n原始信息：${message}`
+  // Auth failures: match the HTTP 401 status AND the many server-side phrasings
+  // (OpenAI「invalid api key」, LiteLLM「authentication error / invalid proxy
+  // server token / token_not_found / unable to find token」, etc.) — the message
+  // text often has NONE of the simple keywords, so without statusCode it slips
+  // through to the raw English dump.
+  const authText =
+    full.includes('unauthorized') || full.includes('authentication') ||
+    full.includes('invalid api key') || full.includes('incorrect api key') ||
+    full.includes('invalid proxy server token') || full.includes('token_not_found') ||
+    full.includes('unable to find token') || full.includes('verificationtoken') ||
+    full.includes('no api key') || full.includes('api key not found') ||
+    full.includes('expired') && full.includes('key')
+  if (statusCode === 401 || (statusCode === undefined && full.includes('401')) || authText) {
+    return `API Key 无效或已失效，接口认证未通过。请到「设置 → 提供商」检查并更新该接口的 API Key；若密钥本应有效，可能是它被重置或过期，需重新获取。\n\n原始信息：${message}`
   }
   if (full.includes('403') || full.includes('forbidden')) {
     return `访问被拒绝（403）。请确认 API Key 有权限调用该模型。\n\n原始信息：${message}`
