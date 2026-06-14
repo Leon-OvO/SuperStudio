@@ -122,8 +122,8 @@ export function WelcomeWizard({ onDismiss }: Props) {
   }
 
   return (
-    <div className="fixed inset-0 z-[400] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
-      <div className="bg-popover border border-border rounded-2xl shadow-2xl w-[560px] max-w-full max-h-[90vh] overflow-hidden flex flex-col">
+    <div className="fixed inset-0 z-[400] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-overlay-in">
+      <div className="bg-popover border border-border rounded-2xl shadow-2xl w-[560px] max-w-full max-h-[90vh] overflow-hidden flex flex-col animate-dialog-in">
         {/* Top */}
         <header className="flex items-center justify-between px-6 py-4 border-b border-border">
           <div className="flex items-center gap-2">

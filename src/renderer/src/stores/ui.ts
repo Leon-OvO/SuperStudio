@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { BRAND } from '@shared/brand'
 
-type Page = 'dashboard' | 'chat' | 'workflow' | 'gallery' | 'memory' | 'vibe' | 'skills' | 'scheduler' | 'video' | 'company' | 'settings'
+type Page = 'dashboard' | 'chat' | 'studio' | 'gallery' | 'memory' | 'vibe' | 'skills' | 'scheduler' | 'video' | 'company' | 'settings'
 type Theme = 'light' | 'dark'
 /** Skin = whole-app color palette. Replaces the old binary light/dark toggle —
  *  each skin maps to a light-or-dark base so Monaco / xterm can still pick a
@@ -42,6 +42,15 @@ interface UIState {
   setPendingChatAttachments: (atts: PendingChatAttachment[] | null) => void
   pendingChatImageMode: boolean
   setPendingChatImageMode: (on: boolean) => void
+  /** Cross-page handoff: a hired employee id the Chat page should open a fresh
+   *  bound conversation with (set by Company「谈话」 before setPage('chat')). */
+  pendingChatEmployeeId: string | null
+  setPendingChatEmployeeId: (id: string | null) => void
+  /** Cross-page handoff: a Company/Workbench tab (e.g. 'market') to open on the
+   *  next navigation to the 公司 page — set by deep-links like the Chat empty-state
+   *  「去人才市场招募」. Consumed and cleared by WorkbenchPage. */
+  pendingCompanyTab: string | null
+  setPendingCompanyTab: (t: string | null) => void
   /** Height (px) of the Vibe-page terminal drawer. Persisted across reloads. */
   terminalHeight: number
   setTerminalHeight: (n: number) => void
@@ -60,6 +69,9 @@ interface UIState {
   /** Whether the main left nav rail shows labels (expanded) or icons-only. */
   sidebarExpanded: boolean
   setSidebarExpanded: (v: boolean) => void
+  /** 素材库 view layout: 'grid' (thumbnail wall) or 'list' (compact rows). */
+  galleryView: 'grid' | 'list'
+  setGalleryView: (v: 'grid' | 'list') => void
 }
 
 const SKIN_KEYS: Skin[] = ['classic', 'warm', 'cold', 'twilight', 'terminal', 'dwork']
@@ -95,6 +107,7 @@ const savedChatSidebarWidth = (() => {
 })()
 // Default to expanded (labels shown) — only collapse when the user opted in.
 const savedSidebarExpanded = localStorage.getItem('ss-sidebar-expanded') !== '0'
+const savedGalleryView: 'grid' | 'list' = localStorage.getItem('ss-gallery-view') === 'list' ? 'list' : 'grid'
 
 export const useUIStore = create<UIState>((set, get) => ({
   currentPage: 'chat',
@@ -119,6 +132,10 @@ export const useUIStore = create<UIState>((set, get) => ({
   setPendingChatAttachments: (atts) => set({ pendingChatAttachments: atts }),
   pendingChatImageMode: false,
   setPendingChatImageMode: (on) => set({ pendingChatImageMode: on }),
+  pendingChatEmployeeId: null,
+  setPendingChatEmployeeId: (id) => set({ pendingChatEmployeeId: id }),
+  pendingCompanyTab: null,
+  setPendingCompanyTab: (t) => set({ pendingCompanyTab: t }),
   terminalHeight: savedTermHeight,
   setTerminalHeight: (n) => {
     const clamped = Math.max(120, Math.min(600, Math.floor(n)))
@@ -151,5 +168,10 @@ export const useUIStore = create<UIState>((set, get) => ({
   setSidebarExpanded: (v) => {
     localStorage.setItem('ss-sidebar-expanded', v ? '1' : '0')
     set({ sidebarExpanded: v })
+  },
+  galleryView: savedGalleryView,
+  setGalleryView: (v) => {
+    localStorage.setItem('ss-gallery-view', v)
+    set({ galleryView: v })
   }
 }))

@@ -2,8 +2,9 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { BRAND } from '@shared/brand'
 import { createPortal } from 'react-dom'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import type { Message, ToolCallRecord, AskUserPayload } from '../../../../shared/ipc-types'
+import type { Message, ToolCallRecord, AskUserPayload, EmployeeInfo } from '../../../../shared/ipc-types'
 import { cn } from '../../lib/utils'
+import { dept } from '../../lib/departments'
 import { copyImageToClipboard } from '../../lib/clipboard'
 import { useImageContextMenu } from '../../components/ui/ImageContextMenu'
 import { toast } from '../../components/ui/Toast'
@@ -116,6 +117,8 @@ function stripDuplicateMedia(text: string, duplicatePaths: string[]): string {
 interface Props {
   messages: Message[]
   sessionId: string | null
+  /** Hired employees — resolves a group message's speaker to an avatar + name. */
+  employees?: EmployeeInfo[]
   onRetry?: () => void
   /** Open the global ImageEditor with the given src. Mounted at ChatPage level. */
   onEditImage: (src: string) => void
@@ -138,11 +141,16 @@ interface Props {
 }
 
 export function MessageList({
-  messages, onRetry, onEditImage, onUseAsReference, providersCount, defaultChatModel,
+  messages, employees, onRetry, onEditImage, onUseAsReference, providersCount, defaultChatModel,
   onDeleteMessage, onRegenerate, onEditUserMessage, isRunning, onChoose
 }: Props) {
   const ctxMenu = useImageContextMenu()
   const scrollRef = useRef<HTMLDivElement>(null)
+  const employeeMap = useMemo(() => {
+    const m = new Map<string, EmployeeInfo>()
+    for (const e of employees ?? []) m.set(e.id, e)
+    return m
+  }, [employees])
 
   // Variable-height virtualizer — each message bubble can be anywhere from a
   // single line to many paragraphs with images / code / tool cards. We seed
@@ -260,6 +268,7 @@ export function MessageList({
             >
               <MessageBubble
                 message={msg}
+                speaker={msg.speakerEmployeeId ? employeeMap.get(msg.speakerEmployeeId) : undefined}
                 onRetry={showRetry ? onRetry : undefined}
                 openContextMenu={ctxMenu.open}
                 onEditImage={onEditImage}
@@ -282,6 +291,8 @@ export function MessageList({
 
 interface BubbleProps {
   message: Message
+  /** Group chat: the employee who spoke this message (for an identity header). */
+  speaker?: EmployeeInfo
   onRetry?: () => void
   openContextMenu: ReturnType<typeof useImageContextMenu>['open']
   onEditImage: (src: string) => void
@@ -347,10 +358,11 @@ function ToolCallProcess({ toolCalls }: { toolCalls: ToolCallRecord[] }) {
 }
 
 function MessageBubble({
-  message, onRetry, openContextMenu, onEditImage, onUseAsReference,
+  message, speaker, onRetry, openContextMenu, onEditImage, onUseAsReference,
   onDeleteMessage, onRegenerate, onEditUserMessage, isRunning, isLastMsg, onChoose
 }: BubbleProps) {
   const isUser = message.role === 'user'
+  const speakerDept = speaker ? dept(speaker.dept) : null
   const [lightboxSrc, setLightboxSrc] = useState<{ src: string; filePath: string } | null>(null)
   const [copied, setCopied] = useState(false)
   const [editing, setEditing] = useState(false)
@@ -424,6 +436,19 @@ function MessageBubble({
   return (
     <>
       <div className={cn('group/msg flex flex-col', isUser ? 'items-end' : 'items-start')}>
+        {/* Group chat: who said this — dept emoji + name above the bubble. If the
+            speaker was fired since, label it so the message isn't shown unattributed. */}
+        {!isUser && speaker && speakerDept ? (
+          <div className="flex items-center gap-1.5 mb-1 pl-1">
+            <span className="w-5 h-5 rounded-md grid place-items-center text-[12px] border border-border shrink-0" style={{ background: speakerDept.color + '22' }}>{speakerDept.emoji}</span>
+            <span className="text-xs font-medium text-foreground/90">{speaker.name}</span>
+            <span className="text-[10px] text-muted-foreground/70">{speakerDept.label}</span>
+          </div>
+        ) : (!isUser && message.speakerEmployeeId) ? (
+          <div className="flex items-center gap-1.5 mb-1 pl-1 opacity-70">
+            <span className="text-[11px] text-muted-foreground">（已离职员工）</span>
+          </div>
+        ) : null}
         <div className={cn(
           'max-w-[80%] rounded-2xl px-4 py-3 text-base leading-relaxed relative',
           isUser

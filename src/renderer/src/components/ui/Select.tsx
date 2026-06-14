@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, useLayoutEffect } from 'react'
+import { createPortal } from 'react-dom'
 import { ChevronDown, Check, Search } from 'lucide-react'
 import { cn } from '../../lib/utils'
 
@@ -187,18 +188,22 @@ export function Select<T extends string = string>({
         {triggerEl}
       </button>
 
-      {open && (
+      {open && createPortal(
+        // Portal to <body> so the popover escapes any ancestor that clips
+        // (overflow) or creates a stacking context (backdrop-blur in the title
+        // bar / sidebar) — otherwise it can be hidden behind page content.
         <div
           ref={popoverRef}
           role="listbox"
-          className="fixed z-[150] w-max bg-popover border border-border rounded-lg shadow-xl flex flex-col overflow-hidden"
+          className="fixed z-[150] w-max bg-popover border border-border rounded-lg shadow-xl flex flex-col overflow-hidden animate-popover-in"
           style={{
             top: pos.flip ? undefined : pos.top,
             bottom: pos.flip ? window.innerHeight - pos.top + 4 : undefined,
             left: pos.left,
             minWidth: pos.width,
             maxWidth: pos.maxWidth,
-            maxHeight: pos.maxHeight
+            maxHeight: pos.maxHeight,
+            transformOrigin: pos.flip ? 'bottom center' : 'top center'
           }}
         >
           {showSearch && (
@@ -250,7 +255,8 @@ export function Select<T extends string = string>({
               <p className="px-3 py-2 text-xs text-muted-foreground/60">{query ? '无匹配项' : '无可选项'}</p>
             )}
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </>
   )

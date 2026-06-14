@@ -6,9 +6,14 @@ import { getMainWindow } from '../index'
 import { executeWorkflow, stopWorkflow, isWorkflowRunning } from '../agent/workflow-engine'
 
 export function workflowHandlers(): void {
-  ipcMain.handle(IPC.WORKFLOWS_LIST, () => {
+  // `kind` splits the automation 工作流 from the 图片画布 — both share this table +
+  // the execution engine, but each page lists only its own kind. Old rows default
+  // to 'workflow' (the migration's column default).
+  ipcMain.handle(IPC.WORKFLOWS_LIST, (_e, opts?: { kind?: string }) => {
+    const kind = opts?.kind || 'workflow'
     const rows = dbAll<{ id: string; name: string; description: string; definition: string; created_at: number; updated_at: number }>(
-      `SELECT id, name, description, definition, created_at, updated_at FROM workflows ORDER BY updated_at DESC`
+      `SELECT id, name, description, definition, created_at, updated_at FROM workflows WHERE COALESCE(kind, 'workflow') = ? ORDER BY updated_at DESC`,
+      [kind]
     )
     return rows.map(r => ({
       ...r,
@@ -18,14 +23,15 @@ export function workflowHandlers(): void {
 
   ipcMain.handle(IPC.WORKFLOWS_SAVE, (_e, workflow) => {
     const now = Date.now()
+    const kind = workflow.kind || 'workflow'
     if (workflow.id) {
       dbRun(`UPDATE workflows SET name = ?, description = ?, definition = ?, updated_at = ? WHERE id = ?`,
         [workflow.name, workflow.description || '', JSON.stringify(workflow.definition), now, workflow.id])
       return { id: workflow.id, ok: true }
     } else {
       const id = randomUUID()
-      dbRun(`INSERT INTO workflows (id, name, description, definition, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
-        [id, workflow.name, workflow.description || '', JSON.stringify(workflow.definition), now, now])
+      dbRun(`INSERT INTO workflows (id, name, description, definition, created_at, updated_at, kind) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [id, workflow.name, workflow.description || '', JSON.stringify(workflow.definition), now, now, kind])
       return { id, ok: true }
     }
   })

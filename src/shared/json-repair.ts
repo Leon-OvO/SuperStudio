@@ -85,6 +85,28 @@ export function repairBadEscapes(s: string): string {
 }
 
 /**
+ * Pull the JSON value out of an LLM reply that may be wrapped in a ```json fence
+ * or surrounded by prose ("好的，这是规划：{...}。希望对你有帮助"). Strips the
+ * fence, then slices from the first `{`/`[` to the last matching `}`/`]`. Returns
+ * the original (trimmed) string when no object/array is present, so it's always
+ * safe to run before parseJsonLoose. Without this, a model that adds a code fence
+ * or a sentence of preamble makes JSON.parse fail outright.
+ */
+export function extractJson(s: string): string {
+  let t = (s || '').trim()
+  const fence = t.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i)
+  if (fence) t = fence[1].trim()
+  const firstObj = t.indexOf('{')
+  const firstArr = t.indexOf('[')
+  const starts = [firstObj, firstArr].filter(i => i >= 0)
+  if (!starts.length) return t
+  const start = Math.min(...starts)
+  const close = t[start] === '{' ? '}' : ']'
+  const end = t.lastIndexOf(close)
+  return end > start ? t.slice(start, end + 1).trim() : t
+}
+
+/**
  * Parse JSON, progressively repairing the two most common LLM mistakes
  * (unescaped content quotes + bad backslash escapes), in both orders. Returns
  * the parsed value, or throws the ORIGINAL parse error if nothing parses (so

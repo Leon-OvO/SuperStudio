@@ -243,7 +243,8 @@ export type ThinkingMode = 'auto' | 'fast' | 'deep'
  *   - deep → thinking.enabled     给足思考预算，换更强推理（更慢、且需放大 maxTokens
  *                                  以容纳 budget，否则 Anthropic 会因 budget≥max 报错）
  *   - auto → 不动（沿用模型/网关默认行为）
- * 仅对原生 anthropic provider 生效；其它 provider 一律返回空对象（无副作用）。
+ * 仅对原生 anthropic provider 生效；其它 provider 一律返回空对象（无副作用）。经
+ * openai-compat 中转的 Claude 思考问题应靠 provider.anthropicNative 走 /v1/messages 解决。
  */
 type ThinkStreamOpts = Pick<Parameters<typeof streamText>[0], 'providerOptions' | 'maxTokens'>
 
@@ -252,6 +253,12 @@ export function thinkingStreamOpts(
   mode: ThinkingMode | undefined,
   model?: string
 ): ThinkStreamOpts {
+  // Anthropic-native only. On the openai-compat shim we can neither toggle Claude's
+  // extended thinking nor rely on SSE keepalives during it — raising the output cap
+  // there just lets the (untransmitted) thinking run longer and trip the stall
+  // watchdog. The real fix for "Claude via an openai relay returns 空响应 / 马上做
+  // 后没动作" is to route it anthropic-native (provider.anthropicNative=true →
+  // /v1/messages), NOT to widen the cap on the broken path.
   if (providerType !== 'anthropic') return {}
   // Output-token ceiling. Many turns truncate long writes (HTML/report/code) at a
   // small provider default; raise it — but ONLY for models we KNOW accept a large

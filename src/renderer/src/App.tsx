@@ -5,9 +5,8 @@ import { useVibeStore } from './pages/Vibe/store'
 import { Sidebar } from './components/layout/Sidebar'
 import { TitleBar } from './components/layout/TitleBar'
 import { ChatPage } from './pages/Chat'
-import { WorkflowPage } from './pages/Workflow'
+import { StudioPage } from './pages/Studio'
 import { GalleryPage } from './pages/Gallery'
-import { VideoPage } from './pages/Video'
 import { MemoryPage } from './pages/Memory'
 import { VibePage } from './pages/Vibe'
 import { SkillsPage } from './pages/Skills'
@@ -25,7 +24,7 @@ import { BRAND } from '@shared/brand'
 import { ACCOUNT_MODE } from '@shared/flavor'
 import { getAccountUI } from './lib/account-ui'
 
-type PageId = 'dashboard' | 'chat' | 'workflow' | 'gallery' | 'memory' | 'vibe' | 'skills' | 'scheduler' | 'video' | 'settings'
+type PageId = 'dashboard' | 'chat' | 'studio' | 'gallery' | 'memory' | 'vibe' | 'skills' | 'scheduler' | 'video' | 'settings'
 
 export default function App() {
   const { currentPage, setPage, skin, setPendingWorkflowId } = useUIStore()
@@ -128,7 +127,7 @@ export default function App() {
           // (shell-open, prior session) has already moved off the default.
           if (!didApplyStartupPageRef.current) {
             didApplyStartupPageRef.current = true
-            const target = s.startupPage === 'vibe' ? 'vibe' : 'chat'
+            const target = s.startupPage === 'vibe' ? 'vibe' : s.startupPage === 'studio' ? 'studio' : 'chat'
             if (useUIStore.getState().currentPage === 'chat' && target !== 'chat') {
               setPage(target)
             }
@@ -183,16 +182,22 @@ export default function App() {
     if (platform === 'win32') root.classList.add('platform-win')
     else if (platform === 'darwin') root.classList.add('platform-mac')
     else root.classList.add('platform-linux')
+    // Only when the OS actually composites a vibrancy/acrylic backdrop (macOS, or
+    // Windows 11+) do we let the chrome go translucent — otherwise a transparent
+    // window would just show the bare desktop. Win10/Linux stay fully opaque.
+    if (window.api?.vibrancy) root.classList.add('platform-vibrancy')
+    else root.classList.remove('platform-vibrancy')
   }, [])
 
   useEffect(() => {
     const handler = (e: Event) => {
       const detail = (e as CustomEvent).detail as { page: string; workflowId?: string }
       if (detail?.page) {
-        if (detail.page === 'workflow' && detail.workflowId) {
-          setPendingWorkflowId(detail.workflowId)
-        }
-        setPage(detail.page as Parameters<typeof setPage>[0])
+        // 「工作流」「图片画布」「视频」已合并进「创作」(studio)。把旧 page 名透明重定向，
+        // 并保留 workflowId → StudioPage 切到工作流模式并打开它。
+        if (detail.page === 'workflow' && detail.workflowId) setPendingWorkflowId(detail.workflowId)
+        const page = (detail.page === 'workflow' || detail.page === 'canvas' || detail.page === 'video') ? 'studio' : detail.page
+        setPage(page as Parameters<typeof setPage>[0])
       }
     }
     window.addEventListener('navigate', handler)
@@ -231,7 +236,7 @@ export default function App() {
       }
 
       // Mod + 0-7 : nav to main pages
-      const pageMap: Record<string, PageId> = { '0': 'dashboard', '1': 'chat', '2': 'workflow', '3': 'gallery', '4': 'memory', '5': 'vibe', '6': 'skills', '7': 'scheduler' }
+      const pageMap: Record<string, PageId> = { '0': 'dashboard', '1': 'chat', '2': 'studio', '3': 'gallery', '4': 'memory', '5': 'vibe', '6': 'skills', '7': 'scheduler' }
       if (pageMap[e.key]) {
         // Don't hijack number input inside text fields
         if (inTextField) return
@@ -372,16 +377,15 @@ export default function App() {
   }
 
   return (
-    <div className="flex flex-col h-screen w-screen overflow-hidden bg-background text-foreground">
+    <div className="app-shell flex flex-col h-screen w-screen overflow-hidden bg-background text-foreground">
       <TitleBar />
       <div className="flex flex-1 overflow-hidden">
         <Sidebar />
-        <main className="flex-1 overflow-hidden">
+        <main className="app-content flex-1 overflow-hidden bg-background">
           {currentPage === 'dashboard' && DashboardComponent && <DashboardComponent />}
           {currentPage === 'chat' && <ChatPage />}
-          {currentPage === 'workflow' && <WorkflowPage />}
+          {currentPage === 'studio' && <StudioPage />}
           {currentPage === 'gallery' && <GalleryPage />}
-          {currentPage === 'video' && <VideoPage />}
           {currentPage === 'memory' && <MemoryPage />}
           {currentPage === 'vibe' && <VibePage />}
           {currentPage === 'skills' && <SkillsPage />}

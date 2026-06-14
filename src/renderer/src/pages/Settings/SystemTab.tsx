@@ -5,6 +5,8 @@ import type { AppSettings, ProviderConfig, ProxyMode } from '../../../../shared/
 import { cn } from '../../lib/utils'
 import { toast } from '../../components/ui/Toast'
 import { Select } from '../../components/ui/Select'
+import { Switch } from '../../components/ui/Switch'
+import { SettingsGroup, SettingsRow } from '../../components/ui/SettingsList'
 import { useUIStore } from '../../stores/ui'
 import { type SkinOption, VISIBLE_SKINS } from '../../lib/skins'
 import { GlobalSettings } from './GlobalSettings'
@@ -109,11 +111,11 @@ function SystemSection({
   const sidebarExpanded = useUIStore(s => s.sidebarExpanded)
   const setSidebarExpanded = useUIStore(s => s.setSidebarExpanded)
 
-  async function updateStartupPage(next: 'chat' | 'vibe') {
+  async function updateStartupPage(next: 'chat' | 'vibe' | 'studio') {
     if (!settings) return
     try {
       await onSave({ ...settings, startupPage: next })
-      toast.success(next === 'chat' ? '下次启动将进入对话页' : '下次启动将进入公司页')
+      toast.success(next === 'chat' ? '下次启动将进入对话页' : next === 'studio' ? '下次启动将进入创作页' : '下次启动将进入公司页')
     } catch (e) {
       toast.error('保存失败：' + ((e as Error)?.message ?? '未知错误'))
     }
@@ -177,77 +179,75 @@ function SystemSection({
         </p>
       </div>
 
-      {/* 首页 -------------------------------------------------------------- */}
-      <div className="flex items-start gap-3 p-4 rounded-lg border border-border bg-card">
-        <div className="shrink-0 mt-0.5">
-          <Home size={16} className="text-primary" />
-        </div>
-        <div className="flex-1 min-w-0">
-          <h3 className="text-sm font-medium">首页</h3>
-          <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
-            选择 {BRAND.displayName} 启动后默认进入的页面。通过右键「用 {BRAND.displayName} 打开」启动时不受此设置影响。
-          </p>
-        </div>
-        <div className="shrink-0">
-          <Select<'chat' | 'vibe'>
-            value={settings?.startupPage ?? 'chat'}
-            onChange={updateStartupPage}
-            options={[
-              { value: 'chat', label: '对话' },
-              { value: 'vibe', label: '公司' }
-            ]}
-            size="md"
-            disabled={!settings}
-          />
-        </div>
-      </div>
+      <SettingsGroup>
+        {/* 首页 ------------------------------------------------------------ */}
+        <SettingsRow
+          align="start"
+          icon={<Home size={16} className="text-primary" />}
+          title="首页"
+          description={`选择 ${BRAND.displayName} 启动后默认进入的页面。通过右键「用 ${BRAND.displayName} 打开」启动时不受此设置影响。`}
+          control={
+            <Select<'chat' | 'vibe' | 'studio'>
+              value={settings?.startupPage ?? 'chat'}
+              onChange={updateStartupPage}
+              options={[
+                { value: 'chat', label: '对话' },
+                { value: 'vibe', label: '公司' },
+                { value: 'studio', label: '创作' }
+              ]}
+              size="md"
+              disabled={!settings}
+            />
+          }
+        />
 
-      {/* 左侧菜单 ---------------------------------------------------------- */}
-      <SimpleToggleRow
-        icon={<PanelLeft size={16} className="text-primary" />}
-        title="展开左侧菜单"
-        description="开启后左侧导航栏显示文字标签；关闭则只显示图标，更紧凑。也可随时点击侧栏顶部按钮切换。默认展开。"
-        checked={sidebarExpanded}
-        pending={false}
-        onChange={setSidebarExpanded}
-      />
+        {/* 左侧菜单 -------------------------------------------------------- */}
+        <SimpleToggleRow
+          icon={<PanelLeft size={16} className="text-primary" />}
+          title="展开左侧菜单"
+          description="开启后左侧导航栏显示文字标签；关闭则只显示图标，更紧凑。也可随时点击侧栏顶部按钮切换。默认展开。"
+          checked={sidebarExpanded}
+          pending={false}
+          onChange={setSidebarExpanded}
+        />
 
-      {/* 最小化到托盘 ------------------------------------------------------ */}
-      <SimpleToggleRow
-        icon={<Minimize2 size={16} className="text-primary" />}
-        title="最小化到托盘"
-        description={`点最小化后把 ${BRAND.displayName} 收进系统托盘（任务栏不再占位），点托盘图标即可恢复。默认开启；关闭后为普通最小化。`}
-        checked={settings?.minimizeToTray !== false}
-        pending={false}
-        onChange={(v) => { if (settings) onSave({ ...settings, minimizeToTray: v }) }}
-      />
+        {/* 最小化到托盘 ---------------------------------------------------- */}
+        <SimpleToggleRow
+          icon={<Minimize2 size={16} className="text-primary" />}
+          title="最小化到托盘"
+          description={`点最小化后把 ${BRAND.displayName} 收进系统托盘（任务栏不再占位），点托盘图标即可恢复。默认开启；关闭后为普通最小化。`}
+          checked={settings?.minimizeToTray !== false}
+          pending={false}
+          onChange={(v) => { if (settings) onSave({ ...settings, minimizeToTray: v }) }}
+        />
 
-      {/* 开机自启 ---------------------------------------------------------- */}
-      <ToggleRow
-        icon={<Power size={16} className="text-primary" />}
-        title="开机自启"
-        description={`在操作系统启动时自动打开 ${BRAND.displayName}。如果你后续把 .exe 移到了别的位置，请重新切换此开关让路径生效。`}
-        checked={state.storedAutoLaunch}
-        actualState={state.autoLaunch}
-        pending={pending === 'autoLaunch'}
-        onChange={toggleAutoLaunch}
-      />
+        {/* 开机自启 -------------------------------------------------------- */}
+        <ToggleRow
+          icon={<Power size={16} className="text-primary" />}
+          title="开机自启"
+          description={`在操作系统启动时自动打开 ${BRAND.displayName}。如果你后续把 .exe 移到了别的位置，请重新切换此开关让路径生效。`}
+          checked={state.storedAutoLaunch}
+          actualState={state.autoLaunch}
+          pending={pending === 'autoLaunch'}
+          onChange={toggleAutoLaunch}
+        />
 
-      {/* 右键菜单 ---------------------------------------------------------- */}
-      <ToggleRow
-        icon={<MousePointerClick size={16} className="text-primary" />}
-        title="菜单右键打开文件、文件夹"
-        description={
-          state.shellIntegrationSupported
-            ? `在 Windows 资源管理器中右键点击文件或文件夹时显示「用 ${BRAND.displayName} 打开」。文件会作为编辑器标签页打开；文件夹会作为「公司」项目打开。`
-            : '当前操作系统暂不支持此功能（仅 Windows 可用）。'
-        }
-        checked={state.storedShellIntegration}
-        actualState={state.shellIntegration}
-        pending={pending === 'shell'}
-        disabled={!state.shellIntegrationSupported}
-        onChange={toggleShellIntegration}
-      />
+        {/* 右键菜单 -------------------------------------------------------- */}
+        <ToggleRow
+          icon={<MousePointerClick size={16} className="text-primary" />}
+          title="菜单右键打开文件、文件夹"
+          description={
+            state.shellIntegrationSupported
+              ? `在 Windows 资源管理器中右键点击文件或文件夹时显示「用 ${BRAND.displayName} 打开」。文件会作为编辑器标签页打开；文件夹会作为「公司」项目打开。`
+              : '当前操作系统暂不支持此功能（仅 Windows 可用）。'
+          }
+          checked={state.storedShellIntegration}
+          actualState={state.shellIntegration}
+          pending={pending === 'shell'}
+          disabled={!state.shellIntegrationSupported}
+          onChange={toggleShellIntegration}
+        />
+      </SettingsGroup>
 
       {/* 网络代理 ---------------------------------------------------------- */}
       <ProxySection settings={settings} onSave={onSave} />
@@ -464,40 +464,37 @@ function BrowserSection({
         </p>
       </div>
 
-      {/* 搜索引擎 ---------------------------------------------------------- */}
-      <div className="flex items-start gap-3 p-4 rounded-lg border border-border bg-card">
-        <div className="shrink-0 mt-0.5">
-          <Globe size={16} className="text-primary" />
-        </div>
-        <div className="flex-1 min-w-0">
-          <h3 className="text-sm font-medium">搜索引擎</h3>
-          <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
-            选择抓取用的搜索引擎。谷歌可能弹验证码——若搜索返回空，打开下方开关观察并手动通过验证。所选引擎失败时会自动按内置顺序兜底其他引擎。
-          </p>
-        </div>
-        <div className="shrink-0">
-          <Select<'bing' | 'baidu' | 'google'>
-            value={engineValue}
-            onChange={v => patch({ searchProvider: v }, `搜索引擎已切换到 ${v === 'google' ? '谷歌' : v === 'baidu' ? '百度' : 'Bing'}`)}
-            options={[
-              { value: 'bing', label: 'Bing' },
-              { value: 'baidu', label: '百度' },
-              { value: 'google', label: '谷歌' }
-            ]}
-            size="md"
-            disabled={pending}
-          />
-        </div>
-      </div>
+      <SettingsGroup>
+        {/* 搜索引擎 -------------------------------------------------------- */}
+        <SettingsRow
+          align="start"
+          icon={<Globe size={16} className="text-primary" />}
+          title="搜索引擎"
+          description="选择抓取用的搜索引擎。谷歌可能弹验证码——若搜索返回空，打开下方开关观察并手动通过验证。所选引擎失败时会自动按内置顺序兜底其他引擎。"
+          control={
+            <Select<'bing' | 'baidu' | 'google'>
+              value={engineValue}
+              onChange={v => patch({ searchProvider: v }, `搜索引擎已切换到 ${v === 'google' ? '谷歌' : v === 'baidu' ? '百度' : 'Bing'}`)}
+              options={[
+                { value: 'bing', label: 'Bing' },
+                { value: 'baidu', label: '百度' },
+                { value: 'google', label: '谷歌' }
+              ]}
+              size="md"
+              disabled={pending}
+            />
+          }
+        />
 
-      <SimpleToggleRow
-        icon={<Globe size={16} className="text-primary" />}
-        title="显示搜索抓取窗口"
-        description="开启后，每次搜索会弹出抓取用的浏览器窗口，便于调试或手动通过验证码。默认隐藏在后台。修改即时生效。"
-        checked={visible}
-        pending={pending}
-        onChange={next => patch({ searchBrowserVisible: next }, next ? '搜索时将显示抓取窗口' : '抓取窗口已隐藏')}
-      />
+        <SimpleToggleRow
+          icon={<Globe size={16} className="text-primary" />}
+          title="显示搜索抓取窗口"
+          description="开启后，每次搜索会弹出抓取用的浏览器窗口，便于调试或手动通过验证码。默认隐藏在后台。修改即时生效。"
+          checked={visible}
+          pending={pending}
+          onChange={next => patch({ searchBrowserVisible: next }, next ? '搜索时将显示抓取窗口' : '抓取窗口已隐藏')}
+        />
+      </SettingsGroup>
     </div>
   )
 }
@@ -514,36 +511,20 @@ function SimpleToggleRow({
   onChange: (next: boolean) => void
 }) {
   return (
-    <div className="flex items-start gap-3 p-4 rounded-lg border border-border bg-card">
-      <div className="shrink-0 mt-0.5">{icon}</div>
-      <div className="flex-1 min-w-0">
-        <h3 className="text-sm font-medium">{title}</h3>
-        <p className="text-xs text-muted-foreground mt-1 leading-relaxed">{description}</p>
-      </div>
-      <button
-        type="button"
-        role="switch"
-        aria-checked={checked}
-        disabled={pending}
-        onClick={() => onChange(!checked)}
-        className={cn(
-          'relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors mt-1',
-          'focus:outline-none focus:ring-2 focus:ring-primary/40 focus:ring-offset-2 focus:ring-offset-background',
-          checked ? 'bg-primary' : 'bg-muted-foreground/30',
-          pending && 'cursor-not-allowed opacity-60'
-        )}
-      >
-        <span
-          className={cn(
-            'absolute top-0.5 left-0.5 inline-block h-4 w-4 rounded-full bg-white shadow transition-transform',
-            checked && 'translate-x-4'
+    <SettingsRow
+      align="start"
+      icon={icon}
+      title={title}
+      description={description}
+      control={
+        <div className="relative">
+          <Switch checked={checked} onChange={onChange} disabled={pending} />
+          {pending && (
+            <Loader2 size={10} className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 animate-spin text-white pointer-events-none" />
           )}
-        />
-        {pending && (
-          <Loader2 size={10} className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 animate-spin text-white" />
-        )}
-      </button>
-    </div>
+        </div>
+      }
+    />
   )
 }
 
@@ -562,46 +543,30 @@ function ToggleRow({
 }) {
   const drifted = checked !== actualState
   return (
-    <div className={cn(
-      'flex items-start gap-3 p-4 rounded-lg border border-border bg-card',
-      disabled && 'opacity-60'
-    )}>
-      <div className="shrink-0 mt-0.5">{icon}</div>
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2">
-          <h3 className="text-sm font-medium">{title}</h3>
+    <SettingsRow
+      align="start"
+      className={cn(disabled && 'opacity-60')}
+      icon={icon}
+      title={
+        <>
+          <span>{title}</span>
           {drifted && !disabled && (
-            <span className="text-[10px] px-1.5 py-px rounded bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30">
+            <span className="text-[10px] px-1.5 py-px rounded bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30 font-normal">
               系统实际: {actualState ? '已开启' : '已关闭'}
             </span>
           )}
-        </div>
-        <p className="text-xs text-muted-foreground mt-1 leading-relaxed">{description}</p>
-      </div>
-      <button
-        type="button"
-        role="switch"
-        aria-checked={checked}
-        disabled={disabled || pending}
-        onClick={() => onChange(!checked)}
-        className={cn(
-          'relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors mt-1',
-          'focus:outline-none focus:ring-2 focus:ring-primary/40 focus:ring-offset-2 focus:ring-offset-background',
-          checked ? 'bg-primary' : 'bg-muted-foreground/30',
-          (disabled || pending) && 'cursor-not-allowed opacity-60'
-        )}
-      >
-        <span
-          className={cn(
-            'absolute top-0.5 left-0.5 inline-block h-4 w-4 rounded-full bg-white shadow transition-transform',
-            checked && 'translate-x-4'
+        </>
+      }
+      description={description}
+      control={
+        <div className="relative">
+          <Switch checked={checked} onChange={onChange} disabled={disabled || pending} />
+          {pending && (
+            <Loader2 size={10} className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 animate-spin text-white pointer-events-none" />
           )}
-        />
-        {pending && (
-          <Loader2 size={10} className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 animate-spin text-white" />
-        )}
-      </button>
-    </div>
+        </div>
+      }
+    />
   )
 }
 

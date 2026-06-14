@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { LayoutDashboard, Key, LogOut, ChevronDown, Wallet, Loader2 } from 'lucide-react'
 import { useAuthStore } from '../../stores/auth'
 import { useUIStore } from '../../stores/ui'
@@ -93,10 +94,13 @@ export function TopBarUser() {
         />
       </button>
 
-      {open && (
+      {open && createPortal(
+        // Portal to <body>: the TitleBar uses backdrop-blur (a new stacking
+        // context) which would otherwise trap this fixed popover behind the
+        // page content. At body level its z-[100] sits above the content as intended.
         <div
           ref={popoverRef}
-          className="fixed top-[36px] right-3 z-[100] w-72 rounded-xl border border-border bg-popover shadow-2xl overflow-hidden"
+          className="fixed top-[36px] right-3 z-[100] w-72 rounded-xl border border-border bg-popover shadow-2xl overflow-hidden origin-top-right animate-popover-in"
           style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
         >
           {/* Header — email + balance */}
@@ -136,17 +140,19 @@ export function TopBarUser() {
             <MenuItem icon={LogOut} label="退出登录" destructive
               onClick={() => setLogoutConfirm(true)} />
           </div>
-        </div>
+        </div>,
+        document.body
       )}
 
-      {/* Inline logout confirm (avoid native confirm — breaks Electron focus) */}
-      {logoutConfirm && (
+      {/* Inline logout confirm (avoid native confirm — breaks Electron focus).
+          Portaled to <body> for the same stacking-context reason as the popover. */}
+      {logoutConfirm && createPortal(
         <div
-          className="fixed inset-0 z-[200] bg-black/50 backdrop-blur-sm flex items-center justify-center p-4"
+          className="fixed inset-0 z-[200] bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 animate-overlay-in"
           onClick={() => setLogoutConfirm(false)}
         >
           <div
-            className="bg-popover border border-border rounded-xl shadow-2xl w-[400px] max-w-full p-5 space-y-4"
+            className="bg-popover border border-border rounded-xl shadow-2xl w-[400px] max-w-full p-5 space-y-4 animate-dialog-in"
             onClick={e => e.stopPropagation()}
           >
             <h3 className="text-base font-semibold flex items-center gap-2">
@@ -168,7 +174,8 @@ export function TopBarUser() {
               </button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </>
   )

@@ -383,7 +383,7 @@ export function ImageEditor({ src, sessionId, onClose, onApplied }: Props) {
   const needsMask = mode === 'inpaint' || mode === 'text_replace'
 
   return (
-    <div className="fixed inset-0 z-[200] bg-black/85 backdrop-blur-sm flex flex-col" onClick={running ? undefined : onClose}>
+    <div className="fixed inset-0 z-[200] bg-black/85 backdrop-blur-sm flex flex-col animate-overlay-in" onClick={running ? undefined : onClose}>
       {/* Top bar */}
       <header className="flex items-center gap-3 px-5 py-3 bg-card/95 border-b border-border" onClick={e => e.stopPropagation()}>
         <Wand2 size={16} className="text-primary" />

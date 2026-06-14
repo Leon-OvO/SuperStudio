@@ -38,7 +38,7 @@ interface Props {
   messages: VibeMessageInfo[]
   streamingTaskId: string | null
   running: 'propose' | 'apply' | 'explore' | 'chat' | 'bugfix' | null
-  onRun: (prompt: string, requestId?: string, forceIntent?: 'chat' | 'explore' | 'bugfix' | 'change') => void
+  onRun: (prompt: string, requestId?: string, forceIntent?: 'chat' | 'explore' | 'bugfix' | 'change', attachments?: Array<{ name: string; path: string; mimeType: string }>) => void
   onApply: () => void
   onStop: () => void
   onToggleTaskStatus: (taskId: string, status: 'pending' | 'done' | 'skipped') => void
@@ -237,6 +237,7 @@ export function EditorTabs({
             hasProject={hasProject}
             running={running}
             onRun={onRun}
+            onStop={onStop}
           />
         </div>
         {renderCtxMenu()}

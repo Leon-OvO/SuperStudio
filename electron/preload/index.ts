@@ -1,5 +1,16 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
+import os from 'os'
 import { IPC, type ScheduledTask, type ScheduledTaskRun, type ScheduledTaskInput, type ScheduledRunCompletedEvent, type VideoGenerateRequest, type VideoGenerateResult, type VideoProgressEvent } from '../../src/shared/ipc-types'
+
+// Whether the OS will composite a vibrancy/acrylic backdrop behind the window —
+// macOS always, Windows only on 11+ (build ≥ 22000). MUST mirror the gating in
+// electron/main/index.ts createWindow(), since the renderer goes translucent
+// based on this flag and a transparent window with no OS effect = bare desktop.
+function vibrancyActive(): boolean {
+  if (process.platform === 'darwin') return true
+  if (process.platform === 'win32') return parseInt(os.release().split('.')[2] || '0', 10) >= 22000
+  return false
+}
 
 // Expose type-safe IPC bridge to renderer
 const api = {
@@ -51,7 +62,7 @@ const api = {
     ipcRenderer.invoke(IPC.VIBE_BUGFIX, args),
   vibePropose: (args: { projectPath: string; prompt: string; requestId?: string }) =>
     ipcRenderer.invoke(IPC.VIBE_PROPOSE, args),
-  vibeRun: (args: { projectPath: string; prompt: string; requestId?: string; forceIntent?: 'chat' | 'explore' | 'bugfix' | 'change' }) =>
+  vibeRun: (args: { projectPath: string; prompt: string; requestId?: string; forceIntent?: 'chat' | 'explore' | 'bugfix' | 'change'; attachments?: Array<{ name: string; path: string; mimeType: string }> }) =>
     ipcRenderer.invoke(IPC.VIBE_RUN, args),
   vibeApply: (args: { requestId: string }) => ipcRenderer.invoke(IPC.VIBE_APPLY, args),
   vibeStop: (args: { projectPath: string }) => ipcRenderer.invoke(IPC.VIBE_STOP, args),
@@ -105,12 +116,19 @@ const api = {
 
   // --- Sessions ---
   listSessions: () => ipcRenderer.invoke(IPC.SESSIONS_LIST),
-  createSession: (title?: string) => ipcRenderer.invoke(IPC.SESSIONS_CREATE, title),
+  createSession: (title?: string, opts?: { isScheduled?: boolean; employeeId?: string | null }) =>
+    ipcRenderer.invoke(IPC.SESSIONS_CREATE, title, opts),
   deleteSession: (id: string) => ipcRenderer.invoke(IPC.SESSIONS_DELETE, id),
   renameSession: (id: string, title: string) => ipcRenderer.invoke(IPC.SESSIONS_RENAME, id, title),
   archiveSession: (id: string, archived: boolean) => ipcRenderer.invoke(IPC.SESSIONS_ARCHIVE, id, archived),
   setSessionWorkingDir: (id: string, dir: string) =>
     ipcRenderer.invoke(IPC.SESSIONS_SET_WORKING_DIR, id, dir) as Promise<{ ok: boolean; error?: string; workingDir?: string }>,
+  setSessionAssignee: (id: string, employeeId: string | null) =>
+    ipcRenderer.invoke(IPC.SESSIONS_SET_ASSIGNEE, id, employeeId) as Promise<{ ok: boolean }>,
+  addGroupMember: (id: string, employeeId: string) =>
+    ipcRenderer.invoke(IPC.SESSIONS_ADD_MEMBER, id, employeeId) as Promise<{ ok: boolean; groupEmployeeIds: string[] }>,
+  removeGroupMember: (id: string, employeeId: string) =>
+    ipcRenderer.invoke(IPC.SESSIONS_REMOVE_MEMBER, id, employeeId) as Promise<{ ok: boolean; groupEmployeeIds: string[] }>,
   listMessages: (sessionId: string) => ipcRenderer.invoke(IPC.MESSAGES_LIST, sessionId),
   deleteMessage: (messageId: string) => ipcRenderer.invoke(IPC.MESSAGES_DELETE, messageId),
   deleteMessagesFrom: (messageId: string) => ipcRenderer.invoke(IPC.MESSAGES_DELETE_FROM, messageId),
@@ -130,14 +148,18 @@ const api = {
     overrides?: { providerId?: string; model?: string; mountedSpaceIds?: string[]; imageSize?: string; imageQuality?: string; imageCount?: number; computerMode?: boolean; forceImage?: boolean }
   ) => ipcRenderer.invoke(IPC.AGENT_RUN, sessionId, message, attachments, overrides),
   stopAgent: (sessionId: string) => ipcRenderer.invoke(IPC.AGENT_STOP, sessionId),
+  // --- Group chat (multi-agent) ---
+  groupRun: (sessionId: string, message?: string) =>
+    ipcRenderer.invoke(IPC.GROUP_RUN, { sessionId, message }) as Promise<{ started: boolean; speakers?: number; error?: string }>,
+  stopGroup: (sessionId: string) => ipcRenderer.invoke(IPC.GROUP_STOP, sessionId),
   classifyIntent: (message: string, providerId: string, model: string) =>
     ipcRenderer.invoke(IPC.AGENT_CLASSIFY_INTENT, { message, providerId, model }) as Promise<string>,
   onAgentProgress: (cb: (event: unknown) => void) => {
     ipcRenderer.on(IPC.AGENT_PROGRESS, (_e, data) => cb(data))
     return () => ipcRenderer.removeAllListeners(IPC.AGENT_PROGRESS)
   },
-  onAgentDelta: (cb: (data: { sessionId: string; messageId: string; delta: string }) => void) => {
-    const listener = (_e: unknown, data: { sessionId: string; messageId: string; delta: string }) => cb(data)
+  onAgentDelta: (cb: (data: { sessionId: string; messageId: string; delta: string; speakerEmployeeId?: string }) => void) => {
+    const listener = (_e: unknown, data: { sessionId: string; messageId: string; delta: string; speakerEmployeeId?: string }) => cb(data)
     ipcRenderer.on(IPC.AGENT_DELTA, listener)
     return () => ipcRenderer.removeListener(IPC.AGENT_DELTA, listener)
   },
@@ -205,6 +227,14 @@ const api = {
   deleteGalleryItem: (id: number) => ipcRenderer.invoke(IPC.GALLERY_DELETE, id),
   batchDeleteGallery: (ids: number[]) => ipcRenderer.invoke(IPC.GALLERY_BATCH_DELETE, ids),
   batchSaveGallery: (ids: number[]) => ipcRenderer.invoke(IPC.GALLERY_BATCH_SAVE, ids),
+  canvasGenerateOne: (params: { prompt: string; size?: string; quality?: string; n?: number; referenceImagePaths?: string[]; sceneLabel?: string; variantGroupId?: string }) =>
+    ipcRenderer.invoke(IPC.CANVAS_GENERATE_ONE, params) as Promise<{ ok: boolean; paths: string[] }>,
+  canvasExportGroup: (variantGroupId: string) =>
+    ipcRenderer.invoke(IPC.CANVAS_EXPORT_GROUP, variantGroupId) as Promise<{ canceled?: boolean; saved: number; failures?: string[]; targetDir?: string }>,
+  canvasExpandPrompt: (params: { prompt: string; referenceImagePaths?: string[] }) =>
+    ipcRenderer.invoke(IPC.CANVAS_EXPAND_PROMPT, params) as Promise<{ ok: boolean; text?: string; error?: string }>,
+  exportFilesToDir: (paths: string[]) =>
+    ipcRenderer.invoke(IPC.FILE_EXPORT_TO_DIR, paths) as Promise<{ canceled?: boolean; saved: number; failures?: string[]; targetDir?: string }>,
   importGallery: () => ipcRenderer.invoke(IPC.GALLERY_IMPORT) as Promise<{
     canceled: boolean
     imported: number
@@ -239,6 +269,7 @@ const api = {
 
   // --- Window controls ---
   platform: process.platform,
+  vibrancy: vibrancyActive(),
   winMinimize: () => ipcRenderer.send(IPC.WIN_MINIMIZE),
   winMaximize: () => ipcRenderer.send(IPC.WIN_MAXIMIZE),
   winClose: () => ipcRenderer.send(IPC.WIN_CLOSE),
@@ -349,7 +380,7 @@ const api = {
     ipcRenderer.invoke(IPC.LOG_APPEND, entry),
 
   // --- Workflow ---
-  listWorkflows: () => ipcRenderer.invoke(IPC.WORKFLOWS_LIST),
+  listWorkflows: (opts?: { kind?: string }) => ipcRenderer.invoke(IPC.WORKFLOWS_LIST, opts),
   saveWorkflow: (workflow: unknown) => ipcRenderer.invoke(IPC.WORKFLOWS_SAVE, workflow),
   deleteWorkflow: (id: string) => ipcRenderer.invoke(IPC.WORKFLOWS_DELETE, id),
   runWorkflow: (workflowId: string, variables?: Record<string, string>) =>

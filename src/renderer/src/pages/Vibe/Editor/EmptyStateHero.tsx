@@ -1,26 +1,15 @@
-import { useEffect, useRef, useState } from 'react'
-import { Send, Loader2, Sparkles, FolderOpen, MessageSquare, Search, Bug, Wrench, Wand2 } from 'lucide-react'
-import { Select } from '../../../components/ui/Select'
+import { useState } from 'react'
+import { Loader2, Sparkles, FolderOpen } from 'lucide-react'
+import { VibeComposer, type VibeMode } from '../Composer'
+import type { ComposerAttachment } from '../../../lib/attachments'
 import type { VibeIntent } from '../../../../../shared/ipc-types'
 
 interface Props {
   hasProject: boolean
   running: 'propose' | 'apply' | 'explore' | 'chat' | 'bugfix' | null
   /** Unified send: auto-detect intent unless forceIntent given (manual lock). */
-  onRun: (prompt: string, requestId?: string, forceIntent?: VibeIntent) => void
-}
-
-const INTENT_META: Record<VibeIntent, {
-  label: string
-  Icon: typeof MessageSquare
-  hint: string
-  color: string  // tailwind text color for active state
-  bg: string     // tailwind bg color for active state
-}> = {
-  chat:    { label: '对话',     Icon: MessageSquare, hint: '随便聊聊，不读项目文件', color: 'text-slate-700 dark:text-slate-200', bg: 'bg-slate-500/15 border-slate-500/40' },
-  explore: { label: '探索',     Icon: Search,        hint: '让 AI 读代码、回答问题（只读）', color: 'text-sky-700 dark:text-sky-300', bg: 'bg-sky-500/15 border-sky-500/40' },
-  bugfix:  { label: '修复 BUG', Icon: Bug,           hint: '描述 bug，AI 自动定位并修复', color: 'text-rose-700 dark:text-rose-300', bg: 'bg-rose-500/15 border-rose-500/40' },
-  change:  { label: '新需求',   Icon: Wrench,        hint: '把需求拆成任务列表，逐个实施', color: 'text-primary', bg: 'bg-primary/15 border-primary/40' }
+  onRun: (prompt: string, requestId?: string, forceIntent?: VibeIntent, attachments?: ComposerAttachment[]) => void
+  onStop?: () => void
 }
 
 const EXAMPLES: Record<VibeIntent, string[]> = {
@@ -44,23 +33,17 @@ const EXAMPLES: Record<VibeIntent, string[]> = {
   ]
 }
 
-export function EmptyStateHero({ hasProject, running, onRun }: Props) {
+export function EmptyStateHero({ hasProject, running, onRun, onStop }: Props) {
   const [input, setInput] = useState('')
-  const [mode, setMode] = useState<'auto' | VibeIntent>('auto')
-  const taRef = useRef<HTMLTextAreaElement>(null)
-
-  useEffect(() => {
-    const ta = taRef.current
-    if (!ta) return
-    ta.style.height = 'auto'
-    ta.style.height = Math.min(ta.scrollHeight, 300) + 'px'
-  }, [input])
+  const [mode, setMode] = useState<VibeMode>('auto')
+  const [attachments, setAttachments] = useState<ComposerAttachment[]>([])
 
   function submit() {
     const t = input.trim()
-    if (!t || running) return
-    onRun(t, undefined, mode === 'auto' ? undefined : mode)
+    if ((!t && attachments.length === 0) || running) return
+    onRun(t, undefined, mode === 'auto' ? undefined : mode, attachments.length ? attachments : undefined)
     setInput('')
+    setAttachments([])
   }
 
   if (!hasProject) {
@@ -95,64 +78,21 @@ export function EmptyStateHero({ hasProject, running, onRun }: Props) {
         </p>
       </div>
 
-      <div className="space-y-2">
-        <div className="flex items-center gap-1.5">
-          <span className="text-[11px] text-muted-foreground">模式</span>
-          <Select
-            value={mode}
-            onChange={v => setMode(v as 'auto' | VibeIntent)}
-            disabled={isRunning}
-            popoverWidth={180}
-            options={[
-              { value: 'auto', label: '自动识别', icon: <Wand2 size={13} /> },
-              { value: 'chat', label: `${INTENT_META.chat.label}（不读项目）` },
-              { value: 'explore', label: `${INTENT_META.explore.label}（只读代码）` },
-              { value: 'bugfix', label: `${INTENT_META.bugfix.label}（自动定位修复）` },
-              { value: 'change', label: `${INTENT_META.change.label}（拆成任务）` }
-            ]}
-          />
-          <span className="text-[11px] text-muted-foreground ml-auto">{mode === 'auto' ? 'AI 自动判断' : `已锁定：${INTENT_META[mode].label}`}</span>
-        </div>
-
-        <textarea
-          ref={taRef}
-          value={input}
-          onChange={e => setInput(e.target.value)}
-          onKeyDown={e => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-              e.preventDefault()
-              submit()
-            }
-          }}
-          rows={5}
-          disabled={isRunning}
-          placeholder={
-            mode === 'auto'    ? '比如：加一个深色模式切换按钮 / 这段代码怎么工作 / 保存点了没反应…' :
-            mode === 'chat'    ? '随便聊点什么…' :
-            mode === 'explore' ? '问 AI 关于这个项目的任何问题…' :
-            mode === 'bugfix'  ? '描述 BUG：症状、复现步骤、报错信息…' :
-                                 '描述你要做的改动，AI 会拆解成可执行任务…'
-          }
-          className="w-full resize-none rounded-xl bg-card border border-border px-4 py-3 text-sm leading-relaxed outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary/40 disabled:opacity-50 min-h-[120px] shadow-sm"
-          style={{ maxHeight: '300px' }}
-          autoFocus
-        />
-        <div className="flex items-center justify-between gap-2">
-          <div className="text-[11px] text-muted-foreground/60">
-            Enter 发送 · ⇧Enter 换行
-          </div>
-          <button
-            onClick={submit}
-            disabled={!input.trim() || isRunning}
-            className="flex items-center gap-1.5 h-9 px-4 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            {isRunning
-              ? <><Loader2 size={13} className="animate-spin" /> 运行中…</>
-              : <><Send size={13} /> {mode === 'auto' ? '发送' : INTENT_META[mode].label}</>
-            }
-          </button>
-        </div>
-      </div>
+      <VibeComposer
+        value={input}
+        onChange={setInput}
+        mode={mode}
+        onModeChange={setMode}
+        running={running}
+        onSubmit={submit}
+        onStop={onStop}
+        autoFocus
+        minHeight={100}
+        maxHeight={300}
+        autoPlaceholder="比如：加一个深色模式切换按钮 / 这段代码怎么工作 / 保存点了没反应…"
+        attachments={attachments}
+        setAttachments={setAttachments}
+      />
 
       {running && (
         <div className="flex items-center gap-2 text-xs text-muted-foreground bg-primary/5 px-3 py-2 rounded-lg border border-primary/20">

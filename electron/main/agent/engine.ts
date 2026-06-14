@@ -21,6 +21,8 @@ import { publishXiaohongshuNote } from '../services/web-publish-playwright'
 import { saveGalleryItem } from '../services/gallery'
 import { mcpManager, type McpTool } from '../services/mcp'
 import { getActiveSkillsForScenario, type InstalledSkill } from '../services/skills-db'
+import { getEmployee } from '../services/employees-db'
+import { getSoul } from '../services/talent-pool'
 import { buildSkillTools } from './skill-tools'
 import { notifyTaskComplete } from '../services/tray'
 import os from 'os'
@@ -57,6 +59,29 @@ interface RunParams {
    *  when the session model is a chat model — uses the configured DEFAULT image
    *  provider/model. Lets a single conversation mix chat turns and image turns. */
   forceImage?: boolean
+  /** Group chat: this run is ONE employee's turn inside a multi-agent round. When
+   *  set, runAgent uses this employee's model + soul persona (not the session's
+   *  single binding), skips inserting a user message (the orchestrator inserts it
+   *  once per round), builds a speaker-labeled transcript so the agent sees who
+   *  said what, tags the produced message with speakerEmployeeId, and carries
+   *  `more` (are there later speakers this round) into AGENT_DONE so the renderer
+   *  keeps the running state until the round ends. Tools/skills work as normal. */
+  groupTurn?: {
+    speakerEmployeeId: string
+    speakerName: string
+    soulPrompt: string
+    providerId: string
+    modelId: string
+    memberNames: string[]
+    more: boolean
+    /** 'discuss' = short in-character opinion (default); 'collaborate' = actually
+     *  produce part of a shared deliverable (long output + file tools encouraged). */
+    mode?: 'discuss' | 'collaborate'
+    /** Collaborate mode: the concrete task the coordinator assigned this speaker. */
+    task?: string
+    /** Collaborate mode: the shared deliverable filename everyone writes into. */
+    deliverable?: string
+  }
 }
 
 const runningAgents = new Map<string, AbortController>()
@@ -86,11 +111,26 @@ function readSessionWorkingDir(sessionId: string): string {
   } catch { return '' }
 }
 
+/** A chat session can be bound to a hired employee ("找某员工单独训话/咨询"):
+ *  their soul persona is injected into the system prompt and their chosen model
+ *  becomes the default (still overridable per-session). Returns null when the
+ *  session is unbound, the employee was fired, or its soul is missing. */
+function readSessionEmployee(sessionId: string): { name: string; providerId: string; modelId: string; soulPrompt: string } | null {
+  try {
+    const row = dbGet<{ employee_id: string | null }>(`SELECT employee_id FROM sessions WHERE id = ?`, [sessionId])
+    if (!row?.employee_id) return null
+    const emp = getEmployee(row.employee_id)
+    if (!emp) return null
+    const soul = getSoul(emp.soulId)
+    return { name: emp.name, providerId: emp.providerId, modelId: emp.modelId, soulPrompt: soul?.systemPrompt ?? '' }
+  } catch { return null }
+}
+
 export async function runAgent(
   params: RunParams,
   win: BrowserWindow
 ): Promise<void> {
-  const { sessionId, message, attachments = [], overrideProviderId, overrideModel, mountedSpaceIds = [], imageSize, imageQuality, imageCount, scheduledContext = false, computerMode = false, forceImage = false } = params
+  const { sessionId, message, attachments = [], overrideProviderId, overrideModel, mountedSpaceIds = [], imageSize, imageQuality, imageCount, scheduledContext = false, computerMode = false, forceImage = false, groupTurn } = params
   const runStartTime = Date.now()
   console.log('[Agent] runAgent called', { sessionId, msgLen: message.length, atts: attachments.length, overrideProviderId, overrideModel })
   // Set when a Computer Use run minimizes the main window (to get it out of the
@@ -106,8 +146,14 @@ export async function runAgent(
     abort.signal.aborted || runningAgents.get(sessionId) !== abort
 
   const settings = getSettings()
-  const effectiveProviderId = overrideProviderId || settings.defaultChatProviderId
-  const effectiveModel = overrideModel || settings.defaultChatModel
+  // Employee-bound session: the bound employee's model is the default (below the
+  // explicit per-session override), and their soul persona is injected into the
+  // system prompt further down.
+  const boundEmployee = readSessionEmployee(sessionId)
+  // Group turn → this speaker's model wins. Otherwise: per-session override, then
+  // the (single) bound employee, then the global default.
+  const effectiveProviderId = groupTurn?.providerId || overrideProviderId || boundEmployee?.providerId || settings.defaultChatProviderId
+  const effectiveModel = groupTurn?.modelId || overrideModel || boundEmployee?.modelId || settings.defaultChatModel
   const allProviders = getProviders()
   const effectiveProviderName = allProviders.find(p => p.id === effectiveProviderId)?.name || effectiveProviderId
   console.log('[Agent] resolved model', { provider: effectiveProviderId, model: effectiveModel })
@@ -139,17 +185,21 @@ export async function runAgent(
   // below) can exclude THIS turn's user message when finding the prior one.
   let userMsgId = ''
   try {
-    // Save user message
-    userMsgId = randomUUID()
-    dbRun(
-      `INSERT INTO messages (id, session_id, role, content, attachments, created_at) VALUES (?, ?, 'user', ?, ?, ?)`,
-      [
-        userMsgId, sessionId, message,
-        attachments.length ? JSON.stringify(attachments) : null,
-        Date.now()
-      ]
-    )
-    console.log('[Agent] user message saved', userMsgId)
+    // Save user message — EXCEPT for a group turn, where the orchestrator already
+    // inserted the user's message once for the whole round (each speaker turn must
+    // not re-insert it).
+    if (!groupTurn) {
+      userMsgId = randomUUID()
+      dbRun(
+        `INSERT INTO messages (id, session_id, role, content, attachments, created_at) VALUES (?, ?, 'user', ?, ?, ?)`,
+        [
+          userMsgId, sessionId, message,
+          attachments.length ? JSON.stringify(attachments) : null,
+          Date.now()
+        ]
+      )
+      console.log('[Agent] user message saved', userMsgId)
+    }
   } catch (e) {
     console.error('[Agent] failed to save user message', e)
     win.webContents.send(IPC.AGENT_ERROR, { sessionId, error: `保存用户消息失败：${String(e)}` })
@@ -200,7 +250,38 @@ export async function runAgent(
     // explicitly picked this session and is never restored on startup.
     const workingDir = readSessionWorkingDir(sessionId)
     if (workingDir) registerApprovedRoot(workingDir)
-    const systemPrompt = buildSystemPrompt(kbContext, mcpTools, activeSkills, scheduledContext, workingDir)
+    // Bound employee (single chat) OR group speaker → its soul persona becomes the
+    // conversation's identity (woven into the base section inside buildSystemPrompt,
+    // so it isn't overridden by the generic "you are an assistant" line). A group
+    // turn appends discussion framing so the agent reacts to colleagues in character.
+    const groupRoster = groupTurn ? groupTurn.memberNames.join('、') : ''
+    const groupCollab = groupTurn?.mode === 'collaborate'
+    const persona = groupTurn
+      ? {
+          name: groupTurn.speakerName,
+          prompt: (groupTurn.soulPrompt ? groupTurn.soulPrompt + '\n\n' : '') + (groupCollab
+            ? // 协作产出模式：实际动手做、写进共享交付物。
+              `## 你正在和同事协作产出一份交付物\n` +
+              `团队成员：${groupRoster}。这是项目协作，不是闲聊——目标是【真正做出东西】，不是只发表意见。\n` +
+              (groupTurn.deliverable ? `共享交付物文件：「${groupTurn.deliverable}」，就在你的工作目录里，全组共写这一个文件。\n` : '') +
+              `你这一轮的任务：${groupTurn.task || '推进交付物中你最擅长的部分'}\n` +
+              `要求：\n` +
+              `- 【真的动手】用工具完成：先 file_read 读「${groupTurn.deliverable || '交付物'}」看别人写到哪了，再 file_write 把你负责的部分【补充/续写】进去；【不要覆盖】同事已写好的内容（在已有内容基础上增改）。需要资料就 web_search，需要配图就生成。\n` +
+              `- 内容要完整、专业、可直接用，不要只给提纲或"我建议…"。这是交付物正文，不是评论。\n` +
+              `- 写完后用一两句话说明你这轮补充/修改了哪部分即可，正文已在文件里、不必复述。`
+            : // 讨论模式：简短发表观点。
+              `## 这是一个多人讨论群\n` +
+              `群里的同事有：${groupRoster}，以及提出话题的用户。下面的对话记录里，每条 AI 发言前都用【名字】标注了是谁说的。\n` +
+              `现在【轮到你（${groupTurn.speakerName}）发言】。请紧扣话题、对同事已说的观点做出回应（赞同/补充/质疑/不同角度），体现你的专业视角；像真人开会一样自然简洁，别复述别人的话，别替别人发言，也不要在自己发言前加“${groupTurn.speakerName}：”这样的前缀。\n` +
+              `- 【不擅长就让贤】如果这个话题确实不在你的专业领域、你也没有比同事更有价值的观点，就只用一句话说明“这块我不在行，建议以 XX 的意见为准”把话筒交出去——不要不懂装懂，也不要为了凑数硬说一通。\n` +
+              `需要查资料/读写文件/生成图片等时，照常调用你的工具与技能（与平时对话一样）。`) +
+            // 群聊可暂停等用户拍板：调 ask_user 会把整轮暂停、等用户选完再自动继续。
+            `\n\n## 需要用户拍板时（ask_user）\n如果遇到【必须由用户决定】才能继续的关键选择（多个候选方案、语言/范围/口径含糊等），可以调用 ask_user 把 2~4 个选项给用户——这会【暂停整轮${groupCollab ? '协作' : '讨论'}】等用户选择，选完会自动接着进行。请克制使用：能合理默认的就别打断、直接按最合理默认推进；只在真正卡住、需要用户拍板时才问，一轮里尽量不要反复打断。`
+        }
+      : boundEmployee?.soulPrompt
+        ? { name: boundEmployee.name, prompt: boundEmployee.soulPrompt }
+        : undefined
+    const systemPrompt = buildSystemPrompt(kbContext, mcpTools, activeSkills, scheduledContext, workingDir, persona)
 
     const toolCallLog: Array<{ toolName: string; args: unknown; result: unknown }> = []
     let stepIndex = 0
@@ -1420,7 +1501,10 @@ export async function runAgent(
     // as 网页浏览 carries a whitelist (['web_open','web_search']) that would
     // otherwise strip it. There is no engine-side pause — the tool just records
     // the choices and tells the model to stop; the user's click comes back as
-    // the next message (two-turn dance).
+    // the next message (two-turn dance). In a GROUP turn this is what lets the
+    // round pause: the asking speaker's DONE carries more=false (below) so the
+    // renderer stops + the card is clickable, and the orchestrator suspends the
+    // round until the user's answer arrives as the next message.
     tools = {
       ...tools,
       ask_user: tool({
@@ -1535,7 +1619,12 @@ export async function runAgent(
     }
 
 
-    const history = await buildMessageHistory(sessionId, message, attachments, effectiveModel)
+    const history = groupTurn
+      ? buildGroupHistory(sessionId, groupTurn.speakerName, effectiveModel,
+          groupTurn.mode === 'collaborate'
+            ? `（轮到你「${groupTurn.speakerName}」。${groupTurn.task ? '你的任务：' + groupTurn.task + '。' : ''}请实际动手，按系统提示把你负责的部分写进交付物文件。）`
+            : undefined)
+      : await buildMessageHistory(sessionId, message, attachments, effectiveModel)
     // Effective protocol (not raw provider.type) — so an auto-routed Claude model
     // on a SuperCode 'custom' provider still gets Anthropic prompt-caching + thinking.
     const providerConfig = allProviders.find(p => p.id === effectiveProviderId)
@@ -1609,7 +1698,7 @@ export async function runAgent(
     // the reasoning_content channel and leave the answer empty).
     let reasoningText = ''
     const sendDelta = (delta: string): void => {
-      if (!isStaleRun()) win.webContents.send(IPC.AGENT_DELTA, { sessionId, messageId: asstMsgId, delta })
+      if (!isStaleRun()) win.webContents.send(IPC.AGENT_DELTA, { sessionId, messageId: asstMsgId, delta, ...(groupTurn ? { speakerEmployeeId: groupTurn.speakerEmployeeId } : {}) })
     }
     const closeThink = (): void => {
       if (inReasoning) { inReasoning = false; sendDelta('</think>\n\n') }
@@ -1618,9 +1707,10 @@ export async function runAgent(
     // nudge) are appended after history for the Layer 2 one-shot continuation.
     // Anthropic prompt caching: stable system prefix (cached) + volatile suffix
     // (not cached) as two leading system messages; other providers use `system:`.
-    const makeStream = (extra: CoreMessage[]) => useAnthropicCache
+    const makeStream = (extra: CoreMessage[], override?: Partial<Parameters<typeof streamText>[0]>) => useAnthropicCache
       ? streamText({
           ...baseOpts,
+          ...override,
           messages: [
             { role: 'system' as const, content: systemPrompt.stable, providerOptions: { anthropic: { cacheControl: { type: 'ephemeral' as const } } } },
             ...(systemPrompt.volatile ? [{ role: 'system' as const, content: systemPrompt.volatile }] : []),
@@ -1628,7 +1718,7 @@ export async function runAgent(
             ...extra
           ]
         } as Parameters<typeof streamText>[0])
-      : streamText({ ...baseOpts, system: systemPrompt.full, messages: [...history, ...extra] })
+      : streamText({ ...baseOpts, ...override, system: systemPrompt.full, messages: [...history, ...extra] })
     // Consume ONE stream pass: stream reasoning + answer deltas, accumulate
     // fullText/chunkCount, capture errors. Mutates the shared state above so a
     // continuation pass appends onto the same message.
@@ -1663,6 +1753,7 @@ export async function runAgent(
       }
     }
     console.log('[Agent] streaming started')
+    let retriedEmpty = false
     let result = makeStream([])
     await consumeStream(result)
     // Watchdog tripped → surface a clear error instead of a silent empty bubble.
@@ -1692,6 +1783,32 @@ export async function runAgent(
       Promise.resolve(result.finishReason).catch(() => undefined as string | undefined),
       new Promise<string | undefined>(res => { const t = setTimeout(() => res(undefined), POST_STREAM_TIMEOUT_MS); (t as { unref?: () => void }).unref?.() })
     ])
+
+    // Empty-output recovery. The model "finished" (often finishReason='tool-calls'
+    // or 'length') but transmitted NOTHING parseable — no text, no captured tool
+    // call, no reasoning. This is the relay / reasoning-model "空响应" quirk, and is
+    // more likely on employee single-chats whose larger persona prompt pushes a
+    // reasoning model to burn its whole output budget before emitting the tool call
+    // it intended (the reported "员工私聊调用本地 skill/MCP 失败"). Retry the turn
+    // ONCE with extended thinking forced OFF so the full budget goes to the actual
+    // answer / tool call. Gated on "nothing happened" (no tools executed, no text)
+    // so we never re-run side effects; for non-Anthropic providers the thinking
+    // override is a no-op and this is simply a transient-glitch retry.
+    const producedNothing = (): boolean =>
+      !fullText.trim() && chunkCount === 0 && toolCallLog.length === 0 && !reasoningText.trim()
+    if (producedNothing() && !streamErr && !isStaleRun() && !retriedEmpty) {
+      retriedEmpty = true
+      console.warn('[Agent] empty turn — retrying once with thinking disabled', { finishReason: finishReasonForLog })
+      const resultR = makeStream([], thinkingStreamOpts(providerType, 'fast', effectiveModel))
+      await consumeStream(resultR)
+      if (stalled && !streamErr) {
+        streamErr = new Error('AI 长时间无响应（可能是模型、网络或代理异常），已自动停止。请重试，或到「设置 → 模型 / 网络代理」检查配置。')
+      }
+      try { usage = await resultR.usage } catch { /* keep pass-1 usage */ }
+      try { finishReasonForLog = await resultR.finishReason } catch { /* keep pass-1 finishReason */ }
+      result = resultR
+      if (streamErr && !fullText.trim()) throw streamErr
+    }
 
     // Layer 2 — one-shot deterministic continuation. If the model genuinely ran
     // out of room (finishReason='length') or hit the per-turn step ceiling while
@@ -1844,14 +1961,15 @@ export async function runAgent(
     dbRun(
       `INSERT INTO messages
          (id, session_id, role, content, tool_calls, meta, created_at,
-          input_tokens, output_tokens, cost_usd, model)
-       VALUES (?, ?, 'assistant', ?, ?, ?, ?, ?, ?, ?, ?)`,
+          input_tokens, output_tokens, cost_usd, model, speaker_employee_id)
+       VALUES (?, ?, 'assistant', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         asstMsgId, sessionId, fullText,
         toolCallLog.length ? JSON.stringify(toolCallLog) : null,
         meta,
         Date.now(),
-        inTok, outTok, costUsd, effectiveModel
+        inTok, outTok, costUsd, effectiveModel,
+        groupTurn?.speakerEmployeeId ?? null
       ]
     )
 
@@ -1885,7 +2003,9 @@ export async function runAgent(
       }
     }
 
-    const sessionTitle = tryAutoTitle(sessionId, message, false, false)
+    // Group sessions already carry a meaningful title (群聊 · …); don't let a
+    // speaker's turn auto-rename it.
+    const sessionTitle = groupTurn ? null : tryAutoTitle(sessionId, message, false, false)
     const metaParsed = {
       model: effectiveModel,
       providerId: effectiveProviderId,
@@ -1898,13 +2018,19 @@ export async function runAgent(
       ...(debugBundle ? { debug: debugBundle } : {})
     }
 
+    // If THIS group turn asked the user (ask_user), the round must pause here:
+    // force more=false so the renderer clears the running state and the choice
+    // card becomes clickable. The orchestrator detects the same ask_user and
+    // suspends the round until the user's answer arrives.
+    const groupAskedUser = !!groupTurn && toolCallLog.some(t => t.toolName === 'ask_user')
     win.webContents.send(IPC.AGENT_DONE, {
       sessionId,
       messageId: asstMsgId,
       content: fullText,
       toolCallLog,
       meta: metaParsed,
-      ...(sessionTitle ? { sessionTitle } : {})
+      ...(sessionTitle ? { sessionTitle } : {}),
+      ...(groupTurn ? { more: groupTurn.more && !groupAskedUser, speakerEmployeeId: groupTurn.speakerEmployeeId } : {})
     })
     notifyTaskComplete(() => win, {
       title: `${BRAND.productName}：回复已完成`,
@@ -2006,6 +2132,45 @@ function extractArtifactPaths(toolCallsJson: string | null): string[] {
     }
     return paths
   } catch { return [] }
+}
+
+/** Build the conversation for ONE group-chat speaker's turn. Unlike the single
+ *  chat history, multiple employees produce assistant messages here, so each
+ *  assistant line is prefixed 【name】 to make the speaker explicit; the human's
+ *  messages stay role=user. A trailing user-role nudge hands the floor to the
+ *  current speaker so the model produces their turn (and can call tools). */
+/** Hard cap (tokens) on the group-chat transcript fed to each member's turn —
+ *  see the budget comment below. Group turns don't need a 76.8K window of chat. */
+const GROUP_HISTORY_TOKEN_CAP = 32000
+
+function buildGroupHistory(sessionId: string, speakerName: string, effectiveModel?: string, nudge?: string): CoreMessage[] {
+  const rows = dbAll<{ role: string; content: string; speaker_employee_id: string | null }>(
+    `SELECT role, content, speaker_employee_id FROM messages
+     WHERE session_id = ? AND role IN ('user','assistant') ORDER BY created_at ASC LIMIT 200`,
+    [sessionId]
+  )
+  const nameCache = new Map<string, string>()
+  const nameOf = (id: string | null): string => {
+    if (!id) return '助手'
+    if (!nameCache.has(id)) nameCache.set(id, getEmployee(id)?.name ?? '某员工')
+    return nameCache.get(id)!
+  }
+  const msgs: Array<{ role: 'user' | 'assistant'; content: string }> = []
+  for (const r of rows) {
+    const content = (r.content || '').trim()
+    if (!content) continue
+    if (r.role === 'user') msgs.push({ role: 'user', content })
+    else msgs.push({ role: 'assistant', content: `【${nameOf(r.speaker_employee_id)}】${content}` })
+  }
+  // Hand the floor to this speaker (last message must be user-role so the model replies).
+  msgs.push({ role: 'user', content: nudge || `（请「${speakerName}」发言）` })
+  // Cap the group transcript budget: an unknown model defaults to a 128K window →
+  // 0.6 = 76.8K, far more recent chat than a group turn needs. A 32K hard cap keeps
+  // ample "谁说了什么" context (trim drops only the OLDEST turns) while cutting the
+  // per-member token cost — N members each re-send the transcript every round.
+  const window = modelContextWindow(effectiveModel)
+  const budget = Math.min(Math.floor(window * 0.6), GROUP_HISTORY_TOKEN_CAP)
+  return trimHistoryToBudget(msgs, budget) as CoreMessage[]
 }
 
 async function buildMessageHistory(
@@ -2123,12 +2288,19 @@ async function buildMessageHistory(
   return [...budgetedHistory, { role: 'user' as const, content: userContent }]
 }
 
-function buildSystemPrompt(kbContext: string, mcpTools: McpTool[] = [], skills: InstalledSkill[] = [], scheduledContext = false, workingDir = ''): { stable: string; volatile: string; full: string } {
+function buildSystemPrompt(kbContext: string, mcpTools: McpTool[] = [], skills: InstalledSkill[] = [], scheduledContext = false, workingDir = '', persona?: { name: string; prompt: string }): { stable: string; volatile: string; full: string } {
   const desktop = (() => {
     try { return app.getPath('desktop') } catch { return '' }
   })()
 
-  const base = `You are ${BRAND.productName}, a powerful AI productivity assistant. You can generate images, create videos, search the web, analyze files, and manipulate Excel data. Always be helpful and proactive. When a task requires multiple steps, execute them all without asking for confirmation between steps.\nAlways reply in the user's language — default to 简体中文 unless the user writes in another language, in which case match it.`
+  // When the session is bound to a hired employee, that employee's soul persona
+  // IS the assistant's identity for this conversation — not a generic helper. We
+  // weave it into the base (the very first, highest-authority section) so the
+  // persona isn't diluted by a later "You are <product>, an assistant" line. The
+  // generic capabilities are kept, but framed as things this employee can also do.
+  const base = persona
+    ? `你现在的身份是 AI 员工「${persona.name}」——用户在自己公司里雇用的员工，正在与你单独对话。请【始终】保持这个身份：用 TA 的性格、专业背景、立场和说话口吻来回应。这是优先级最高的设定，下面的人设细节不可被忽略或淡化，也不要自称"AI 助手/${BRAND.productName}"。\n\n===== 你的人设（务必入戏）=====\n${persona.prompt.trim()}\n===== 人设结束 =====\n\n在保持以上人设的前提下，你也具备这些通用能力：生成图像、创建视频、联网搜索、分析文件、处理 Excel 数据。任务需要多步时一次性执行完，不要在步骤之间反复确认。\n始终用用户的语言回复——默认简体中文，用户用别的语言就匹配它。`
+    : `You are ${BRAND.productName}, a powerful AI productivity assistant. You can generate images, create videos, search the web, analyze files, and manipulate Excel data. Always be helpful and proactive. When a task requires multiple steps, execute them all without asking for confirmation between steps.\nAlways reply in the user's language — default to 简体中文 unless the user writes in another language, in which case match it.`
 
   // Prompt-injection hardening. Tool results (web pages, files, KB chunks, MCP
   // payloads) are UNTRUSTED DATA — a poisoned page/doc must not be able to

@@ -3,6 +3,7 @@ import { ArrowLeft, Plus, Pencil, Trash2, Save, X, Bot, ShieldCheck } from 'luci
 import { cn } from '../../lib/utils'
 import { toast } from '../../components/ui/Toast'
 import { useConfirmDialog } from '../../components/ui/ConfirmDialog'
+import { Switch } from '../../components/ui/Switch'
 import type { AppSettings, WebhookBot, WebhookBotType } from '../../../../shared/ipc-types'
 
 interface Props {
@@ -181,21 +182,13 @@ export function BotsManager({ onBack }: Props) {
                     <p className="text-[11px] text-muted-foreground/70 truncate mt-1 font-mono">{maskUrl(bot.url)}</p>
                   </div>
                   <div className="flex items-center gap-1 shrink-0">
-                    <button
-                      onClick={() => handleToggle(bot)}
+                    <Switch
+                      size="sm"
+                      checked={bot.enabled}
+                      onChange={() => handleToggle(bot)}
                       title={bot.enabled ? '点击停用' : '点击启用'}
-                      role="switch"
-                      aria-checked={bot.enabled}
-                      className={cn(
-                        'relative inline-flex h-[18px] w-8 shrink-0 items-center rounded-full transition-colors mr-1',
-                        bot.enabled ? 'bg-primary' : 'bg-muted-foreground/30 hover:bg-muted-foreground/40'
-                      )}
-                    >
-                      <span className={cn(
-                        'inline-block h-3.5 w-3.5 transform rounded-full bg-background shadow-sm transition-transform',
-                        bot.enabled ? 'translate-x-[15px]' : 'translate-x-0.5'
-                      )} />
-                    </button>
+                      className="mr-1"
+                    />
                     <button
                       onClick={() => setEditing(bot)}
                       title="编辑"

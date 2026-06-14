@@ -90,13 +90,18 @@ async function doOneRequest(
   if (referenceImagePaths?.length) {
     // /v1/images/edits — OpenAI spec only accepts n=1, so the outer loop is
     // what produces multiple variants.
-    const buildForm = () => {
+    // gpt-image 编辑接口的 input_fidelity:'high' 会显著更忠实地保留参考图里的人脸、
+    // 细节与材质（解决"换图后人脸全变/质感发假"）。仅对 gpt-image 系列尝试；若网关
+    // 不认该字段而报错，下面会自动去掉它重试一次，避免丢参考图降级成纯文生图。
+    const fidelitySupported = /gpt-image/i.test(modelName)
+    const buildForm = (withFidelity: boolean) => {
       const fd = new FormData()
       fd.append('model', modelName)
       fd.append('prompt', prompt)
       fd.append('size', size)
       fd.append('n', '1')
       if (quality) fd.append('quality', quality)
+      if (withFidelity) fd.append('input_fidelity', 'high')
       for (let i = 0; i < referenceImagePaths.length; i++) {
         const imgPath = referenceImagePaths[i]
         const ext = imgPath.split('.').pop()?.toLowerCase() || 'png'
@@ -124,15 +129,17 @@ async function doOneRequest(
     let lastHttpStatus: number | null = null
     let lastHttpBody = ''
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      // Only attempt 1 carries input_fidelity; if it HTTP-errors we drop it on the retry.
+      const useFidelity = fidelitySupported && attempt === 1
       try {
         if (attempt > 1) {
-          console.log(`[image] edits retry #${attempt - 1} after transient error`)
+          console.log(`[image] edits retry #${attempt - 1}`)
           await new Promise(r => setTimeout(r, 1500))
         }
         res = await fetch(`${baseUrl}/v1/images/edits`, {
           method: 'POST',
           headers: { Authorization: `Bearer ${provider.apiKey}` },
-          body: buildForm(),
+          body: buildForm(useFidelity),
           signal: reqSignal(abortSignal, IMAGE_GEN_TIMEOUT_MS)
         })
         if (res.ok) {
@@ -142,6 +149,9 @@ async function doOneRequest(
         lastHttpStatus = res.status
         try { lastHttpBody = (await res.text()).slice(0, 400) } catch { /* ignore */ }
         console.warn('[image] edits HTTP', res.status, lastHttpBody.slice(0, 200))
+        // If this attempt sent input_fidelity, the error may be the gateway rejecting
+        // that field — retry once without it (keeps references rather than degrading).
+        if (useFidelity && attempt < MAX_ATTEMPTS) { console.log('[image] retrying edits without input_fidelity'); continue }
         break
       } catch (networkErr) {
         lastNetworkErr = networkErr as Error

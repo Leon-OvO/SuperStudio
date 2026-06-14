@@ -3,6 +3,7 @@ import { IPC } from '../../../src/shared/ipc-types'
 import { settingsHandlers } from './settings'
 import { sessionHandlers } from './sessions'
 import { agentHandlers } from './agent'
+import { groupChatHandlers } from './group-chat'
 import { fileHandlers } from './files'
 import { galleryHandlers } from './gallery'
 import { memoryHandlers } from './memory'
@@ -42,6 +43,7 @@ export function registerIpcHandlers(): void {
     ['settings', settingsHandlers],
     ['sessions', sessionHandlers],
     ['agent', agentHandlers],
+    ['groupChat', groupChatHandlers],
     ['files', fileHandlers],
     ['gallery', galleryHandlers],
     ['memory', memoryHandlers],

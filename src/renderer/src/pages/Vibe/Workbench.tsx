@@ -4,6 +4,7 @@ import { cn } from '../../lib/utils'
 import { VibeWorkbench } from './index'
 import { Board, Market, Roster, Dashboard } from '../Company'
 import { useEmployeesStore } from '../../stores/employees'
+import { useUIStore } from '../../stores/ui'
 import type { ProviderConfig, VibeRequestInfo } from '../../../../shared/ipc-types'
 
 /**
@@ -55,6 +56,20 @@ export function WorkbenchPage() {
     defaultApplied.current = true
     if (employees.length === 0) setTab('market')
   }, [loaded, employees.length])
+
+  // 深链落点：别处（如对话页空状态「去人才市场招募」）先置 pendingCompanyTab 再
+  // 切到公司页 → 这里消费并打开指定 tab，同时锁住智能默认不再覆盖。
+  const pendingCompanyTab = useUIStore(s => s.pendingCompanyTab)
+  const setPendingCompanyTab = useUIStore(s => s.setPendingCompanyTab)
+  useEffect(() => {
+    if (!pendingCompanyTab) return
+    const valid: Tab[] = ['market', 'team', 'ide', 'board', 'dash']
+    if (valid.includes(pendingCompanyTab as Tab)) {
+      setTab(pendingCompanyTab as Tab)
+      defaultApplied.current = true
+    }
+    setPendingCompanyTab(null)
+  }, [pendingCompanyTab, setPendingCompanyTab])
 
   const hiredSoulIds = new Set(employees.map(e => e.soulId))
   const busy = employees.filter(e => e.status === 'busy').length

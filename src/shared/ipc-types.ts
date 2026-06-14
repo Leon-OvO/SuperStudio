@@ -16,6 +16,9 @@ export const IPC = {
   SESSIONS_RENAME: 'sessions:rename',
   SESSIONS_ARCHIVE: 'sessions:archive',
   SESSIONS_SET_WORKING_DIR: 'sessions:set-working-dir', // pin a per-conversation working directory (opt-in)
+  SESSIONS_SET_ASSIGNEE: 'sessions:set-assignee', // bind/unbind a hired employee to a conversation
+  SESSIONS_ADD_MEMBER: 'sessions:add-member',     // pull an employee into a group chat
+  SESSIONS_REMOVE_MEMBER: 'sessions:remove-member', // remove an employee from a group chat
   MESSAGES_LIST: 'messages:list',
   MESSAGES_DELETE: 'messages:delete',          // delete a single message by id
   MESSAGES_DELETE_FROM: 'messages:delete-from', // delete this message + everything created after it (used for regenerate / edit)
@@ -28,6 +31,8 @@ export const IPC = {
   // Agent execution
   AGENT_RUN: 'agent:run',
   AGENT_STOP: 'agent:stop',
+  GROUP_RUN: 'group:run',             // multi-agent group chat: employees take turns
+  GROUP_STOP: 'group:stop',           // stop the in-flight group round
   AGENT_CLASSIFY_INTENT: 'agent:classify-intent',  // renderer → main (auto-router smart mode)
   AGENT_PROGRESS: 'agent:progress',   // main → renderer (event)
   AGENT_DELTA: 'agent:delta',         // main → renderer (event — streamed assistant text chunks)
@@ -38,6 +43,9 @@ export const IPC = {
   IMAGE_GENERATE: 'image:generate',
   IMAGE_EDIT: 'image:edit',
   IMAGE_OVERWRITE: 'image:overwrite',
+  CANVAS_GENERATE_ONE: 'canvas:generate-one',       // 画布右键微调重生单张
+  CANVAS_EXPORT_GROUP: 'canvas:export-group',        // 按场景一键导出整个变体组
+  CANVAS_EXPAND_PROMPT: 'canvas:expand-prompt',      // 用对话模型把简短想法扩写成图像提示词
 
   // Video generation
   VIDEO_GENERATE: 'video:generate',
@@ -54,6 +62,7 @@ export const IPC = {
   FILE_WRITE_TEMP: 'file:write-temp',
   FILE_APPROVE_PATH: 'file:approve-path',
   FILE_SAVE_AS: 'file:save-as',
+  FILE_EXPORT_TO_DIR: 'file:export-to-dir',   // 把一组绝对路径批量拷到用户选的文件夹
   FILE_SAVE_TEXT: 'file:save-text',
   SHELL_SHOW_ITEM: 'shell:show-item',
 
@@ -370,11 +379,15 @@ export interface GalleryItem {
   filePath: string
   thumbnailPath?: string
   prompt: string
-  source: 'chat' | 'workflow' | 'import'
+  source: 'chat' | 'workflow' | 'import' | 'canvas'
   sessionId?: string
   workflowId?: string
   modelName?: string
   createdAt: number
+  /** 图片画布批量产物的变体组 id（同批共享）。 */
+  variantGroupId?: string | null
+  /** 图片画布批量产物所属场景标签。 */
+  sceneLabel?: string | null
 }
 
 // MCP server configuration
@@ -525,7 +538,7 @@ export interface AppSettings {
   /** Which page to show on app startup. Applied once per session after login,
    *  and only if nothing else (e.g. shell-open) has navigated away from the
    *  hard-coded default first. */
-  startupPage: 'chat' | 'vibe'
+  startupPage: 'chat' | 'vibe' | 'studio'
   /** Minimize the window to the system tray (hide from taskbar) instead of a
    *  normal taskbar minimize. Default ON; toggle in 设置 → 全局 → 系统. */
   minimizeToTray?: boolean
@@ -680,6 +693,8 @@ export interface VibeMessageInfo {
   outputTokens?: number | null
   costUsd?: number | null
   model?: string | null
+  /** User-message attachments (images shown inline; files referenced by path). */
+  attachments?: Array<{ name: string; path: string; mimeType: string }> | null
 }
 
 export interface VibeProjectInfo {
@@ -890,6 +905,13 @@ export interface Session {
    *  (whole subtree read/write), and can list_dir its contents. '' / undefined
    *  = unset → desktop-default behavior. */
   workingDir?: string
+  /** Bound employee id ("找某员工单独训话/咨询"): the engine injects that
+   *  employee's soul persona and defaults to their model. null/undefined =
+   *  a plain, unbound conversation. */
+  employeeId?: string | null
+  /** Group chat: ids of the employees participating. Non-empty ⇒ this is a
+   *  multi-agent group conversation (employees take turns, see each other). */
+  groupEmployeeIds?: string[] | null
 }
 
 // Scheduled prompts
@@ -1018,6 +1040,9 @@ export interface Message {
   attachments?: Attachment[]
   meta?: MessageMeta
   createdAt: number
+  /** Group chat: which participating employee spoke this assistant message
+   *  (so the bubble shows their avatar + name). Unset for plain/single chat. */
+  speakerEmployeeId?: string | null
 }
 
 export interface ToolCallRecord {

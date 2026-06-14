@@ -367,6 +367,26 @@ function applyMigrations(): void {
   // approved root (whole subtree read/write), and exposes list_dir so the model
   // can discover what's inside. NULL/'' = unset → fall back to the desktop default.
   try { db.run(`ALTER TABLE sessions ADD COLUMN working_dir TEXT`) } catch { /* already exists */ }
+  // v15: 工作台对话支持附件 —— 用户消息可附图片/文件。存 JSON 数组
+  // [{name,path,mimeType}]；NULL = 无附件。图片在运行时 inline 给视觉模型，
+  // 文件以绝对路径清单注入，与「对话」页一致。
+  try { db.run(`ALTER TABLE vibe_messages ADD COLUMN attachments TEXT`) } catch { /* already exists */ }
+  // v16: 对话会话可绑定一名已入职员工 —— 注入其岗位人格(soul)且默认用其模型，
+  // 实现「找某员工单独训话/咨询」。NULL = 普通对话（不绑定）。
+  try { db.run(`ALTER TABLE sessions ADD COLUMN employee_id TEXT`) } catch { /* already exists */ }
+  // v17: 员工群聊 —— 一个会话可由多名员工参与，彼此能看到对方发言并轮流回应。
+  // 存 JSON 数组 [employeeId,...]；非空 ⇒ 这是群聊（员工单聊仍用 employee_id 单值）。
+  try { db.run(`ALTER TABLE sessions ADD COLUMN group_employee_ids TEXT`) } catch { /* already exists */ }
+  // v18: 群聊里每条 assistant 消息标明是哪位员工说的，渲染层据此显示发言者头像+名字。
+  // NULL = 普通/单聊助手消息（无需区分发言者）。
+  try { db.run(`ALTER TABLE messages ADD COLUMN speaker_employee_id TEXT`) } catch { /* already exists */ }
+  // v19: 图片创作画布 —— 一次「批量场景出图」产出的多张图属于同一变体组，按场景标注，
+  // 供画布回显与素材库分组/导出。NULL = 非画布批量产物。
+  try { db.run(`ALTER TABLE gallery ADD COLUMN variant_group_id TEXT`) } catch { /* already exists */ }
+  try { db.run(`ALTER TABLE gallery ADD COLUMN scene_label TEXT`) } catch { /* already exists */ }
+  // v20: 区分「工作流」与「图片画布」—— 两者共用 workflows 表与执行引擎，用 kind 分流，
+  // 列表各管各的。NULL/'workflow' = 自动化工作流；'canvas' = 图片创作画布。
+  try { db.run(`ALTER TABLE workflows ADD COLUMN kind TEXT NOT NULL DEFAULT 'workflow'`) } catch { /* already exists */ }
 }
 
 // Helper: run a query and save

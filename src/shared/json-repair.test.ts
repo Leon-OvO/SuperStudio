@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseJsonLoose, repairBadEscapes } from './json-repair'
+import { parseJsonLoose, repairBadEscapes, extractJson } from './json-repair'
 
 describe('repairUnescapedQuotes / parseJsonLoose', () => {
   it('repairs unescaped ASCII quotes used as Chinese 引号 inside values', () => {
@@ -41,5 +41,31 @@ describe('repairUnescapedQuotes / parseJsonLoose', () => {
   it('repairBadEscapes leaves clean JSON unchanged', () => {
     const clean = '[{"a":"x\\ny","b":1}]'
     expect(repairBadEscapes(clean)).toBe(clean)
+  })
+})
+
+describe('extractJson', () => {
+  it('strips a ```json fence', () => {
+    expect(extractJson('```json\n{"kind":"discuss"}\n```')).toBe('{"kind":"discuss"}')
+  })
+  it('strips a bare ``` fence', () => {
+    expect(extractJson('```\n{"a":1}\n```')).toBe('{"a":1}')
+  })
+  it('drops prose preamble and postamble around the object', () => {
+    expect(extractJson('好的，这是规划：{"kind":"collaborate","steps":[]}。希望有帮助')).toBe('{"kind":"collaborate","steps":[]}')
+  })
+  it('handles preamble + fenced object together', () => {
+    expect(extractJson('规划如下：\n```json\n{"x":1}\n```')).toBe('{"x":1}')
+  })
+  it('extracts a top-level array', () => {
+    expect(extractJson('结果：[1,2,3] 完成')).toBe('[1,2,3]')
+  })
+  it('leaves clean JSON unchanged and is parseable', () => {
+    const s = '{"kind":"discuss","steps":[{"employeeId":"e1","task":""}]}'
+    expect(extractJson(s)).toBe(s)
+    expect(parseJsonLoose(extractJson(s))).toEqual({ kind: 'discuss', steps: [{ employeeId: 'e1', task: '' }] })
+  })
+  it('returns trimmed text unchanged when no JSON present', () => {
+    expect(extractJson('  抱歉，我无法完成  ')).toBe('抱歉，我无法完成')
   })
 })

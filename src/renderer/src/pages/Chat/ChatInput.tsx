@@ -51,6 +51,9 @@ interface Props {
   onImageParamsChange: (params: ImageParams) => void
   /** Open the global ImageEditor with the given src. */
   onEditImage: (src: string) => void
+  /** Group chat: members that can be @-mentioned. When provided, typing `@`
+   *  opens an employee picker (to direct a turn) instead of the image picker. */
+  mentionEmployees?: Array<{ id: string; name: string; dept: string }>
 }
 
 export function ChatInput({
@@ -61,8 +64,10 @@ export function ChatInput({
   attachments, setAttachments, generatedImages,
   providerId, model, onModelChange,
   imageParams, onImageParamsChange,
-  onEditImage
+  onEditImage, mentionEmployees
 }: Props) {
+  // Group session → `@` mentions employees (to direct a turn) instead of images.
+  const employeeMentionMode = (mentionEmployees?.length ?? 0) > 0
   const [text, setText] = useState('')
   const [previewSrc, setPreviewSrc] = useState<string | null>(null)
   // `@` mention picker: {start} = index of the '@'. Multi-select — clicking a row
@@ -77,9 +82,17 @@ export function ChatInput({
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const ctxMenu = useImageContextMenu()
 
+  // Group employee @-mention matches (filtered by the @query). Empty unless in a
+  // group session — so the image picker below stays the default everywhere else.
+  const employeeMatches = useMemo(() => {
+    if (!mention || !employeeMentionMode) return []
+    const q = mention.query.toLowerCase()
+    return (mentionEmployees ?? []).filter(e => !q || e.name.toLowerCase().includes(q))
+  }, [mention, employeeMentionMode, mentionEmployees])
+
   // 本对话生成 (in-memory, filtered by query) + 素材库 (server-searched), de-duped by path.
   const mentionItems = useMemo(() => {
-    if (!mention) return []
+    if (!mention || employeeMentionMode) return []
     const q = mention.query.toLowerCase()
     const chat = (generatedImages ?? []).filter(g =>
       !q || g.label.toLowerCase().includes(q) || (g.path.split(/[\\/]/).pop() || '').toLowerCase().includes(q))
@@ -90,9 +103,9 @@ export function ChatInput({
   // How many currently-shown picker items are already referenced (footer count).
   const pickedCount = mention ? mentionItems.filter(g => attachments.some(a => a.path === g.path)).length : 0
 
-  // Debounced 素材库 search whenever the @query changes.
+  // Debounced 素材库 search whenever the @query changes (skip in employee-mention mode).
   useEffect(() => {
-    if (!mention) { setGalleryResults([]); mentionAddedRef.current = new Set(); return }
+    if (!mention || employeeMentionMode) { setGalleryResults([]); mentionAddedRef.current = new Set(); return }
     let cancelled = false
     const t = setTimeout(async () => {
       try {
@@ -140,6 +153,18 @@ export function ChatInput({
     setGalleryResults([])
     mentionAddedRef.current = new Set()
   }, [])
+
+  // Group chat: replace the typed "@query" token with "@姓名 " — directs the next
+  // round at that employee. Closes the picker.
+  const insertEmployeeMention = useCallback((name: string) => {
+    setText(prev => {
+      if (!mention) return prev
+      const after = prev.slice(mention.start + 1 + mention.query.length)
+      return prev.slice(0, mention.start) + '@' + name + ' ' + after
+    })
+    setMention(null)
+    setTimeout(() => textareaRef.current?.focus(), 0)
+  }, [mention])
 
   // Toolbar "引用图片" entry: insert an `@` at the caret and open the picker — makes
   // the @-reference feature discoverable instead of a hidden keystroke.
@@ -199,7 +224,20 @@ export function ChatInput({
   }, [text, attachments, isRunning, onSend, setAttachments])
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    // While the @-mention popup is open, the arrow/enter keys drive it.
+    // Group chat: the @-employee picker drives arrow/enter while open.
+    if (mention && employeeMentionMode && employeeMatches.length > 0) {
+      const len = employeeMatches.length
+      if (e.key === 'ArrowDown') { e.preventDefault(); setMentionIndex(i => (i + 1) % len); return }
+      if (e.key === 'ArrowUp') { e.preventDefault(); setMentionIndex(i => (i - 1 + len) % len); return }
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        e.preventDefault()
+        const hi = employeeMatches[Math.min(mentionIndex, len - 1)]
+        if (hi) insertEmployeeMention(hi.name)
+        return
+      }
+      if (e.key === 'Escape') { e.preventDefault(); setMention(null); return }
+    }
+    // While the @-mention (image) popup is open, the arrow/enter keys drive it.
     if (mention && mentionItems.length > 0) {
       const len = mentionItems.length
       if (e.key === 'ArrowDown') { e.preventDefault(); setMentionIndex(i => (i + 1) % len); return }
@@ -217,7 +255,8 @@ export function ChatInput({
       }
       if (e.key === 'Escape') { e.preventDefault(); closeMention(); return }
     }
-    if (e.key === 'Enter' && !e.shiftKey) {
+    // IME guard: Enter that confirms a composition candidate must not send.
+    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault()
       handleSend()
     }
@@ -392,6 +431,28 @@ export function ChatInput({
             <span className="flex items-center gap-2 text-sm font-medium text-primary">
               <Paperclip size={15} /> 松手添加为附件
             </span>
+          </div>
+        )}
+
+        {/* @-employee picker (group chat) — pick a member to direct this turn at. */}
+        {mention && employeeMentionMode && employeeMatches.length > 0 && (
+          <div className="absolute bottom-full left-2 mb-2 z-30 w-60 max-h-72 overflow-y-auto rounded-xl border border-border bg-popover shadow-xl p-1">
+            <div className="px-2 py-1 text-[10px] text-muted-foreground select-none">@ 点名让某位员工发言</div>
+            {employeeMatches.map((emp, i) => (
+              <button
+                key={emp.id}
+                type="button"
+                onMouseDown={e => { e.preventDefault(); insertEmployeeMention(emp.name) }}
+                onMouseEnter={() => setMentionIndex(i)}
+                className={cn(
+                  'w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-left transition-colors',
+                  i === mentionIndex ? 'bg-accent' : 'hover:bg-accent/60'
+                )}
+              >
+                <AtSign size={13} className="text-primary shrink-0" />
+                <span className="text-xs font-medium truncate">{emp.name}</span>
+              </button>
+            ))}
           </div>
         )}
 

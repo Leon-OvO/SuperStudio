@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Search, X, UserPlus, Trash2, Cpu, Loader2, BadgeCheck, Sparkles, Upload, FolderOpen,
+  Search, X, UserPlus, Trash2, Cpu, Loader2, BadgeCheck, Sparkles, Upload, FolderOpen, MessageCircle,
   Users, UserCheck, CheckCircle2, Coins, Wallet, Gauge, Flame,
   Building2, Workflow, Armchair, Store,
   Code2, Palette, ClipboardList, Megaphone, ShieldCheck, Brain, Gamepad2, Puzzle,
@@ -13,26 +13,11 @@ import { toast } from '../../components/ui/Toast'
 import { useConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { useUIStore } from '../../stores/ui'
 import { formatTokens, formatCostUsd } from '../../lib/format-cost'
+// DEPT/dept are shared with the chat-page employee picker + session badges so
+// the same employee renders an identical identity everywhere.
+import { DEPT, dept } from '../../lib/departments'
 import type { TalentEntry, TalentBrowseResult, EmployeeInfo, ProviderConfig, VibeRequestInfo, VibeTaskInfo } from '../../../../shared/ipc-types'
 import { levelOf, nextLevel } from '../../../../shared/company-levels'
-
-// ── dept metadata ───────────────────────────────────────────────────────────
-const DEPT: Record<string, { label: string; color: string; emoji: string }> = {
-  engineering: { label: '工程研发', color: '#7c6cff', emoji: '⚙️' },
-  design:      { label: '设计',     color: '#f06bd0', emoji: '🎨' },
-  product:     { label: '产品',     color: '#5b9bff', emoji: '📋' },
-  marketing:   { label: '营销增长', color: '#f0b429', emoji: '📣' },
-  qa:          { label: '测试质量', color: '#3ecf8e', emoji: '🔎' },
-  data:        { label: '数据/AI',  color: '#46d3d3', emoji: '🧠' },
-  game:        { label: '游戏',     color: '#ff8a5b', emoji: '🎮' },
-  finance:     { label: '财务',     color: '#2fb344', emoji: '💰' },
-  sales:       { label: '销售',     color: '#ff6b4a', emoji: '🤝' },
-  security:    { label: '安全',     color: '#e03131', emoji: '🛡️' },
-  legal:       { label: '法务合规', color: '#b08968', emoji: '⚖️' },
-  operations:  { label: '运营职能', color: '#b197fc', emoji: '🗂️' },
-  research:    { label: '研究',     color: '#15aabf', emoji: '🔬' }
-}
-const dept = (k: string) => DEPT[k] || { label: k, color: '#8b91a0', emoji: '🧩' }
 
 // 部门 → lucide 线性图标（办公室工位头像用，风格与全局统一，替代 emoji）
 const DEPT_ICON: Record<string, LucideIcon> = {
@@ -306,6 +291,13 @@ export function Roster({ employees, providers, onChange, goMarket }: { employees
     const [providerId, modelId] = value.split('::')
     await window.api.setEmployeeModel({ id: e.id, providerId, modelId }); toast.success(`🧠 ${e.name} 改用 ${modelId}`); onChange()
   }
+  // 「谈话」→ jump to the 对话 page and open a fresh conversation bound to this
+  // employee (its soul persona + model). The Chat page consumes the handoff.
+  function talkTo(e: EmployeeInfo) {
+    const ui = useUIStore.getState()
+    ui.setPendingChatEmployeeId(e.id)
+    ui.setPage('chat')
+  }
 
   return (
     <div className="space-y-5">
@@ -361,7 +353,8 @@ export function Roster({ employees, providers, onChange, goMarket }: { employees
                     <span>🪙 {formatTokens((e.stats.tokensIn ?? 0) + (e.stats.tokensOut ?? 0))} tok</span>
                     <span className="text-amber-600 dark:text-amber-400 font-medium">💰 {formatCostUsd(e.stats.cost ?? 0)}</span>
                   </div>
-                  <div className="flex justify-end">
+                  <div className="flex items-center justify-end gap-2">
+                    <button onClick={() => talkTo(e)} className="text-[11px] px-2.5 py-1 rounded-lg border border-border text-primary hover:bg-primary/10"><MessageCircle size={11} className="inline -mt-0.5" /> 谈话</button>
                     <button onClick={() => fire(e)} className="text-[11px] px-2.5 py-1 rounded-lg border border-border text-rose-400 hover:bg-rose-500/10"><Trash2 size={11} className="inline -mt-0.5" /> 解雇</button>
                   </div>
                 </div>

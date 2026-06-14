@@ -62,7 +62,7 @@ export function CommandPalette({ open, onClose }: Props) {
         navigateTo('chat'); window.dispatchEvent(new CustomEvent('app:new-chat')); onClose()
     } },
     { kind: 'nav', id: 'chat',      label: '对话',      hint: 'Ctrl+1', icon: <MessageSquare size={14} />, run: () => { navigateTo('chat'); onClose() } },
-    { kind: 'nav', id: 'workflow',  label: '工作流',    hint: 'Ctrl+2', icon: <Zap size={14} />,           run: () => { navigateTo('workflow'); onClose() } },
+    { kind: 'nav', id: 'studio',    label: '创作画布',  hint: 'Ctrl+2', icon: <Zap size={14} />,           run: () => { navigateTo('studio'); onClose() } },
     { kind: 'nav', id: 'gallery',   label: '素材库',    hint: 'Ctrl+3', icon: <ImageIcon size={14} />,     run: () => { navigateTo('gallery'); onClose() } },
     { kind: 'nav', id: 'memory',    label: '记忆',      hint: 'Ctrl+4', icon: <Brain size={14} />,         run: () => { navigateTo('memory'); onClose() } },
     { kind: 'nav', id: 'settings',  label: '设置',      hint: 'Ctrl+,', icon: <Settings size={14} />,      run: () => { navigateTo('settings'); onClose() } }
@@ -124,11 +124,11 @@ export function CommandPalette({ open, onClose }: Props) {
 
   return (
     <div
-      className="fixed inset-0 z-[500] bg-black/40 backdrop-blur-sm flex items-start justify-center pt-[12vh] px-4"
+      className="fixed inset-0 z-[500] bg-black/40 backdrop-blur-sm flex items-start justify-center pt-[12vh] px-4 animate-overlay-in"
       onMouseDown={onClose}
     >
       <div
-        className="w-full max-w-xl bg-popover border border-border rounded-xl shadow-2xl overflow-hidden flex flex-col"
+        className="w-full max-w-xl bg-popover border border-border rounded-xl shadow-2xl overflow-hidden flex flex-col animate-dialog-in"
         onMouseDown={e => e.stopPropagation()}
       >
         <div className="flex items-center gap-2 px-3 py-2.5 border-b border-border">

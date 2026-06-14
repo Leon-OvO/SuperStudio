@@ -14,7 +14,7 @@
 import { ipcMain } from 'electron'
 import fs from 'fs'
 import path from 'path'
-import { streamText, generateText, tool, type Tool } from 'ai'
+import { streamText, generateText, tool, type Tool, type CoreMessage } from 'ai'
 import { z } from 'zod'
 import { IPC } from '../../../src/shared/ipc-types'
 import { repairUnescapedQuotes } from '../../../src/shared/json-repair'
@@ -662,14 +662,60 @@ function pickEmployeeForDept(
 }
 
 function toMessageInfo(m: VibeMessageRow): VibeMessageInfo {
+  let attachments: Array<{ name: string; path: string; mimeType: string }> | null = null
+  if (m.attachments) {
+    try { attachments = JSON.parse(m.attachments) } catch { /* malformed → ignore */ }
+  }
   return {
     id: m.id, requestId: m.request_id, role: m.role, content: m.content,
     toolName: m.tool_name, toolArgs: m.tool_args, isError: m.is_error === 1,
     taskId: m.task_id, createdAt: m.created_at,
     inputTokens: m.input_tokens, outputTokens: m.output_tokens,
-    costUsd: m.cost_usd, model: m.model
+    costUsd: m.cost_usd, model: m.model, attachments
   }
 }
+/** A user-message content part for the AI SDK (text or inlined image). */
+type VibeUserPart =
+  | { type: 'text'; text: string }
+  | { type: 'image'; image: Buffer; mimeType: string }
+
+/**
+ * Turn the current-turn prompt + its attachments into AI-SDK user content,
+ * mirroring the 对话 page (engine.ts:2084). Images are inlined as `image` parts
+ * so vision models see them; non-image files are referenced by absolute path in
+ * a manifest so tools can read them. No attachments → returns the plain string.
+ */
+function buildVibeUserContent(
+  message: string,
+  attachments?: Array<{ name: string; path: string; mimeType: string }>
+): string | VibeUserPart[] {
+  if (!attachments?.length) return message
+  // Absolute-path manifest — the model can't infer paths from thin air, and the
+  // read/edit tools need the exact path (incl. drive letter on Windows).
+  const manifest =
+    `用户本次附加了 ${attachments.length} 个文件，绝对路径如下：\n` +
+    attachments.map((a, i) => `  [${i + 1}] ${a.name}  (${a.mimeType})\n      绝对路径: ${a.path}`).join('\n') +
+    `\n\n如需读取、修改或分析上述文件，请把"绝对路径"完整拷贝到工具调用的 filePath 等参数里（不要发明新路径，也不要省略盘符）。\n\n`
+
+  const parts: VibeUserPart[] = [{ type: 'text', text: manifest + message }]
+  for (const att of attachments) {
+    const mt = att.mimeType ?? ''
+    if (!mt.startsWith('image/')) continue  // non-image: manifest reference only
+    if (!fs.existsSync(att.path)) {
+      const first = parts[0]
+      if (first.type === 'text') first.text += `\n\n[警告：附件 ${att.name} 的文件不存在 (${att.path})，AI 无法看到该图。]`
+      continue
+    }
+    try {
+      parts.push({ type: 'image', image: fs.readFileSync(att.path), mimeType: mt })
+    } catch (e) {
+      const first = parts[0]
+      if (first.type === 'text') first.text += `\n\n[警告：附件 ${att.name} 读取失败：${(e as Error).message}]`
+    }
+  }
+  return parts
+}
+
 function toProjectInfo(p: VibeProjectRow): VibeProjectInfo {
   return {
     path: p.path, name: p.name,
@@ -1171,7 +1217,7 @@ export function vibeHandlers(): void {
   ) => ReturnType<typeof buildVibeTools> | ReturnType<typeof buildReadOnlyVibeTools>
 
   function runStreamMode(
-    args: { projectPath: string; prompt: string; requestId?: string },
+    args: { projectPath: string; prompt: string; requestId?: string; attachments?: Array<{ name: string; path: string; mimeType: string }> },
     opts: {
       kind: 'chat' | 'explore' | 'bugfix'
       label: string                                  // for system event text
@@ -1215,7 +1261,7 @@ export function vibeHandlers(): void {
       win.webContents.send(IPC.VIBE_PROGRESS, { ...e, projectPath, requestId })
     }
 
-    appendMessage({ requestId, role: 'user', content: args.prompt })
+    appendMessage({ requestId, role: 'user', content: args.prompt, attachments: args.attachments })
     emit({ type: 'request_ready', requestId, text: `${opts.label}中…` })
 
     ;(async () => {
@@ -1260,9 +1306,22 @@ export function vibeHandlers(): void {
           tools = { ...tools, ...buildVibeSkillTools(projectPath, runtimeSkills, toolEmit, ctl.signal) }
         }
 
-        const history = listMessages(requestId)
+        const history: CoreMessage[] = listMessages(requestId)
           .filter(m => m.role === 'user' || m.role === 'assistant')
-          .map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }))
+          .map(m => (m.role === 'assistant'
+            ? { role: 'assistant', content: m.content }
+            : { role: 'user', content: m.content }) as CoreMessage)
+        // Inline THIS turn's attachments into the last user message (images as
+        // vision parts + a path manifest). History rows stay plain text — the
+        // images were only needed when first sent; re-reading is via the manifest.
+        if (args.attachments?.length) {
+          for (let i = history.length - 1; i >= 0; i--) {
+            if (history[i].role === 'user') {
+              history[i] = { role: 'user', content: buildVibeUserContent(args.prompt, args.attachments) } as CoreMessage
+              break
+            }
+          }
+        }
 
         let accumulated = ''
         let runError: Error | null = null
@@ -1406,7 +1465,7 @@ export function vibeHandlers(): void {
 
   // Extracted as a named function so VIBE_RUN can dispatch to it after auto-
   // classifying the intent as 'change'. Behavior unchanged.
-  function runPropose(args: { projectPath: string; prompt: string; requestId?: string }) {
+  function runPropose(args: { projectPath: string; prompt: string; requestId?: string; attachments?: Array<{ name: string; path: string; mimeType: string }> }) {
     const win = getMainWindow()
     if (!win) return { error: 'No window' }
     const projectPath = path.resolve(args.projectPath)
@@ -1446,10 +1505,12 @@ export function vibeHandlers(): void {
 
         // If promoting an explore session, pull its full conversation history
         // so the model has context. Otherwise treat the prompt as the standalone request.
-        const history: { role: 'user' | 'assistant'; content: string }[] = isPromotion
+        const history: CoreMessage[] = isPromotion
           ? listMessages(existing!.id)
               .filter(m => m.role === 'user' || m.role === 'assistant')
-              .map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }))
+              .map(m => (m.role === 'assistant'
+                ? { role: 'assistant', content: m.content }
+                : { role: 'user', content: m.content }) as CoreMessage)
           : []
 
         const userPrompt = isPromotion
@@ -1458,8 +1519,12 @@ export function vibeHandlers(): void {
 
         // For promotion, persist the user's "promote" prompt so it shows in convo
         if (isPromotion && args.prompt.trim()) {
-          appendMessage({ requestId: existing!.id, role: 'user', content: args.prompt })
+          appendMessage({ requestId: existing!.id, role: 'user', content: args.prompt, attachments: args.attachments })
         }
+
+        // Inline attachments (e.g. a design mockup to build from) into the user
+        // message so the model sees them while decomposing into tasks.
+        const userContent = buildVibeUserContent(userPrompt, args.attachments)
 
         let captured: z.infer<typeof ProposalSchema> | null = null
         const { section: proposeSkillsSection } = buildVibeSkillsSection()
@@ -1470,7 +1535,7 @@ export function vibeHandlers(): void {
             : '\n\nIMPORTANT: You MUST call the `submit_proposal` tool exactly once with the structured plan. Do not output free-form JSON.') + proposeSkillsSection,
           messages: [
             ...history,
-            { role: 'user', content: userPrompt }
+            { role: 'user', content: userContent } as CoreMessage
           ],
           tools: {
             submit_proposal: tool({
@@ -1645,7 +1710,7 @@ export function vibeHandlers(): void {
   // The user no longer manually picks chat/explore/bugfix/change. Pass
   // forceIntent to override (manual lock). Returns the resolved intent so the
   // renderer can show the right running banner.
-  ipcMain.handle(IPC.VIBE_RUN, async (_e, args: { projectPath: string; prompt: string; requestId?: string; forceIntent?: VibeIntent }) => {
+  ipcMain.handle(IPC.VIBE_RUN, async (_e, args: { projectPath: string; prompt: string; requestId?: string; forceIntent?: VibeIntent; attachments?: Array<{ name: string; path: string; mimeType: string }> }) => {
     const win = getMainWindow()
     if (!win) return { error: 'No window' }
     const projectPath = path.resolve(args.projectPath)
@@ -1665,7 +1730,7 @@ export function vibeHandlers(): void {
       } catch { intent = 'chat' }
     }
 
-    const passthrough = { projectPath: args.projectPath, prompt: args.prompt, requestId: args.requestId }
+    const passthrough = { projectPath: args.projectPath, prompt: args.prompt, requestId: args.requestId, attachments: args.attachments }
     let res: { started?: boolean; requestId?: string; error?: string }
     switch (intent) {
       case 'explore':

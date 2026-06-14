@@ -45,14 +45,14 @@ export function useConfirmDialog() {
 
   const element = state ? (
     <div
-      className="fixed inset-0 z-[200] bg-black/50 backdrop-blur-sm flex items-center justify-center p-4"
+      className="fixed inset-0 z-[200] bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 animate-overlay-in"
       onClick={() => close(false)}
       onKeyDown={e => {
         if (e.key === 'Escape') { e.preventDefault(); close(false) }
       }}
     >
       <div
-        className="bg-popover border border-border rounded-xl shadow-2xl w-[420px] max-w-full"
+        className="bg-popover border border-border rounded-xl shadow-2xl w-[420px] max-w-full animate-dialog-in"
         onClick={e => e.stopPropagation()}
       >
         <div className="p-5 flex items-start gap-3">

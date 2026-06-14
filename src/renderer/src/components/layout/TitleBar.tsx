@@ -25,7 +25,7 @@ export function TitleBar() {
 
   return (
     <div
-      className="flex items-center h-[34px] bg-sidebar border-b border-sidebar-border/60 shrink-0 select-none"
+      className="flex items-center h-[34px] bg-sidebar/80 backdrop-blur-xl border-b border-sidebar-border/60 shrink-0 select-none"
       style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
     >
       {/* Spacer matching sidebar width — on macOS, leave room for traffic lights */}

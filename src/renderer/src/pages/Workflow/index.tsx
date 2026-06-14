@@ -16,6 +16,7 @@ import { useUIStore } from '../../stores/ui'
 import { useConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { toast } from '../../components/ui/Toast'
 import { useT } from '../../lib/i18n'
+import type { StudioEditorProps } from '../Canvas'
 
 interface WorkflowMeta {
   id: string
@@ -26,15 +27,15 @@ interface WorkflowMeta {
   updated_at: number
 }
 
-export function WorkflowPage() {
+export function WorkflowPage(props: StudioEditorProps = {}) {
   return (
     <ReactFlowProvider>
-      <WorkflowEditor />
+      <WorkflowEditor {...props} />
     </ReactFlowProvider>
   )
 }
 
-function WorkflowEditor() {
+function WorkflowEditor({ embedded = false, openDocId = null, openNonce = 0, onDocsChanged, onDocOpened }: StudioEditorProps) {
   const [workflows, setWorkflows] = useState<WorkflowMeta[]>([])
   const [currentId, setCurrentId] = useState<string | null>(null)
   const [name, setName] = useState('未命名工作流')
@@ -56,13 +57,21 @@ function WorkflowEditor() {
 
   useEffect(() => { loadWorkflows() }, [])
 
-  // Auto-load workflow when navigated here with a pendingWorkflowId (e.g. from chat → workflow)
+  // Auto-load workflow when navigated here with a pendingWorkflowId (e.g. from chat → workflow).
+  // When embedded in StudioPage, the shell consumes pendingWorkflowId and drives openDocId instead.
   useEffect(() => {
-    if (!pendingWorkflowId) return
+    if (embedded || !pendingWorkflowId) return
     const id = pendingWorkflowId
     setPendingWorkflowId(null)
     loadWorkflow(id)
   }, [pendingWorkflowId])
+
+  // Embedded: the shell drives which workflow is open (or new). openNonce bumps per request.
+  useEffect(() => {
+    if (openNonce <= 0) return
+    if (openDocId) loadWorkflow(openDocId); else newWorkflow()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openNonce])
 
   // Subscribe ONCE. Per-node events only merge status (functional update — no
   // stale snapshot). Leaving the "running" state is driven solely by the engine's
@@ -108,6 +117,7 @@ function WorkflowEditor() {
     const meta = all.find((w: WorkflowMeta) => w.id === id)
     if (!meta) return
     setCurrentId(id)
+    onDocOpened?.(id)
     setName(meta.name)
     setNodes(meta.definition.nodes || [])
     setEdges(meta.definition.edges || [])
@@ -117,6 +127,7 @@ function WorkflowEditor() {
 
   async function newWorkflow() {
     setCurrentId(null)
+    onDocOpened?.(null)
     setName('未命名工作流')
     setNodes([])
     setEdges([])
@@ -132,8 +143,9 @@ function WorkflowEditor() {
       description: '',
       definition
     })
-    if (!currentId && result?.id) setCurrentId(result.id)
+    if (!currentId && result?.id) { setCurrentId(result.id); onDocOpened?.(result.id) }
     await loadWorkflows()
+    onDocsChanged?.()
   }
 
   async function deleteWorkflow(id: string) {
@@ -141,6 +153,7 @@ function WorkflowEditor() {
     await window.api.deleteWorkflow(id)
     if (currentId === id) await newWorkflow()
     await loadWorkflows()
+    onDocsChanged?.()
   }
 
   async function loadTemplate(template: WorkflowTemplate) {
@@ -328,37 +341,42 @@ function WorkflowEditor() {
 
   return (
     <div className="flex h-full">
-      {/* Workflow list */}
+      {/* Left column: workflow list (hidden when embedded — StudioPage owns the
+          archive switcher) + node palette (always shown; workflows need it to add nodes). */}
       <aside className="w-52 shrink-0 border-r border-border bg-sidebar flex flex-col">
-        <div className="p-3 border-b border-border">
-          <button
-            onClick={newWorkflow}
-            className="w-full flex items-center gap-2 px-3 py-2 rounded-md bg-primary/10 hover:bg-primary/20 text-sm transition-colors"
-          >
-            <Plus size={14} /> {t('wf.newWorkflow')}
-          </button>
-        </div>
-        <div className="flex-1 overflow-y-auto p-2 space-y-0.5">
-          {workflows.map(w => (
-            <div
-              key={w.id}
-              onClick={() => loadWorkflow(w.id)}
-              className={cn(
-                'group flex items-center gap-2 px-2 py-1.5 rounded-md cursor-pointer text-sm',
-                currentId === w.id ? 'bg-accent text-foreground' : 'text-muted-foreground hover:bg-accent/50'
-              )}
-            >
-              <FileText size={12} className="shrink-0" />
-              <span className="flex-1 truncate">{w.name}</span>
+        {!embedded && (
+          <>
+            <div className="p-3 border-b border-border">
               <button
-                onClick={(e) => { e.stopPropagation(); deleteWorkflow(w.id) }}
-                className="opacity-0 group-hover:opacity-100 hover:text-destructive"
+                onClick={newWorkflow}
+                className="w-full flex items-center gap-2 px-3 py-2 rounded-md bg-primary/10 hover:bg-primary/20 text-sm transition-colors"
               >
-                <Trash2 size={11} />
+                <Plus size={14} /> {t('wf.newWorkflow')}
               </button>
             </div>
-          ))}
-        </div>
+            <div className="flex-1 overflow-y-auto p-2 space-y-0.5">
+              {workflows.map(w => (
+                <div
+                  key={w.id}
+                  onClick={() => loadWorkflow(w.id)}
+                  className={cn(
+                    'group flex items-center gap-2 px-2 py-1.5 rounded-md cursor-pointer text-sm',
+                    currentId === w.id ? 'bg-accent text-foreground' : 'text-muted-foreground hover:bg-accent/50'
+                  )}
+                >
+                  <FileText size={12} className="shrink-0" />
+                  <span className="flex-1 truncate">{w.name}</span>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); deleteWorkflow(w.id) }}
+                    className="opacity-0 group-hover:opacity-100 hover:text-destructive"
+                  >
+                    <Trash2 size={11} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
         <NodePalette onAdd={addNode} onLoadTemplate={loadTemplate} />
       </aside>
 

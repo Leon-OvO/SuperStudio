@@ -37,31 +37,67 @@ async function captureSessionMemoryInBackground(sessionId: string): Promise<void
 }
 
 export function sessionHandlers(): void {
-  ipcMain.handle(IPC.SESSIONS_LIST, () =>
-    dbAll(`
+  ipcMain.handle(IPC.SESSIONS_LIST, () => {
+    const rows = dbAll<Record<string, unknown> & { groupEmployeeIdsJson: string | null }>(`
       SELECT s.id, s.title,
              s.created_at AS createdAt,
              s.updated_at AS updatedAt,
              COALESCE(s.archived, 0) AS archived,
              COALESCE(s.is_scheduled, 0) AS isScheduled,
              s.working_dir AS workingDir,
+             s.employee_id AS employeeId,
+             s.group_employee_ids AS groupEmployeeIdsJson,
              COALESCE((SELECT SUM(cost_usd)      FROM messages WHERE session_id = s.id), 0) AS totalCostUsd,
              COALESCE((SELECT SUM(input_tokens)  FROM messages WHERE session_id = s.id), 0) AS totalInputTokens,
              COALESCE((SELECT SUM(output_tokens) FROM messages WHERE session_id = s.id), 0) AS totalOutputTokens
       FROM sessions s
       ORDER BY s.updated_at DESC
     `)
-  )
+    return rows.map(({ groupEmployeeIdsJson, ...r }) => {
+      let groupEmployeeIds: string[] | null = null
+      if (groupEmployeeIdsJson) { try { groupEmployeeIds = JSON.parse(groupEmployeeIdsJson) } catch { /* malformed → null */ } }
+      return { ...r, groupEmployeeIds }
+    })
+  })
 
-  ipcMain.handle(IPC.SESSIONS_CREATE, (_e, title?: string, opts?: { isScheduled?: boolean }) => {
+  ipcMain.handle(IPC.SESSIONS_CREATE, (_e, title?: string, opts?: { isScheduled?: boolean; employeeId?: string | null; groupEmployeeIds?: string[] | null }) => {
     const id = randomUUID()
     const now = Date.now()
     const name = title || `新对话 ${new Date(now).toLocaleString('zh-CN')}`
+    const employeeId = opts?.employeeId ?? null
+    const groupIds = opts?.groupEmployeeIds?.length ? opts.groupEmployeeIds : null
     dbRun(
-      `INSERT INTO sessions (id, title, created_at, updated_at, is_scheduled) VALUES (?, ?, ?, ?, ?)`,
-      [id, name, now, now, opts?.isScheduled ? 1 : 0]
+      `INSERT INTO sessions (id, title, created_at, updated_at, is_scheduled, employee_id, group_employee_ids) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [id, name, now, now, opts?.isScheduled ? 1 : 0, employeeId, groupIds ? JSON.stringify(groupIds) : null]
     )
-    return { id, title: name, createdAt: now, updatedAt: now, isScheduled: opts?.isScheduled ? 1 : 0 }
+    return { id, title: name, createdAt: now, updatedAt: now, isScheduled: opts?.isScheduled ? 1 : 0, employeeId, groupEmployeeIds: groupIds }
+  })
+
+  // Bind / unbind a hired employee to a conversation. Null clears the binding
+  // (session reverts to a plain chat). The bound employee's soul persona + model
+  // take effect on the next run (read live from the session row in the engine).
+  ipcMain.handle(IPC.SESSIONS_SET_ASSIGNEE, (_e, id: string, employeeId: string | null) => {
+    dbRun(`UPDATE sessions SET employee_id = ? WHERE id = ?`, [employeeId || null, id])
+    return { ok: true }
+  })
+
+  // Group chat membership — pull an employee in (拉人进群) or remove one. Mutates
+  // the session's group_employee_ids JSON; the new member joins from the next round.
+  function readGroupIds(id: string): string[] {
+    const row = dbGet<{ group_employee_ids: string | null }>(`SELECT group_employee_ids FROM sessions WHERE id = ?`, [id])
+    if (!row?.group_employee_ids) return []
+    try { return JSON.parse(row.group_employee_ids) as string[] } catch { return [] }
+  }
+  ipcMain.handle(IPC.SESSIONS_ADD_MEMBER, (_e, id: string, employeeId: string) => {
+    const ids = readGroupIds(id)
+    if (!ids.includes(employeeId)) ids.push(employeeId)
+    dbRun(`UPDATE sessions SET group_employee_ids = ? WHERE id = ?`, [JSON.stringify(ids), id])
+    return { ok: true, groupEmployeeIds: ids }
+  })
+  ipcMain.handle(IPC.SESSIONS_REMOVE_MEMBER, (_e, id: string, employeeId: string) => {
+    const ids = readGroupIds(id).filter(x => x !== employeeId)
+    dbRun(`UPDATE sessions SET group_employee_ids = ? WHERE id = ?`, [ids.length ? JSON.stringify(ids) : null, id])
+    return { ok: true, groupEmployeeIds: ids }
   })
 
   ipcMain.handle(IPC.SESSIONS_DELETE, (_e, id: string) => {
@@ -114,9 +150,10 @@ export function sessionHandlers(): void {
     const rows = dbAll<{
       id: string; session_id: string; role: string; content: string;
       tool_calls: string | null; attachments: string | null; meta: string | null; created_at: number;
-      input_tokens: number | null; output_tokens: number | null; cost_usd: number | null; model: string | null
+      input_tokens: number | null; output_tokens: number | null; cost_usd: number | null; model: string | null;
+      speaker_employee_id: string | null
     }>(`SELECT id, session_id, role, content, tool_calls, attachments, meta, created_at,
-               input_tokens, output_tokens, cost_usd, model
+               input_tokens, output_tokens, cost_usd, model, speaker_employee_id
         FROM messages WHERE session_id = ? ORDER BY created_at ASC`, [sessionId])
     return rows.map(r => {
       const baseMeta = r.meta ? JSON.parse(r.meta) : undefined
@@ -139,7 +176,8 @@ export function sessionHandlers(): void {
         toolCalls: r.tool_calls ? JSON.parse(r.tool_calls) : undefined,
         attachments: r.attachments ? JSON.parse(r.attachments) : undefined,
         meta,
-        createdAt: r.created_at
+        createdAt: r.created_at,
+        speakerEmployeeId: r.speaker_employee_id || undefined
       }
     })
   })
@@ -236,10 +274,11 @@ export function sessionHandlers(): void {
     const dlg = win ? await dialog.showSaveDialog(win, opts) : await dialog.showSaveDialog(opts)
     if (dlg.canceled || !dlg.filePath) return { canceled: true }
 
-    const sessions = dbAll(`SELECT id, title, created_at AS createdAt, updated_at AS updatedAt, COALESCE(archived, 0) AS archived, COALESCE(is_scheduled, 0) AS isScheduled, working_dir AS workingDir FROM sessions ORDER BY created_at ASC`)
+    const sessions = dbAll(`SELECT id, title, created_at AS createdAt, updated_at AS updatedAt, COALESCE(archived, 0) AS archived, COALESCE(is_scheduled, 0) AS isScheduled, working_dir AS workingDir, employee_id AS employeeId, group_employee_ids AS groupEmployeeIdsJson FROM sessions ORDER BY created_at ASC`)
     const messages = dbAll(
       `SELECT id, session_id AS sessionId, role, content, tool_calls AS toolCallsJson,
-              attachments AS attachmentsJson, meta AS metaJson, created_at AS createdAt
+              attachments AS attachmentsJson, meta AS metaJson, created_at AS createdAt,
+              speaker_employee_id AS speakerEmployeeId
        FROM messages ORDER BY created_at ASC`
     )
     const payload = {
@@ -267,11 +306,11 @@ export function sessionHandlers(): void {
     }
     const data = parsed as {
       version?: number
-      sessions?: Array<{ id: string; title: string; createdAt: number; updatedAt: number; archived?: number; isScheduled?: number; workingDir?: string | null }>
+      sessions?: Array<{ id: string; title: string; createdAt: number; updatedAt: number; archived?: number; isScheduled?: number; workingDir?: string | null; employeeId?: string | null; groupEmployeeIdsJson?: string | null }>
       messages?: Array<{
         id: string; sessionId: string; role: string; content: string;
         toolCallsJson?: string | null; attachmentsJson?: string | null; metaJson?: string | null;
-        createdAt: number
+        createdAt: number; speakerEmployeeId?: string | null
       }>
     }
     if (!data || typeof data !== 'object' || data.version !== 1) {
@@ -290,8 +329,8 @@ export function sessionHandlers(): void {
         if (strategy === 'merge') { sessionsSkipped++; continue }
       }
       dbRun(
-        `INSERT OR REPLACE INTO sessions (id, title, created_at, updated_at, archived, is_scheduled, working_dir) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [s.id, s.title, s.createdAt, s.updatedAt, s.archived ?? 0, s.isScheduled ?? 0, s.workingDir ?? null]
+        `INSERT OR REPLACE INTO sessions (id, title, created_at, updated_at, archived, is_scheduled, working_dir, employee_id, group_employee_ids) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [s.id, s.title, s.createdAt, s.updatedAt, s.archived ?? 0, s.isScheduled ?? 0, s.workingDir ?? null, s.employeeId ?? null, s.groupEmployeeIdsJson ?? null]
       )
       sessionsAdded++
     }
@@ -299,12 +338,12 @@ export function sessionHandlers(): void {
       const existing = dbGet(`SELECT id FROM messages WHERE id = ?`, [m.id])
       if (existing && strategy === 'merge') continue
       dbRun(
-        `INSERT OR REPLACE INTO messages (id, session_id, role, content, tool_calls, attachments, meta, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT OR REPLACE INTO messages (id, session_id, role, content, tool_calls, attachments, meta, created_at, speaker_employee_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           m.id, m.sessionId, m.role, m.content,
           m.toolCallsJson ?? null, m.attachmentsJson ?? null, m.metaJson ?? null,
-          m.createdAt
+          m.createdAt, m.speakerEmployeeId ?? null
         ]
       )
       messagesAdded++

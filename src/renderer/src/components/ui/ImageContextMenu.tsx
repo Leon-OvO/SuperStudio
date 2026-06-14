@@ -101,7 +101,7 @@ export function useImageContextMenu({ hidePreview }: Props = {}) {
       {menu && (
         <div
           ref={menuRef}
-          className="fixed z-[100] min-w-[180px] bg-popover border border-border rounded-lg shadow-xl py-1 text-sm select-none"
+          className="fixed z-[100] min-w-[180px] bg-popover border border-border rounded-lg shadow-xl py-1 text-sm select-none origin-top-left animate-menu-in"
           style={{ left: menu.x, top: menu.y }}
           onClick={e => e.stopPropagation()}
         >

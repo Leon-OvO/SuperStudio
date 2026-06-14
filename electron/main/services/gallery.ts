@@ -8,16 +8,20 @@ interface SaveParams {
   filePath: string
   thumbnailPath?: string
   prompt: string
-  source: 'chat' | 'workflow' | 'import'
+  source: 'chat' | 'workflow' | 'import' | 'canvas'
   sessionId?: string
   workflowId?: string
   modelName?: string
+  /** 图片画布：同一批「批量场景出图」的多张图共享一个变体组 id。 */
+  variantGroupId?: string
+  /** 图片画布：这张图属于哪个场景（如「棚拍主图」）。 */
+  sceneLabel?: string
 }
 
 export async function saveGalleryItem(params: SaveParams): Promise<number> {
   dbRun(
-    `INSERT INTO gallery (type, file_path, thumbnail_path, prompt, source, session_id, workflow_id, model_name, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO gallery (type, file_path, thumbnail_path, prompt, source, session_id, workflow_id, model_name, created_at, variant_group_id, scene_label)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       params.type,
       params.filePath,
@@ -27,7 +31,9 @@ export async function saveGalleryItem(params: SaveParams): Promise<number> {
       params.sessionId ?? null,
       params.workflowId ?? null,
       params.modelName ?? null,
-      Date.now()
+      Date.now(),
+      params.variantGroupId ?? null,
+      params.sceneLabel ?? null
     ]
   )
   // Gallery items live under userData so they'd already be allowed by the root
@@ -43,7 +49,8 @@ export async function saveGalleryItem(params: SaveParams): Promise<number> {
 export function listGallery(filters?: { type?: string; source?: string }): GalleryItem[] {
   let sql = `SELECT id, type, file_path AS filePath, thumbnail_path AS thumbnailPath,
     prompt, source, session_id AS sessionId, workflow_id AS workflowId,
-    model_name AS modelName, created_at AS createdAt FROM gallery WHERE 1=1`
+    model_name AS modelName, created_at AS createdAt,
+    variant_group_id AS variantGroupId, scene_label AS sceneLabel FROM gallery WHERE 1=1`
   const params: unknown[] = []
   if (filters?.type && filters.type !== 'all') {
     sql += ` AND type = ?`; params.push(filters.type)

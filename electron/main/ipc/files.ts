@@ -55,6 +55,31 @@ export function fileHandlers(): void {
     return { canceled: false, filePath: result.filePath }
   })
 
+  // 把一组绝对路径批量拷到用户选的文件夹。画布节点只有文件路径、没有素材库 id，
+  // 所以不能复用 gallery:batch-save（它按 id 查），单独走这条按路径导出。重名追加 " (n)"。
+  ipcMain.handle(IPC.FILE_EXPORT_TO_DIR, async (e, paths: string[]) => {
+    if (!Array.isArray(paths) || paths.length === 0) return { canceled: true, saved: 0 }
+    const win = BrowserWindow.fromWebContents(e.sender)
+    const dlg = win
+      ? await dialog.showOpenDialog(win, { properties: ['openDirectory', 'createDirectory'] })
+      : await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'] })
+    if (dlg.canceled || !dlg.filePaths[0]) return { canceled: true, saved: 0 }
+    const targetDir = dlg.filePaths[0]
+    let saved = 0
+    const failures: string[] = []
+    for (const src of paths) {
+      if (!src || !fs.existsSync(src)) { failures.push(src); continue }
+      const base = path.basename(src)
+      const ext = path.extname(base)
+      const stem = base.slice(0, base.length - ext.length)
+      let dest = path.join(targetDir, base)
+      let n = 1
+      while (fs.existsSync(dest)) { dest = path.join(targetDir, `${stem} (${n})${ext}`); n++ }
+      try { fs.copyFileSync(src, dest); saved++ } catch { failures.push(src) }
+    }
+    return { canceled: false, saved, failures, targetDir }
+  })
+
   ipcMain.handle(IPC.SHELL_SHOW_ITEM, (_e, filePath: string) => {
     if (!fs.existsSync(filePath)) throw new Error('File not found: ' + filePath)
     shell.showItemInFolder(filePath)

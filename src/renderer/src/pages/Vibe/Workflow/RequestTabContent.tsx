@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Square, Play, Brain, Zap, MessageSquare, Search, Bug, Wrench, Send, Coins, Wand2, User } from 'lucide-react'
+import { Square, Play, Brain, Zap, MessageSquare, Search, Bug, Coins, User } from 'lucide-react'
 import { cn } from '../../../lib/utils'
 import { TaskRow } from './TaskRow'
 import { MessageBubble } from './MessageBubble'
@@ -7,6 +7,8 @@ import { MessagesMinimap } from './MessagesMinimap'
 import { Select } from '../../../components/ui/Select'
 import { ThinkingConsole } from '../../../components/ui/ThinkingConsole'
 import { formatCostUsd, formatTokens } from '../../../lib/format-cost'
+import { VibeComposer, INTENT_META, type VibeMode } from '../Composer'
+import type { ComposerAttachment } from '../../../lib/attachments'
 import type { VibeRequestInfo, VibeTaskInfo, VibeMessageInfo, VibeIntent } from '../../../../../shared/ipc-types'
 import { useEmployeesStore } from '../../../stores/employees'
 
@@ -17,7 +19,7 @@ interface Props {
   streamingTaskId: string | null
   running: 'propose' | 'apply' | 'explore' | 'chat' | 'bugfix' | null
   /** Unified send: auto-detect intent unless forceIntent is given (manual lock). */
-  onRun: (prompt: string, requestId?: string, forceIntent?: VibeIntent) => void
+  onRun: (prompt: string, requestId?: string, forceIntent?: VibeIntent, attachments?: ComposerAttachment[]) => void
   onApply: () => void
   onStop: () => void
   onToggleTaskStatus: (taskId: string, status: 'pending' | 'done' | 'skipped') => void
@@ -27,20 +29,14 @@ interface Props {
   onRevertTask?: (taskId: string) => void
 }
 
-const INTENT_META: Record<VibeIntent, { label: string; Icon: typeof MessageSquare; color: string; bg: string }> = {
-  chat:    { label: '对话',     Icon: MessageSquare, color: 'text-slate-700 dark:text-slate-200', bg: 'bg-slate-500/15 border-slate-500/40' },
-  explore: { label: '探索',     Icon: Search,        color: 'text-sky-700 dark:text-sky-300',     bg: 'bg-sky-500/15 border-sky-500/40' },
-  bugfix:  { label: '修复 BUG', Icon: Bug,           color: 'text-rose-700 dark:text-rose-300',   bg: 'bg-rose-500/15 border-rose-500/40' },
-  change:  { label: '新需求',   Icon: Wrench,        color: 'text-primary',                       bg: 'bg-primary/15 border-primary/40' }
-}
-
 export function RequestTabContent({
   request, tasks, messages, streamingTaskId, running,
   onRun, onApply, onStop, onToggleTaskStatus, onReassignTask, onRevertTask
 }: Props) {
   const [input, setInput] = useState('')
+  const [attachments, setAttachments] = useState<ComposerAttachment[]>([])
   // Mode: 'auto' = let the backend classify; a VibeIntent = manual lock.
-  const [mode, setMode] = useState<'auto' | VibeIntent>('auto')
+  const [mode, setMode] = useState<VibeMode>('auto')
   // Run start — drives the ThinkingConsole "已用时" clock; reset whenever the
   // run (re)starts (e.g. propose → apply) or the user switches request tabs.
   const [runStartedAt, setRunStartedAt] = useState<number | undefined>(undefined)
@@ -61,7 +57,6 @@ export function RequestTabContent({
   }, [messages, running])
   const messagesRef = useRef<HTMLDivElement>(null)
   const messagesContentRef = useRef<HTMLDivElement>(null)
-  const taRef = useRef<HTMLTextAreaElement>(null)
 
   // AI-company: which hired employee承接 this request. Reads the SHARED employee
   // store so a hire/fire in the 人才市场 tab is reflected here immediately (the
@@ -87,13 +82,6 @@ export function RequestTabContent({
     const el = messagesRef.current
     if (el) el.scrollTop = el.scrollHeight
   }, [request?.id])
-
-  useEffect(() => {
-    const ta = taRef.current
-    if (!ta) return
-    ta.style.height = 'auto'
-    ta.style.height = Math.min(ta.scrollHeight, 200) + 'px'
-  }, [input])
 
   // Auto-scroll: ResizeObserver on inner content fires whenever messages grow
   // (new bubble, streaming text accumulation, task expansions, etc).
@@ -139,9 +127,11 @@ export function RequestTabContent({
 
   function submit() {
     const t = input.trim()
-    if (!t || running || !request) return
-    onRun(t, request.id, mode === 'auto' ? undefined : mode)
+    // Allow attachment-only sends (e.g. "看看这张图" pasted with no text).
+    if ((!t && attachments.length === 0) || running || !request) return
+    onRun(t, request.id, mode === 'auto' ? undefined : mode, attachments.length ? attachments : undefined)
     setInput('')
+    setAttachments([])
     // User just sent a message — always pin them to the bottom.
     stickRef.current = true
     requestAnimationFrame(() => {
@@ -363,73 +353,20 @@ export function RequestTabContent({
         </div>
       </div>
 
-      {/* Input — pinned to bottom, auto-intent with optional manual lock */}
-      <div className="border-t border-border p-3 shrink-0 bg-card/30 space-y-2">
-        <div className="flex items-center gap-1.5">
-          <span className="text-[11px] text-muted-foreground">模式</span>
-          <Select
-            value={mode}
-            onChange={v => setMode(v as 'auto' | VibeIntent)}
-            disabled={running !== null}
-            title="自动让 AI 判断该聊天/探索/修复/拆需求；也可手动锁定某模式"
-            popoverWidth={180}
-            options={[
-              { value: 'auto', label: '自动识别', icon: <Wand2 size={13} /> },
-              { value: 'chat', label: `${INTENT_META.chat.label}（不读项目）` },
-              { value: 'explore', label: `${INTENT_META.explore.label}（只读代码）` },
-              { value: 'bugfix', label: `${INTENT_META.bugfix.label}（自动定位修复）` },
-              { value: 'change', label: `${INTENT_META.change.label}（拆成任务）` }
-            ]}
-          />
-          <span className="text-[11px] text-muted-foreground ml-auto">
-            {mode === 'auto' ? 'AI 自动判断你的意图' : `已锁定：${INTENT_META[mode].label}`}
-          </span>
-        </div>
-
-        <div className="flex items-end gap-2">
-          <textarea
-            ref={taRef}
-            value={input}
-            onChange={e => setInput(e.target.value)}
-            onKeyDown={e => {
-              if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault()
-                submit()
-              }
-            }}
-            rows={3}
-            disabled={running !== null}
-            placeholder={
-              running
-                ? '运行中… 等完成再说'
-                : mode === 'auto'    ? '说出你的需求，AI 自动判断（聊天/探索/修复/拆需求）…'
-                : mode === 'chat'    ? '随便聊点什么…'
-                : mode === 'explore' ? '问 AI 关于这个项目的问题…'
-                : mode === 'bugfix'  ? '描述 BUG：症状、复现步骤、报错…'
-                                     : '描述要做的改动…'
-            }
-            className="flex-1 resize-none rounded-lg bg-background border border-border px-3 py-2 text-[13px] leading-[18px] outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary/40 disabled:opacity-50 min-h-[70px]"
-            style={{ maxHeight: '200px' }}
-          />
-          {running ? (
-            <button
-              onClick={onStop}
-              className="h-10 px-3 rounded-lg bg-destructive text-destructive-foreground text-xs font-medium hover:bg-destructive/90 flex items-center gap-1.5 shrink-0"
-            >
-              <Square size={12} /> 停止
-            </button>
-          ) : (
-            <button
-              onClick={submit}
-              disabled={!input.trim()}
-              className="h-[70px] w-[60px] rounded-lg bg-primary text-primary-foreground text-xs font-medium hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed flex flex-col items-center justify-center gap-1 shrink-0"
-              title={mode === 'auto' ? 'Enter — 自动' : `Enter — ${INTENT_META[mode].label}`}
-            >
-              <Send size={14} />
-              <span className="text-[10px]">{mode === 'auto' ? '发送' : INTENT_META[mode].label}</span>
-            </button>
-          )}
-        </div>
+      {/* Input — pinned to bottom; shared VibeComposer (same visual language as
+          the 对话 page's ChatInput). */}
+      <div className="border-t border-border px-4 pt-3 pb-2 shrink-0 bg-card/30">
+        <VibeComposer
+          value={input}
+          onChange={setInput}
+          mode={mode}
+          onModeChange={setMode}
+          running={running}
+          onSubmit={submit}
+          onStop={onStop}
+          attachments={attachments}
+          setAttachments={setAttachments}
+        />
       </div>
     </div>
   )

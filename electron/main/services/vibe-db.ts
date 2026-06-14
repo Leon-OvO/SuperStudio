@@ -78,6 +78,8 @@ export interface VibeMessageRow {
   output_tokens: number | null
   cost_usd: number | null
   model: string | null
+  /** JSON array of { name, path, mimeType } for user-message attachments; null = none. */
+  attachments: string | null
 }
 
 // ---------------------------------------------------------------------------
@@ -322,6 +324,8 @@ export function appendMessage(args: {
   outputTokens?: number | null
   costUsd?: number | null
   model?: string | null
+  /** Array of { name, path, mimeType } persisted as JSON for user attachments. */
+  attachments?: Array<{ name: string; path: string; mimeType: string }> | null
 }): VibeMessageRow {
   const id = randomUUID()
   const now = Date.now()
@@ -329,23 +333,24 @@ export function appendMessage(args: {
   const outputTokens = args.outputTokens ?? null
   const costUsd = args.costUsd ?? null
   const model = args.model ?? null
+  const attachments = args.attachments?.length ? JSON.stringify(args.attachments) : null
   dbRun(
     `INSERT INTO vibe_messages
        (id, request_id, role, content, tool_name, tool_args, is_error, task_id, created_at,
-        input_tokens, output_tokens, cost_usd, model)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        input_tokens, output_tokens, cost_usd, model, attachments)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       id, args.requestId, args.role, args.content,
       args.toolName ?? null, args.toolArgs ?? null,
       args.isError ? 1 : 0, args.taskId ?? null, now,
-      inputTokens, outputTokens, costUsd, model
+      inputTokens, outputTokens, costUsd, model, attachments
     ]
   )
   return {
     id, request_id: args.requestId, role: args.role, content: args.content,
     tool_name: args.toolName ?? null, tool_args: args.toolArgs ?? null,
     is_error: args.isError ? 1 : 0, task_id: args.taskId ?? null, created_at: now,
-    input_tokens: inputTokens, output_tokens: outputTokens, cost_usd: costUsd, model
+    input_tokens: inputTokens, output_tokens: outputTokens, cost_usd: costUsd, model, attachments
   }
 }
 

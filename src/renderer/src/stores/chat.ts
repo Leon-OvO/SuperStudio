@@ -39,8 +39,9 @@ interface ChatState {
    *  to reconcile a streamed placeholder into the authoritative final message. */
   upsertMessage: (sessionId: string, message: Message) => void
   /** Append a streamed assistant text chunk, creating a placeholder message on
-   *  the first delta so tokens render live before AGENT_DONE arrives. */
-  appendStreamDelta: (sessionId: string, messageId: string, delta: string) => void
+   *  the first delta so tokens render live before AGENT_DONE arrives. In group
+   *  chat, speakerEmployeeId tags the placeholder so the speaker shows immediately. */
+  appendStreamDelta: (sessionId: string, messageId: string, delta: string, speakerEmployeeId?: string) => void
   removeMessage: (sessionId: string, messageId: string) => void
   removeMessagesFrom: (sessionId: string, messageId: string) => void
   updateMessageContent: (sessionId: string, messageId: string, content: string) => void
@@ -57,6 +58,11 @@ interface ChatState {
   /** Update a session's working directory in the local list (after the main
    *  process has persisted it via setSessionWorkingDir IPC). */
   setSessionWorkingDir: (sessionId: string, dir: string) => void
+  /** Update a session's bound employee in the local list (after the main process
+   *  has persisted it via setSessionAssignee IPC). null = unbound. */
+  setSessionAssignee: (sessionId: string, employeeId: string | null) => void
+  /** Update a group session's member list locally (after add/remove member IPC). */
+  setSessionGroupEmployees: (sessionId: string, ids: string[]) => void
 }
 
 export const useChatStore = create<ChatState>((set) => ({
@@ -91,7 +97,7 @@ export const useChatStore = create<ChatState>((set) => ({
     next[idx] = message
     return { messages: { ...s.messages, [sessionId]: next } }
   }),
-  appendStreamDelta: (sessionId, messageId, delta) => set(s => {
+  appendStreamDelta: (sessionId, messageId, delta, speakerEmployeeId) => set(s => {
     const list = s.messages[sessionId] || []
     const idx = list.findIndex(m => m.id === messageId)
     if (idx >= 0) {
@@ -100,7 +106,8 @@ export const useChatStore = create<ChatState>((set) => ({
       return { messages: { ...s.messages, [sessionId]: next } }
     }
     const placeholder: Message = {
-      id: messageId, sessionId, role: 'assistant', content: delta, createdAt: Date.now()
+      id: messageId, sessionId, role: 'assistant', content: delta, createdAt: Date.now(),
+      ...(speakerEmployeeId ? { speakerEmployeeId } : {})
     }
     return { messages: { ...s.messages, [sessionId]: [...list, placeholder] } }
   }),
@@ -153,5 +160,11 @@ export const useChatStore = create<ChatState>((set) => ({
   })),
   setSessionWorkingDir: (sessionId, dir) => set(s => ({
     sessions: s.sessions.map(sess => sess.id === sessionId ? { ...sess, workingDir: dir } : sess)
+  })),
+  setSessionAssignee: (sessionId, employeeId) => set(s => ({
+    sessions: s.sessions.map(sess => sess.id === sessionId ? { ...sess, employeeId } : sess)
+  })),
+  setSessionGroupEmployees: (sessionId, ids) => set(s => ({
+    sessions: s.sessions.map(sess => sess.id === sessionId ? { ...sess, groupEmployeeIds: ids } : sess)
   }))
 }))

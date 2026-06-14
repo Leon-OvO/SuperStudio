@@ -3,6 +3,7 @@ import { BRAND } from '@shared/brand'
 import { Plus, Trash2, Pencil, ArrowLeft, Loader2, CheckCircle2, XCircle, Server, Cpu, Globe, X, ShieldAlert } from 'lucide-react'
 import type { McpServerConfig } from '../../../../shared/ipc-types'
 import { Select } from '../../components/ui/Select'
+import { Switch } from '../../components/ui/Switch'
 import { cn } from '../../lib/utils'
 import { useConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { toast } from '../../components/ui/Toast'
@@ -162,19 +163,11 @@ export function McpServers() {
                   )}
                 </div>
                 <div className="flex items-center gap-1 shrink-0">
-                  <button
-                    onClick={() => toggleEnabled(s)}
+                  <Switch
+                    checked={s.enabled}
+                    onChange={() => toggleEnabled(s)}
                     title={s.enabled ? '停用' : '启用'}
-                    className={cn(
-                      'w-10 h-5 rounded-full relative transition-colors',
-                      s.enabled ? 'bg-primary' : 'bg-muted'
-                    )}
-                  >
-                    <span className={cn(
-                      'absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all',
-                      s.enabled ? 'left-5' : 'left-0.5'
-                    )} />
-                  </button>
+                  />
                   <button onClick={() => editServer(s)} title="编辑" className="p-1 text-muted-foreground hover:text-foreground hover:bg-muted/60 rounded">
                     <Pencil size={13} />
                   </button>

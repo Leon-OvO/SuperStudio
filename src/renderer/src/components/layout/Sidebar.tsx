@@ -1,6 +1,6 @@
 import {
-  MessageSquare, Zap, Image, Film, Brain, Building2, Sparkles, CalendarClock, Settings,
-  PanelLeftClose, PanelLeftOpen, type LucideIcon
+  MessageSquare, Image, Brain, Building2, Sparkles, CalendarClock, Settings,
+  LayoutDashboard, PanelLeftClose, PanelLeftOpen, type LucideIcon
 } from 'lucide-react'
 import { useUIStore } from '../../stores/ui'
 import { useScheduledNotifications } from '../../stores/scheduledNotifications'
@@ -19,9 +19,8 @@ export function Sidebar() {
   const navItems = [
     { id: 'chat' as const, icon: MessageSquare, label: t('nav.chat') },
     { id: 'vibe' as const, icon: Building2, label: t('nav.vibe') },
-    { id: 'video' as const, icon: Film, label: t('nav.video') },
+    { id: 'studio' as const, icon: LayoutDashboard, label: t('nav.studio') },
     { id: 'gallery' as const, icon: Image, label: t('nav.gallery') },
-    { id: 'workflow' as const, icon: Zap, label: t('nav.workflow') },
     { id: 'memory' as const, icon: Brain, label: t('nav.memory') },
     { id: 'skills' as const, icon: Sparkles, label: t('nav.skills') },
     { id: 'scheduler' as const, icon: CalendarClock, label: t('nav.scheduler') },
@@ -30,7 +29,7 @@ export function Sidebar() {
   return (
     <aside
       className={cn(
-        'flex flex-col py-3 gap-1.5 bg-sidebar border-r border-sidebar-border shrink-0 px-1.5 items-center transition-[width] duration-200',
+        'flex flex-col py-3 gap-1.5 bg-sidebar/80 backdrop-blur-xl border-r border-sidebar-border shrink-0 px-1.5 items-center transition-[width] duration-200',
         expanded ? 'w-[78px]' : 'w-[56px]'
       )}
     >

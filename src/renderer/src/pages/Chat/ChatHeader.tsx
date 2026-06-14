@@ -3,6 +3,9 @@ import { GitBranch, MessageSquare, Pencil, Check, X, Download, ChevronDown, Brai
 import { cn } from '../../lib/utils'
 import { useT } from '../../lib/i18n'
 import { toast } from '../../components/ui/Toast'
+import { EmployeePicker } from './EmployeePicker'
+import { GroupRoster } from './GroupRoster'
+import type { EmployeeInfo } from '../../../../shared/ipc-types'
 
 // ImageParams + helpers live here for backward compat — used by ChatPage + ChatInput
 export interface ImageParams {
@@ -40,13 +43,24 @@ interface Props {
   onRename?: (newTitle: string) => void
   /** Export the active session. Format chosen via dropdown. */
   onExport?: (format: 'markdown' | 'json') => void
+  /** Hired employees, for the "与员工单独对话" picker. */
+  employees?: EmployeeInfo[]
+  /** Currently-bound employee id for this session (null = unbound). */
+  boundEmployeeId?: string | null
+  /** Bind / unbind an employee to this session (null = unbind). */
+  onBindEmployee?: (employeeId: string | null) => void
+  /** Group-chat member ids (non-empty ⇒ show a roster chip instead of the picker). */
+  groupEmployeeIds?: string[] | null
+  /** Pull an employee into the group / remove one (group chat only). */
+  onAddGroupMember?: (employeeId: string) => void
+  onRemoveGroupMember?: (employeeId: string) => void
 }
 
 /**
  * Slim chat header — shows the current session title prominently and a few
  * top-right actions. Click the title (or the pencil) to rename inline.
  */
-export function ChatHeader({ sessionId, sessionTitle, onSaveAsWorkflow, onRename, onExport }: Props) {
+export function ChatHeader({ sessionId, sessionTitle, onSaveAsWorkflow, onRename, onExport, employees, boundEmployeeId, onBindEmployee, groupEmployeeIds, onAddGroupMember, onRemoveGroupMember }: Props) {
   const t = useT()
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(sessionTitle)
@@ -172,6 +186,21 @@ export function ChatHeader({ sessionId, sessionTitle, onSaveAsWorkflow, onRename
               <Pencil size={11} className="opacity-0 group-hover:opacity-60 transition-opacity shrink-0 text-muted-foreground" />
             )}
           </button>
+          {onBindEmployee && (
+            <EmployeePicker
+              employees={employees ?? []}
+              value={boundEmployeeId ?? null}
+              onChange={onBindEmployee}
+            />
+          )}
+          {(groupEmployeeIds?.length ?? 0) > 0 && onAddGroupMember && onRemoveGroupMember && (
+            <GroupRoster
+              employees={employees ?? []}
+              memberIds={groupEmployeeIds ?? []}
+              onAdd={onAddGroupMember}
+              onRemove={onRemoveGroupMember}
+            />
+          )}
           <button
             onClick={rememberConversation}
             disabled={remembering}

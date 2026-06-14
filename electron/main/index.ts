@@ -1,6 +1,7 @@
 import { app, BrowserWindow, shell, protocol, ipcMain } from 'electron'
 import path from 'path'
 import fs from 'fs'
+import os from 'os'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { initDb } from './db/sqlite'
 import { registerIpcHandlers } from './ipc'
@@ -134,6 +135,22 @@ if (!gotSingleInstanceLock) {
   })
 }
 
+// OS-level translucency behind the window. macOS gets real vibrancy; Windows 11+
+// gets DWM acrylic (needs a transparent backgroundColor so the material shows).
+// Win10/Linux get nothing — leaving the window opaque — because a transparent
+// window there would just reveal the bare desktop. The renderer mirrors this
+// gate (preload `vibrancy` flag → `.platform-vibrancy`) so the chrome only goes
+// translucent when there's actually a backdrop to show.
+function vibrancyWindowOptions(): Record<string, unknown> {
+  if (process.platform === 'darwin') {
+    return { vibrancy: 'under-window', visualEffectState: 'active', backgroundColor: '#00000000' }
+  }
+  if (process.platform === 'win32' && parseInt(os.release().split('.')[2] || '0', 10) >= 22000) {
+    return { backgroundMaterial: 'acrylic', backgroundColor: '#00000000' }
+  }
+  return {}
+}
+
 function createWindow(): void {
   mainWindow = new BrowserWindow({
     width: 1280,
@@ -144,6 +161,7 @@ function createWindow(): void {
     autoHideMenuBar: true,
     frame: process.platform === 'darwin',
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'hidden',
+    ...vibrancyWindowOptions(),
     // Windows + Linux: explicitly set the window/taskbar icon so dev mode also
     // shows it. macOS reads the icon from the .app bundle's Info.plist instead.
     ...(process.platform !== 'darwin' ? { icon: path.join(__dirname, BRAND.id === 'dwork' ? '../../build/dwork/icon.png' : '../../build/icon.png') } : {}),

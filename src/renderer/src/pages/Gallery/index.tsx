@@ -1,8 +1,8 @@
-import { useEffect, useState, useMemo, useCallback, useRef } from 'react'
+import { useEffect, useState, useMemo, useCallback, useRef, useDeferredValue } from 'react'
 import {
   Trash2, Image as ImageIcon, Video as VideoIcon, X, CheckSquare, Square, Search,
   ChevronLeft, ChevronRight, Copy, Download, FolderOpen, Check, ImagePlus, Wand2,
-  FolderDown, Upload, Music
+  FolderDown, Upload, Music, LayoutGrid, List as ListIcon
 } from 'lucide-react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import type { GalleryItem } from '../../../../shared/ipc-types'
@@ -22,10 +22,10 @@ function toLocalUrl(p: string): string {
 }
 
 type Filter = 'all' | 'image' | 'video' | 'audio'
-type Source = 'all' | 'chat' | 'workflow' | 'import'
+type Source = 'all' | 'chat' | 'workflow' | 'canvas' | 'import'
 
 function sourceLabel(s: GalleryItem['source']): string {
-  return s === 'chat' ? '对话' : s === 'workflow' ? '工作流' : '本地导入'
+  return s === 'chat' ? '对话' : s === 'workflow' ? '工作流' : s === 'canvas' ? '画布' : '本地导入'
 }
 
 function getDateGroup(ts: number): string {
@@ -55,6 +55,8 @@ export function GalleryPage() {
   const dlg = useConfirmDialog()
   const t = useT()
   const { setPendingChatAttachments, setPendingChatImageMode, setPage: setUIPage } = useUIStore()
+  const galleryView = useUIStore(s => s.galleryView)
+  const setGalleryView = useUIStore(s => s.setGalleryView)
 
   const useAsReference = useCallback((item: GalleryItem) => {
     if (item.type !== 'image') return
@@ -160,13 +162,16 @@ export function GalleryPage() {
     setSelected(next)
   }
 
+  // Defer the search term so re-filtering/grouping a large library stays off the
+  // keystroke path — typing in the box never janks even with thousands of items.
+  const deferredQuery = useDeferredValue(query)
   const filtered = useMemo(() => {
     let out = items
     if (filter !== 'all') out = out.filter(i => i.type === filter)
-    const q = query.trim().toLowerCase()
+    const q = deferredQuery.trim().toLowerCase()
     if (q) out = out.filter(i => i.prompt.toLowerCase().includes(q))
     return out
-  }, [items, filter, query])
+  }, [items, filter, deferredQuery])
 
   const counts = useMemo(() => ({
     all: items.length,
@@ -182,8 +187,25 @@ export function GalleryPage() {
 
   const allSelected = useMemo(() => filtered.length > 0 && selected.size === filtered.length, [filtered, selected])
 
-  // Group by date
+  // Group by date — EXCEPT canvas view, which groups by variant group (一批「批量
+  // 场景出图」的产物聚在一起) so each batch can be exported by scene as a unit.
   const grouped = useMemo(() => {
+    if (source === 'canvas') {
+      const groups = new Map<string, GalleryItem[]>()
+      for (const item of filtered) {
+        const key = item.variantGroupId || `single:${item.id}`
+        if (!groups.has(key)) groups.set(key, [])
+        groups.get(key)!.push(item)
+      }
+      // Newest group first (by max createdAt within the group).
+      return [...groups.entries()]
+        .sort((a, b) => Math.max(...b[1].map(i => i.createdAt)) - Math.max(...a[1].map(i => i.createdAt)))
+        .map(([key, gItems]) => {
+          const scenes = [...new Set(gItems.map(i => i.sceneLabel).filter(Boolean))]
+          const label = key.startsWith('single:') ? '单张' : (scenes.length ? scenes.join(' · ') : '一批出图')
+          return { label, items: gItems, groupKey: key.startsWith('single:') ? undefined : key }
+        })
+    }
     const groups: Record<string, GalleryItem[]> = {}
     for (const item of filtered) {
       const g = getDateGroup(item.createdAt)
@@ -191,7 +213,12 @@ export function GalleryPage() {
       groups[g].push(item)
     }
     return DATE_GROUP_ORDER.filter(g => groups[g]?.length).map(g => ({ label: g, items: groups[g] }))
-  }, [filtered])
+  }, [filtered, source])
+
+  async function handleExportGroup(groupKey: string) {
+    const r = await window.api.canvasExportGroup(groupKey)
+    if (r && !r.canceled) toast.success(`已按场景导出 ${r.saved} 张到所选文件夹`)
+  }
 
   function openPreview(item: GalleryItem) {
     const idx = filtered.findIndex(i => i.id === item.id)
@@ -236,11 +263,32 @@ export function GalleryPage() {
             { value: 'all', label: t('gallery.sourceAll') },
             { value: 'chat', label: t('gallery.sourceChat') },
             { value: 'workflow', label: t('gallery.sourceWorkflow') },
+            { value: 'canvas', label: t('gallery.sourceCanvas') },
             { value: 'import', label: t('gallery.sourceImport') }
           ]}
           size="sm"
           title="按来源筛选"
         />
+
+        {/* Grid / list view toggle */}
+        <div className="flex items-center gap-0.5 p-0.5 rounded-lg bg-muted/60 shrink-0">
+          <button
+            onClick={() => setGalleryView('grid')}
+            title="网格视图"
+            className={cn('w-7 h-7 grid place-items-center rounded-md transition-colors',
+              galleryView === 'grid' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground')}
+          >
+            <LayoutGrid size={14} />
+          </button>
+          <button
+            onClick={() => setGalleryView('list')}
+            title="列表视图"
+            className={cn('w-7 h-7 grid place-items-center rounded-md transition-colors',
+              galleryView === 'list' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground')}
+          >
+            <ListIcon size={14} />
+          </button>
+        </div>
 
         <button
           onClick={handleImport}
@@ -316,12 +364,14 @@ export function GalleryPage() {
       ) : (
         <VirtualGalleryGrid
           grouped={grouped}
+          view={galleryView}
           selectedIds={selected}
           onToggleSelect={toggleSelect}
           onPreviewItem={openPreview}
           onDeleteItem={handleDelete}
           onUseAsReference={useAsReference}
           onEditItem={setEditorItem}
+          onExportGroup={source === 'canvas' ? handleExportGroup : undefined}
           ctxMenu={ctxMenu}
         />
       )}
@@ -401,17 +451,21 @@ function columnsForWidth(w: number): number {
 }
 
 type GridRow =
-  | { kind: 'header'; label: string; itemCount: number }
+  | { kind: 'header'; label: string; itemCount: number; groupKey?: string }
   | { kind: 'items'; items: GalleryItem[] }
+  | { kind: 'item'; item: GalleryItem }
 
 interface VirtualGridProps {
-  grouped: Array<{ label: string; items: GalleryItem[] }>
+  grouped: Array<{ label: string; items: GalleryItem[]; groupKey?: string }>
+  view: 'grid' | 'list'
   selectedIds: Set<number>
   onToggleSelect: (id: number) => void
   onPreviewItem: (item: GalleryItem) => void
   onDeleteItem: (id: number) => void
   onUseAsReference: (item: GalleryItem) => void
   onEditItem: (item: GalleryItem) => void
+  /** Canvas view only: export a whole variant group, named by scene label. */
+  onExportGroup?: (groupKey: string) => void
   ctxMenu: ReturnType<typeof useImageContextMenu>
 }
 
@@ -422,8 +476,8 @@ interface VirtualGridProps {
  * the page used before virtualization.
  */
 function VirtualGalleryGrid({
-  grouped, selectedIds, onToggleSelect, onPreviewItem, onDeleteItem,
-  onUseAsReference, onEditItem, ctxMenu
+  grouped, view, selectedIds, onToggleSelect, onPreviewItem, onDeleteItem,
+  onUseAsReference, onEditItem, onExportGroup, ctxMenu
 }: VirtualGridProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const [containerWidth, setContainerWidth] = useState(0)
@@ -443,22 +497,27 @@ function VirtualGalleryGrid({
   const GAP = 12             // gap-3
   const HEADER_H = 36        // section header row height including spacing
   const ROW_GAP = 12         // vertical gap between rows
+  const LIST_ROW_H = 72      // compact list row height including spacing
 
   const cols = Math.max(1, columnsForWidth(containerWidth))
   const usable = Math.max(0, containerWidth - PADDING_X * 2 - GAP * (cols - 1))
   const cellSize = containerWidth > 0 ? Math.floor(usable / cols) : 200  // aspect-square: width === height
 
-  // Build flat rows
+  // Build flat rows — grid packs `cols` items per row; list is one item per row.
   const rows = useMemo<GridRow[]>(() => {
     const out: GridRow[] = []
     for (const g of grouped) {
-      out.push({ kind: 'header', label: g.label, itemCount: g.items.length })
-      for (let i = 0; i < g.items.length; i += cols) {
-        out.push({ kind: 'items', items: g.items.slice(i, i + cols) })
+      out.push({ kind: 'header', label: g.label, itemCount: g.items.length, groupKey: g.groupKey })
+      if (view === 'list') {
+        for (const item of g.items) out.push({ kind: 'item', item })
+      } else {
+        for (let i = 0; i < g.items.length; i += cols) {
+          out.push({ kind: 'items', items: g.items.slice(i, i + cols) })
+        }
       }
     }
     return out
-  }, [grouped, cols])
+  }, [grouped, cols, view])
 
   const virtualizer = useVirtualizer({
     count: rows.length,
@@ -466,21 +525,24 @@ function VirtualGalleryGrid({
     estimateSize: (index) => {
       const row = rows[index]
       if (!row) return HEADER_H
-      return row.kind === 'header' ? HEADER_H : cellSize + ROW_GAP
+      if (row.kind === 'header') return HEADER_H
+      if (row.kind === 'item') return LIST_ROW_H
+      return cellSize + ROW_GAP
     },
-    overscan: 4,
+    overscan: 6,
     getItemKey: (index) => {
       const r = rows[index]
       if (!r) return index
       if (r.kind === 'header') return `h:${r.label}`
+      if (r.kind === 'item') return `r:${r.item.id}`
       return `i:${r.items.map(it => it.id).join(',')}`
     }
   })
 
-  // Recompute estimateSize results when column geometry changes
+  // Recompute estimateSize results when column geometry or view mode changes
   useEffect(() => {
     virtualizer.measure()
-  }, [cols, cellSize, virtualizer])
+  }, [cols, cellSize, view, virtualizer])
 
   return (
     <div ref={scrollRef} className="flex-1 overflow-y-auto p-6">
@@ -501,10 +563,40 @@ function VirtualGalleryGrid({
               }}
             >
               {row.kind === 'header' ? (
-                <h3 className="text-xs font-semibold text-muted-foreground/60 uppercase tracking-widest mb-3 pt-2">
-                  {row.label}
-                  <span className="ml-2 text-muted-foreground/40 font-normal normal-case tracking-normal">{row.itemCount}</span>
-                </h3>
+                <div className="flex items-center gap-2 mb-3 pt-2">
+                  <h3 className="text-xs font-semibold text-muted-foreground/60 uppercase tracking-widest">
+                    {row.label}
+                    <span className="ml-2 text-muted-foreground/40 font-normal normal-case tracking-normal">{row.itemCount}</span>
+                  </h3>
+                  {row.groupKey && onExportGroup && (
+                    <button
+                      onClick={() => onExportGroup(row.groupKey!)}
+                      title="按场景标签一键导出整组"
+                      className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors normal-case tracking-normal"
+                    >
+                      <FolderDown size={11} /> 导出整组
+                    </button>
+                  )}
+                </div>
+              ) : row.kind === 'item' ? (
+                <GalleryListRow
+                  item={row.item}
+                  selected={selectedIds.has(row.item.id)}
+                  onToggle={() => onToggleSelect(row.item.id)}
+                  onPreview={() => onPreviewItem(row.item)}
+                  onDelete={() => onDeleteItem(row.item.id)}
+                  onUseAsReference={row.item.type === 'image' ? () => onUseAsReference(row.item) : undefined}
+                  onEdit={row.item.type === 'image' ? () => onEditItem(row.item) : undefined}
+                  onContextMenu={(e) => {
+                    if (row.item.type !== 'image') return
+                    ctxMenu.open(e, {
+                      filePath: row.item.filePath,
+                      src: toLocalUrl(row.item.filePath),
+                      onPreview: () => onPreviewItem(row.item),
+                      onEdit: () => onEditItem(row.item)
+                    })
+                  }}
+                />
               ) : (
                 <div
                   className="grid"
@@ -560,11 +652,12 @@ function GalleryCard({ item, selected, onToggle, onPreview, onDelete, onUseAsRef
             alt={item.prompt}
             className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
             loading="lazy"
+            decoding="async"
           />
         ) : item.type === 'video' ? (
           <div className="w-full h-full flex items-center justify-center bg-muted">
             {item.thumbnailPath ? (
-              <img src={toLocalUrl(item.thumbnailPath!)} alt="" className="w-full h-full object-cover" />
+              <img src={toLocalUrl(item.thumbnailPath!)} alt="" className="w-full h-full object-cover" loading="lazy" decoding="async" />
             ) : (
               <VideoIcon size={36} className="text-muted-foreground" />
             )}
@@ -623,6 +716,75 @@ function GalleryCard({ item, selected, onToggle, onPreview, onDelete, onUseAsRef
       <div className="absolute bottom-0 inset-x-0 p-2.5 bg-gradient-to-t from-black/80 via-black/40 to-transparent text-white opacity-0 group-hover:opacity-100 transition-opacity">
         <p className="line-clamp-2 text-[11px] leading-snug">{item.prompt}</p>
         <p className="text-white/50 text-[10px] mt-1">{formatDate(item.createdAt)}</p>
+      </div>
+    </div>
+  )
+}
+
+/** Compact list-view row: small thumbnail + prompt + meta + hover actions.
+ *  Lighter than the grid card; combined with virtualization it keeps large
+ *  libraries scrolling smoothly. */
+function GalleryListRow({ item, selected, onToggle, onPreview, onDelete, onUseAsReference, onEdit, onContextMenu }: CardProps) {
+  return (
+    <div
+      className={cn(
+        'group flex items-center gap-3 h-16 px-2 rounded-lg border cursor-pointer transition-colors',
+        selected ? 'border-primary bg-primary/5' : 'border-transparent hover:bg-accent/40'
+      )}
+      onClick={onPreview}
+      onContextMenu={onContextMenu}
+    >
+      <button
+        onClick={(e) => { e.stopPropagation(); onToggle() }}
+        className={cn('shrink-0 w-5 h-5 rounded-md flex items-center justify-center transition-colors',
+          selected ? 'bg-primary text-white' : 'text-muted-foreground/50 hover:text-foreground')}
+      >
+        {selected ? <CheckSquare size={13} /> : <Square size={13} />}
+      </button>
+
+      <div className="shrink-0 w-12 h-12 rounded-md overflow-hidden bg-muted flex items-center justify-center">
+        {item.type === 'image' ? (
+          <img src={toLocalUrl(item.filePath)} alt="" className="w-full h-full object-cover" loading="lazy" decoding="async" />
+        ) : item.type === 'video' ? (
+          item.thumbnailPath
+            ? <img src={toLocalUrl(item.thumbnailPath)} alt="" className="w-full h-full object-cover" loading="lazy" decoding="async" />
+            : <VideoIcon size={20} className="text-muted-foreground" />
+        ) : (
+          <Music size={20} className="text-primary/60" />
+        )}
+      </div>
+
+      <div className="flex-1 min-w-0">
+        <p className="text-sm truncate text-foreground/90">{item.prompt || '（无提示词）'}</p>
+        <p className="text-[11px] text-muted-foreground truncate flex items-center gap-1.5 mt-0.5">
+          {item.type === 'image' ? <ImageIcon size={11} className="shrink-0" />
+            : item.type === 'video' ? <VideoIcon size={11} className="shrink-0" />
+            : <Music size={11} className="shrink-0" />}
+          <span className="truncate">{item.modelName || (item.source === 'import' ? '本地文件' : '未知模型')}</span>
+          <span>·</span>
+          <span className="shrink-0">{formatDate(item.createdAt)}</span>
+          <span>·</span>
+          <span className="shrink-0">{sourceLabel(item.source)}</span>
+        </p>
+      </div>
+
+      <div className="shrink-0 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+        {onEdit && (
+          <button onClick={(e) => { e.stopPropagation(); onEdit() }} title="编辑"
+            className="w-7 h-7 rounded-md grid place-items-center text-muted-foreground hover:text-foreground hover:bg-accent transition-colors">
+            <Wand2 size={13} />
+          </button>
+        )}
+        {onUseAsReference && (
+          <button onClick={(e) => { e.stopPropagation(); onUseAsReference() }} title="用作参考图"
+            className="w-7 h-7 rounded-md grid place-items-center text-muted-foreground hover:text-foreground hover:bg-accent transition-colors">
+            <ImagePlus size={13} />
+          </button>
+        )}
+        <button onClick={(e) => { e.stopPropagation(); onDelete() }} title="删除"
+          className="w-7 h-7 rounded-md grid place-items-center text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors">
+          <Trash2 size={13} />
+        </button>
       </div>
     </div>
   )

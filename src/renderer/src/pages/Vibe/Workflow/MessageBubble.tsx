@@ -1,8 +1,9 @@
 import { useState } from 'react'
-import { Wrench, Check, AlertCircle, User, Bot, Info, Coins, Brain, ChevronRight } from 'lucide-react'
+import { Wrench, Check, AlertCircle, User, Bot, Info, Coins, Brain, ChevronRight, FileText } from 'lucide-react'
 import { cn } from '../../../lib/utils'
 import { Markdown } from '../../../lib/markdown'
 import { formatUsageLine } from '../../../lib/format-cost'
+import { toLocalFileUrl, isImageMime } from '../../../lib/attachments'
 import type { VibeMessageInfo } from '../../../../../shared/ipc-types'
 
 interface Props { msg: VibeMessageInfo }
@@ -53,10 +54,33 @@ function ThinkBlock({ content, streaming }: { content: string; streaming: boolea
 
 export function MessageBubble({ msg }: Props) {
   if (msg.role === 'user') {
+    const atts = msg.attachments ?? []
     return (
       <div className="flex items-start gap-2 py-1">
         <User size={12} className="text-muted-foreground mt-1 shrink-0" />
-        <div className="flex-1 min-w-0 text-xs text-foreground whitespace-pre-wrap">{msg.content}</div>
+        <div className="flex-1 min-w-0 space-y-1.5">
+          {atts.length > 0 && (
+            <div className="flex flex-wrap gap-1.5">
+              {atts.map((a, i) => (
+                isImageMime(a.mimeType) ? (
+                  <img
+                    key={i}
+                    src={toLocalFileUrl(a.path)}
+                    alt={a.name}
+                    title={a.name}
+                    className="h-16 w-16 rounded-lg object-cover border border-border"
+                  />
+                ) : (
+                  <span key={i} className="inline-flex items-center gap-1 px-1.5 py-1 rounded-lg bg-muted border border-border/60 text-[10px] text-foreground/80 max-w-[150px]">
+                    <FileText size={10} className="shrink-0 text-muted-foreground" />
+                    <span className="truncate">{a.name}</span>
+                  </span>
+                )
+              ))}
+            </div>
+          )}
+          {msg.content && <div className="text-xs text-foreground whitespace-pre-wrap">{msg.content}</div>}
+        </div>
       </div>
     )
   }

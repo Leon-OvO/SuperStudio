@@ -59,6 +59,48 @@ module.exports = {
         lg: 'var(--radius)',
         md: 'calc(var(--radius) - 2px)',
         sm: 'calc(var(--radius) - 4px)'
+      },
+      // macOS-style shadows: soft, diffuse, low-opacity (replaces Tailwind's harder
+      // defaults app-wide — every shadow-sm/md/lg/xl/2xl picks up the softer look).
+      boxShadow: {
+        sm: '0 1px 2px rgba(0,0,0,0.04), 0 1px 3px rgba(0,0,0,0.05)',
+        DEFAULT: '0 2px 8px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04)',
+        md: '0 4px 16px rgba(0,0,0,0.07), 0 2px 4px rgba(0,0,0,0.04)',
+        lg: '0 10px 30px rgba(0,0,0,0.10), 0 3px 8px rgba(0,0,0,0.05)',
+        xl: '0 18px 50px rgba(0,0,0,0.14), 0 6px 14px rgba(0,0,0,0.06)',
+        '2xl': '0 28px 70px rgba(0,0,0,0.20)'
+      },
+      // macOS-style overlay entrances: backdrops fade, dialogs spring-scale from
+      // slightly small + low, popovers/menus scale from their edge. Short + ease-out
+      // so it reads as snappy, not sluggish.
+      keyframes: {
+        'overlay-in': {
+          from: { opacity: '0' },
+          to: { opacity: '1' }
+        },
+        'dialog-in': {
+          from: { opacity: '0', transform: 'scale(0.96) translateY(8px)' },
+          to: { opacity: '1', transform: 'scale(1) translateY(0)' }
+        },
+        'popover-in': {
+          from: { opacity: '0', transform: 'scale(0.97) translateY(-4px)' },
+          to: { opacity: '1', transform: 'scale(1) translateY(0)' }
+        },
+        'menu-in': {
+          from: { opacity: '0', transform: 'scale(0.96)' },
+          to: { opacity: '1', transform: 'scale(1)' }
+        },
+        'toast-in': {
+          from: { opacity: '0', transform: 'translateX(16px) scale(0.98)' },
+          to: { opacity: '1', transform: 'translateX(0) scale(1)' }
+        }
+      },
+      animation: {
+        'overlay-in': 'overlay-in 0.18s ease-out',
+        'dialog-in': 'dialog-in 0.2s cubic-bezier(0.16, 1, 0.3, 1)',
+        'popover-in': 'popover-in 0.15s cubic-bezier(0.16, 1, 0.3, 1)',
+        'menu-in': 'menu-in 0.13s cubic-bezier(0.16, 1, 0.3, 1)',
+        'toast-in': 'toast-in 0.22s cubic-bezier(0.16, 1, 0.3, 1)'
       }
     }
   },

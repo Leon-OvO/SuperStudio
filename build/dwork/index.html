@@ -1,0 +1,658 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>DWork · 全模态 AI 生产力工作站</title>
+  <meta name="description" content="DWork —— 全模态 AI 生产力桌面工作站。对话、文档、图像、网页自动化与整机操控集于一体，下载即用。" />
+
+  <!-- ========================================================================
+       DWork 更新清单 —— 客户端「检测更新」与本页「下载/版本号」的唯一数据源。
+       发新版本时只改下面这段 JSON：
+         version      新版本号（DWork 客户端据此与当前版本比对，判断是否有更新）
+         publishedAt  发布日期
+         name         版本名（显示在客户端「发现新版本」卡片标题）
+         notes        更新说明（Markdown，显示在客户端更新卡片里）
+         mandatory    是否强制更新（true → 客户端可判定为必须升级）
+         minVersion   最低支持版本（低于它的客户端会被判定为必须升级）
+         downloads    安装版 / 便携版下载直链（本页下载按钮也取这里）
+       DWork 客户端启动时 GET 本页面，解析此 JSON 比对版本。
+       解析逻辑见 electron/main/services/remote-control-source.ts -> checkUpdate
+       ===================================================================== -->
+  <script type="application/json" id="dwork-update-manifest">
+  {
+    "product": "DWork",
+    "version": "0.1.2",
+    "name": "DWork 0.1.2",
+    "publishedAt": "2026-06-08",
+    "mandatory": false,
+    "minVersion": "0.0.0",
+    "notes": "- 优化若干已知问题，提升整体稳定性。\n- 如需手动获取，请到下方下载「安装版」或「便携版」。",
+    "downloads": {
+      "winInstaller": "",
+      "winPortable": ""
+    }
+  }
+  </script>
+
+  <!-- Bootstrap 5 -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" />
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet" />
+
+  <style>
+    :root {
+      --dw-orange: #F08519;
+      --dw-orange-600: #db720c;
+      --dw-orange-700: #b85d07;
+      --dw-orange-50: #fff5ea;
+      --dw-orange-100: #ffe8cf;
+      --dw-ink: #16191d;
+      --dw-ink-2: #2b3038;
+      --dw-muted: #6a7480;
+      --dw-line: #eceff3;
+      --dw-bg-soft: #fafbfc;
+
+      /* Bootstrap theme override */
+      --bs-primary: var(--dw-orange);
+      --bs-primary-rgb: 240, 133, 25;
+      --bs-link-color: var(--dw-orange-600);
+      --bs-link-hover-color: var(--dw-orange-700);
+      --bs-body-color: var(--dw-ink-2);
+      --bs-body-font-family: "Manrope", -apple-system, BlinkMacSystemFont, "PingFang SC",
+        "Microsoft YaHei", "Noto Sans SC", "Hiragino Sans GB", sans-serif;
+    }
+
+    body { color: var(--dw-ink-2); -webkit-font-smoothing: antialiased; }
+    h1, h2, h3, .display-5, .fw-800 { letter-spacing: -.02em; }
+    .fw-800 { font-weight: 800; }
+    .text-ink { color: var(--dw-ink) !important; }
+    .text-muted-2 { color: var(--dw-muted) !important; }
+
+    /* ---- Brand bits ---- */
+    .dw-logo { display: inline-block; vertical-align: middle; filter: drop-shadow(0 4px 10px rgba(240,133,25,.28)); }
+    .dw-wordmark { font-weight: 800; letter-spacing: -.03em; color: var(--dw-ink); }
+
+    .btn-brand {
+      --bs-btn-bg: var(--dw-orange); --bs-btn-border-color: var(--dw-orange);
+      --bs-btn-hover-bg: var(--dw-orange-600); --bs-btn-hover-border-color: var(--dw-orange-600);
+      --bs-btn-active-bg: var(--dw-orange-700); --bs-btn-active-border-color: var(--dw-orange-700);
+      --bs-btn-color: #fff; --bs-btn-hover-color: #fff; --bs-btn-active-color: #fff;
+      --bs-btn-disabled-bg: var(--dw-orange); --bs-btn-disabled-border-color: var(--dw-orange);
+      font-weight: 700; box-shadow: 0 10px 24px -10px rgba(240,133,25,.7);
+    }
+    .btn-outline-brand {
+      --bs-btn-color: var(--dw-orange-700); --bs-btn-border-color: var(--dw-orange-100);
+      --bs-btn-hover-bg: var(--dw-orange-50); --bs-btn-hover-color: var(--dw-orange-700);
+      --bs-btn-hover-border-color: var(--dw-orange); --bs-btn-active-bg: var(--dw-orange-50);
+      --bs-btn-active-color: var(--dw-orange-700); --bs-btn-active-border-color: var(--dw-orange);
+      font-weight: 700;
+    }
+    .text-brand { color: var(--dw-orange-600) !important; }
+    .bg-brand-soft { background: var(--dw-orange-50); }
+    .badge-brand { background: var(--dw-orange-50); color: var(--dw-orange-700); font-weight: 700; }
+
+    /* ---- Navbar ---- */
+    .navbar { background: rgba(255,255,255,.82); backdrop-filter: saturate(160%) blur(12px); border-bottom: 1px solid var(--dw-line); }
+    .navbar .nav-link { color: var(--dw-ink-2); font-weight: 600; }
+    .navbar .nav-link:hover { color: var(--dw-orange-600); }
+
+    /* ---- Hero ---- */
+    .hero {
+      position: relative; overflow: hidden;
+      background:
+        radial-gradient(120% 120% at 85% -10%, rgba(240,133,25,.14), transparent 55%),
+        radial-gradient(90% 90% at 0% 0%, rgba(240,133,25,.07), transparent 50%),
+        linear-gradient(180deg, #fff, var(--dw-bg-soft));
+    }
+    .hero-grid {
+      position: absolute; inset: 0; pointer-events: none; opacity: .5;
+      background-image:
+        linear-gradient(var(--dw-line) 1px, transparent 1px),
+        linear-gradient(90deg, var(--dw-line) 1px, transparent 1px);
+      background-size: 44px 44px;
+      -webkit-mask-image: radial-gradient(120% 80% at 50% 0%, #000 35%, transparent 75%);
+              mask-image: radial-gradient(120% 80% at 50% 0%, #000 35%, transparent 75%);
+    }
+    .eyebrow {
+      display: inline-flex; align-items: center; gap: .5rem;
+      padding: .4rem .85rem; border-radius: 999px; font-weight: 700; font-size: .8rem;
+      background: #fff; border: 1px solid var(--dw-orange-100); color: var(--dw-orange-700);
+      box-shadow: 0 6px 18px -12px rgba(240,133,25,.6);
+    }
+    .hero h1 { font-size: clamp(2.3rem, 4.6vw, 3.8rem); line-height: 1.06; }
+    .hero .lead { font-size: 1.18rem; color: var(--dw-muted); max-width: 34rem; }
+
+    /* ---- App window mockup ---- */
+    .mock {
+      border-radius: 18px; background: #fff; border: 1px solid var(--dw-line);
+      box-shadow: 0 40px 80px -40px rgba(22,25,29,.35), 0 8px 24px -16px rgba(22,25,29,.25);
+      overflow: hidden;
+    }
+    .mock-bar { display: flex; align-items: center; gap: .45rem; padding: .8rem 1rem; border-bottom: 1px solid var(--dw-line); background: #fcfcfd; }
+    .mock-dot { width: 11px; height: 11px; border-radius: 50%; }
+    .mock-body { display: grid; grid-template-columns: 168px 1fr; min-height: 320px; }
+    .mock-side { background: var(--dw-bg-soft); border-right: 1px solid var(--dw-line); padding: 1rem .75rem; }
+    .mock-side .item { display: flex; align-items: center; gap: .5rem; padding: .5rem .6rem; border-radius: 9px; font-size: .82rem; color: var(--dw-muted); font-weight: 600; }
+    .mock-side .item.active { background: var(--dw-orange-50); color: var(--dw-orange-700); }
+    .mock-main { padding: 1.1rem 1.2rem; }
+    .bubble { border-radius: 13px; padding: .7rem .9rem; font-size: .85rem; line-height: 1.5; max-width: 86%; }
+    .bubble.user { background: var(--dw-orange); color: #fff; margin-left: auto; border-bottom-right-radius: 4px; }
+    .bubble.ai { background: #f4f6f8; color: var(--dw-ink-2); border-bottom-left-radius: 4px; }
+    .typing { display: inline-flex; gap: 4px; }
+    .typing i { width: 6px; height: 6px; border-radius: 50%; background: var(--dw-orange); animation: blink 1.2s infinite; }
+    .typing i:nth-child(2){ animation-delay:.2s } .typing i:nth-child(3){ animation-delay:.4s }
+    @keyframes blink { 0%,80%,100%{opacity:.25} 40%{opacity:1} }
+
+    /* ---- Stats ---- */
+    .stat-num { font-weight: 800; font-size: 2rem; color: var(--dw-ink); letter-spacing: -.03em; }
+
+    /* ---- Feature cards ---- */
+    .feature {
+      height: 100%; border: 1px solid var(--dw-line); border-radius: 16px; background: #fff;
+      padding: 1.6rem 1.5rem; transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease;
+    }
+    .feature:hover { transform: translateY(-4px); border-color: var(--dw-orange-100); box-shadow: 0 24px 48px -28px rgba(22,25,29,.3); }
+    .feat-ico {
+      width: 50px; height: 50px; border-radius: 13px; display: grid; place-items: center;
+      font-size: 1.45rem; color: var(--dw-orange-700);
+      background: linear-gradient(160deg, var(--dw-orange-50), var(--dw-orange-100));
+    }
+
+    /* ---- Why / checklist ---- */
+    .check-li { display: flex; gap: .8rem; padding: .65rem 0; }
+    .check-li .bi { color: var(--dw-orange-600); font-size: 1.2rem; flex: none; margin-top: .1rem; }
+
+    /* ---- Steps ---- */
+    .step-num {
+      width: 44px; height: 44px; flex: none; border-radius: 12px; display: grid; place-items: center;
+      font-weight: 800; color: #fff; background: var(--dw-orange); box-shadow: 0 10px 22px -12px rgba(240,133,25,.8);
+    }
+
+    /* ---- Pricing ---- */
+    .plan { height: 100%; border: 1px solid var(--dw-line); border-radius: 18px; background: #fff; padding: 1.8rem; }
+    .plan.featured { border-color: var(--dw-orange); box-shadow: 0 30px 60px -34px rgba(240,133,25,.6); position: relative; }
+    .plan.featured::before {
+      content: "推荐"; position: absolute; top: -12px; right: 22px; background: var(--dw-orange); color: #fff;
+      font-size: .72rem; font-weight: 800; padding: .25rem .7rem; border-radius: 999px;
+    }
+    .plan ul { list-style: none; padding: 0; margin: 0; }
+    .plan ul li { padding: .45rem 0; display: flex; gap: .6rem; font-size: .92rem; }
+    .plan ul li .bi { color: var(--dw-orange-600); }
+
+    /* ---- CTA band ---- */
+    .cta-band {
+      border-radius: 24px; color: #fff; overflow: hidden; position: relative;
+      background:
+        radial-gradient(120% 160% at 100% 0%, #ffb056, transparent 55%),
+        linear-gradient(135deg, var(--dw-orange), var(--dw-orange-700));
+      box-shadow: 0 40px 80px -36px rgba(240,133,25,.7);
+    }
+
+    /* ---- Footer ---- */
+    footer { background: var(--dw-ink); color: #c6cdd6; }
+    footer a { color: #c6cdd6; text-decoration: none; }
+    footer a:hover { color: #fff; }
+
+    /* ---- Reveal on scroll ---- */
+    .reveal { opacity: 0; transform: translateY(18px); transition: opacity .6s ease, transform .6s ease; }
+    .reveal.in { opacity: 1; transform: none; }
+    @media (prefers-reduced-motion: reduce) { .reveal { opacity: 1; transform: none; transition: none; } }
+
+    .section { padding: 5.5rem 0; }
+    @media (max-width: 991px) { .section { padding: 4rem 0; } }
+  </style>
+</head>
+<body>
+
+  <!-- ===== Reusable logo symbol ===== -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <symbol id="dwBolt" viewBox="0 0 1024 1024">
+      <rect width="1024" height="1024" rx="224" fill="#F08519"/>
+      <path d="M560 188 L250 600 L468 600 L476 836 L778 452 L560 452 Z" fill="#fff"/>
+    </symbol>
+  </svg>
+
+  <!-- ===== Navbar ===== -->
+  <nav class="navbar navbar-expand-lg sticky-top">
+    <div class="container">
+      <a class="navbar-brand d-flex align-items-center gap-2" href="#">
+        <svg class="dw-logo" width="34" height="34"><use href="#dwBolt"/></svg>
+        <span class="dw-wordmark fs-4">DWork</span>
+        <span class="badge badge-brand rounded-pill ms-1 d-none d-sm-inline">AI 工作站</span>
+      </a>
+      <button class="navbar-toggler border-0" type="button" data-bs-toggle="collapse" data-bs-target="#nav">
+        <span class="navbar-toggler-icon"></span>
+      </button>
+      <div class="collapse navbar-collapse" id="nav">
+        <ul class="navbar-nav ms-auto align-items-lg-center gap-lg-1">
+          <li class="nav-item"><a class="nav-link px-3" href="#features">核心能力</a></li>
+          <li class="nav-item"><a class="nav-link px-3" href="#scenes">使用场景</a></li>
+          <li class="nav-item"><a class="nav-link px-3" href="#start">快速上手</a></li>
+          <li class="nav-item"><a class="nav-link px-3" href="#download">下载</a></li>
+          <li class="nav-item ms-lg-2 mt-2 mt-lg-0">
+            <a class="btn btn-brand rounded-3 px-3" href="#download"><i class="bi bi-download me-1"></i>下载客户端</a>
+          </li>
+        </ul>
+      </div>
+    </div>
+  </nav>
+
+  <!-- ===== Hero ===== -->
+  <header class="hero">
+    <div class="hero-grid"></div>
+    <div class="container position-relative section pb-0">
+      <div class="row align-items-center g-5">
+        <div class="col-lg-6">
+          <span class="eyebrow"><i class="bi bi-lightning-charge-fill"></i> 团队专属 · 下载即用</span>
+          <h1 class="fw-800 text-ink mt-3 mb-3">
+            <span class="text-brand">全模态 AI</span><br>生产力工作站
+          </h1>
+          <p class="lead mb-4">
+            DWork 把对话、文档、图像、网页自动化与整机操控集成在一个桌面应用里。
+            一处入口，覆盖日常的查、写、做、跑——让团队每个人都拥有随叫随到的 AI 助手。
+          </p>
+          <div class="d-flex flex-wrap gap-3">
+            <a href="#download" class="btn btn-brand btn-lg rounded-3 px-4">
+              <i class="bi bi-download me-2"></i>下载客户端
+            </a>
+            <a href="#features" class="btn btn-outline-brand btn-lg rounded-3 px-4">了解核心能力</a>
+          </div>
+          <div class="d-flex flex-wrap gap-4 mt-4 text-muted-2 small fw-semibold">
+            <span><i class="bi bi-check-circle-fill text-brand me-1"></i> 安装版 / 便携版</span>
+            <span><i class="bi bi-check-circle-fill text-brand me-1"></i> 数据本地保存</span>
+            <span><i class="bi bi-check-circle-fill text-brand me-1"></i> 开箱即用</span>
+          </div>
+        </div>
+
+        <!-- App mockup -->
+        <div class="col-lg-6">
+          <div class="mock reveal">
+            <div class="mock-bar">
+              <span class="mock-dot" style="background:#ff5f57"></span>
+              <span class="mock-dot" style="background:#febc2e"></span>
+              <span class="mock-dot" style="background:#28c840"></span>
+              <span class="ms-2 d-inline-flex align-items-center gap-2 small fw-semibold text-muted-2">
+                <svg width="16" height="16"><use href="#dwBolt"/></svg> DWork Workspace
+              </span>
+            </div>
+            <div class="mock-body">
+              <div class="mock-side d-none d-sm-block">
+                <div class="item active"><i class="bi bi-chat-dots-fill"></i> 智能对话</div>
+                <div class="item"><i class="bi bi-image-fill"></i> 全模态创作</div>
+                <div class="item"><i class="bi bi-display-fill"></i> 整机操控</div>
+                <div class="item"><i class="bi bi-people-fill"></i> 人才库</div>
+                <div class="item"><i class="bi bi-hdd-stack-fill"></i> 长期记忆</div>
+              </div>
+              <div class="mock-main d-flex flex-column gap-2">
+                <div class="bubble user">帮我整理这季度的运营数据，导出一份周报。</div>
+                <div class="bubble ai">
+                  好的，我将读取本地表格 → 汇总指标 → 生成图表 → 写入文档。已完成 3/4，正在排版……
+                </div>
+                <div class="bubble ai d-inline-flex align-items-center gap-2">
+                  <span class="typing"><i></i><i></i><i></i></span>
+                  <span class="text-muted-2 small">DWork 正在调用工具</span>
+                </div>
+                <div class="mt-auto d-flex align-items-center gap-2 border rounded-3 px-3 py-2 small text-muted-2">
+                  <i class="bi bi-paperclip"></i> 输入指令，或拖入文件……
+                  <i class="bi bi-send-fill ms-auto text-brand"></i>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Stat strip -->
+      <div class="row text-center g-4 mt-4 pt-2 pb-5">
+        <div class="col-6 col-lg-3 reveal"><div class="stat-num">全模态</div><div class="text-muted-2 fw-semibold">文 / 图 / 网页 / 整机</div></div>
+        <div class="col-6 col-lg-3 reveal"><div class="stat-num">一站式</div><div class="text-muted-2 fw-semibold">查 / 写 / 做 / 跑</div></div>
+        <div class="col-6 col-lg-3 reveal"><div class="stat-num">本地</div><div class="text-muted-2 fw-semibold">数据安全可控</div></div>
+        <div class="col-6 col-lg-3 reveal"><div class="stat-num">即用</div><div class="text-muted-2 fw-semibold">下载安装即可开始</div></div>
+      </div>
+    </div>
+  </header>
+
+  <!-- ===== Features ===== -->
+  <section id="features" class="section">
+    <div class="container">
+      <div class="text-center mb-5 reveal">
+        <span class="badge badge-brand rounded-pill px-3 py-2 mb-3">核心能力</span>
+        <h2 class="fw-800 text-ink">一个工作站，承载完整的 AI 生产力</h2>
+        <p class="text-muted-2 fs-5 mx-auto" style="max-width:40rem">
+          从对话到执行，从创作到自动化——DWork 把分散的 AI 工具收敛成一套统一、可控的桌面体验。
+        </p>
+      </div>
+
+      <div class="row g-4">
+        <div class="col-md-6 col-lg-4 reveal">
+          <div class="feature">
+            <div class="feat-ico mb-3"><i class="bi bi-stars"></i></div>
+            <h5 class="fw-800 text-ink">全模态生产力</h5>
+            <p class="text-muted-2 mb-0">文本对话、文档读写、图像生成与理解、语音——一套界面覆盖日常全部创作与处理场景。</p>
+          </div>
+        </div>
+        <div class="col-md-6 col-lg-4 reveal">
+          <div class="feature">
+            <div class="feat-ico mb-3"><i class="bi bi-display"></i></div>
+            <h5 class="fw-800 text-ink">Computer Use 整机操控</h5>
+            <p class="text-muted-2 mb-0">让 Agent 看屏幕、动鼠标键盘，自动完成跨软件的真实操作，带门控与护栏，安全可控。</p>
+          </div>
+        </div>
+        <div class="col-md-6 col-lg-4 reveal">
+          <div class="feature">
+            <div class="feat-ico mb-3"><i class="bi bi-globe2"></i></div>
+            <h5 class="fw-800 text-ink">网页自动化</h5>
+            <p class="text-muted-2 mb-0">内置浏览器自动化，登录、填表、抓取、发布一气呵成，支持「不显示浏览器」静默运行。</p>
+          </div>
+        </div>
+        <div class="col-md-6 col-lg-4 reveal">
+          <div class="feature">
+            <div class="feat-ico mb-3"><i class="bi bi-hdd-stack"></i></div>
+            <h5 class="fw-800 text-ink">长期记忆系统</h5>
+            <p class="text-muted-2 mb-0">画像 / 项目 / 事件 / 技能多类记忆自动沉淀，越用越懂你的团队与业务，无需手工维护知识库。</p>
+          </div>
+        </div>
+        <div class="col-md-6 col-lg-4 reveal">
+          <div class="feature">
+            <div class="feat-ico mb-3"><i class="bi bi-people"></i></div>
+            <h5 class="fw-800 text-ink">人才 / Agent 库</h5>
+            <p class="text-muted-2 mb-0">海量预置专家角色随取随用，也可按企业场景自定义专属 Agent，沉淀为团队资产。</p>
+          </div>
+        </div>
+        <div class="col-md-6 col-lg-4 reveal">
+          <div class="feature">
+            <div class="feat-ico mb-3"><i class="bi bi-shield-lock"></i></div>
+            <h5 class="fw-800 text-ink">数据本地·安全</h5>
+            <p class="text-muted-2 mb-0">由公司统一提供与运行，对话与文件保存在本地，使用更安心，符合内部数据规范。</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== Scenarios ===== -->
+  <section id="scenes" class="section bg-brand-soft">
+    <div class="container">
+      <div class="text-center mb-5 reveal">
+        <span class="badge badge-brand rounded-pill px-3 py-2 mb-3">使用场景</span>
+        <h2 class="fw-800 text-ink">日常工作，交给它一起做</h2>
+        <p class="text-muted-2 fs-5 mx-auto" style="max-width:40rem">
+          不用记复杂指令，直接说出你的需求，DWork 帮你把活儿干完。
+        </p>
+      </div>
+      <div class="row g-4">
+        <div class="col-md-6 col-lg-4 reveal">
+          <div class="feature h-100">
+            <div class="feat-ico mb-3"><i class="bi bi-file-earmark-text"></i></div>
+            <h5 class="fw-800 text-ink">写周报 / 纪要</h5>
+            <p class="text-muted-2 mb-0">把零散材料、聊天记录整理成结构化的周报、会议纪要与汇报稿。</p>
+          </div>
+        </div>
+        <div class="col-md-6 col-lg-4 reveal">
+          <div class="feature h-100">
+            <div class="feat-ico mb-3"><i class="bi bi-table"></i></div>
+            <h5 class="fw-800 text-ink">数据整理</h5>
+            <p class="text-muted-2 mb-0">读取本地表格，汇总指标、生成图表，几句话产出一份分析。</p>
+          </div>
+        </div>
+        <div class="col-md-6 col-lg-4 reveal">
+          <div class="feature h-100">
+            <div class="feat-ico mb-3"><i class="bi bi-easel"></i></div>
+            <h5 class="fw-800 text-ink">文案 / 方案</h5>
+            <p class="text-muted-2 mb-0">起草方案、润色文案、生成 PPT 大纲，从空白到初稿快人一步。</p>
+          </div>
+        </div>
+        <div class="col-md-6 col-lg-4 reveal">
+          <div class="feature h-100">
+            <div class="feat-ico mb-3"><i class="bi bi-image"></i></div>
+            <h5 class="fw-800 text-ink">图像创作</h5>
+            <p class="text-muted-2 mb-0">生成配图与海报、理解图片内容、抠图改图，创意素材随手可得。</p>
+          </div>
+        </div>
+        <div class="col-md-6 col-lg-4 reveal">
+          <div class="feature h-100">
+            <div class="feat-ico mb-3"><i class="bi bi-globe2"></i></div>
+            <h5 class="fw-800 text-ink">网页自动化</h5>
+            <p class="text-muted-2 mb-0">自动登录、填表、抓取信息、批量发布，重复的网页操作交给它。</p>
+          </div>
+        </div>
+        <div class="col-md-6 col-lg-4 reveal">
+          <div class="feature h-100">
+            <div class="feat-ico mb-3"><i class="bi bi-cpu"></i></div>
+            <h5 class="fw-800 text-ink">跑流程</h5>
+            <p class="text-muted-2 mb-0">看屏幕、动鼠标键盘，跨软件自动完成多步骤的重复操作。</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== Quick start ===== -->
+  <section id="start" class="section">
+    <div class="container">
+      <div class="text-center mb-5 reveal">
+        <span class="badge badge-brand rounded-pill px-3 py-2 mb-3">快速上手</span>
+        <h2 class="fw-800 text-ink">四步开始使用</h2>
+      </div>
+      <div class="row g-4">
+        <div class="col-md-6 col-lg-3 reveal">
+          <div class="d-flex gap-3">
+            <div class="step-num">1</div>
+            <div><h6 class="fw-800 text-ink mb-1">下载客户端</h6><p class="text-muted-2 small mb-0">在下方选择安装版或便携版，下载到电脑。</p></div>
+          </div>
+        </div>
+        <div class="col-md-6 col-lg-3 reveal">
+          <div class="d-flex gap-3">
+            <div class="step-num">2</div>
+            <div><h6 class="fw-800 text-ink mb-1">打开 DWork</h6><p class="text-muted-2 small mb-0">安装版直接运行，便携版解压后双击即可。</p></div>
+          </div>
+        </div>
+        <div class="col-md-6 col-lg-3 reveal">
+          <div class="d-flex gap-3">
+            <div class="step-num">3</div>
+            <div><h6 class="fw-800 text-ink mb-1">开始干活</h6><p class="text-muted-2 small mb-0">直接说出需求，或把文件拖进来交给它处理。</p></div>
+          </div>
+        </div>
+        <div class="col-md-6 col-lg-3 reveal">
+          <div class="d-flex gap-3">
+            <div class="step-num">4</div>
+            <div><h6 class="fw-800 text-ink mb-1">越用越懂</h6><p class="text-muted-2 small mb-0">长期记忆自动沉淀，逐渐贴合你的工作习惯。</p></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== Download ===== -->
+  <!-- 下载地址在页面底部 <script> 的 DOWNLOAD 配置处统一填写（也可直接改下方按钮 href） -->
+  <section id="download" class="section bg-brand-soft">
+    <div class="container">
+      <div class="text-center mb-5 reveal">
+        <span class="badge badge-brand rounded-pill px-3 py-2 mb-3">下载客户端</span>
+        <h2 class="fw-800 text-ink">立即获取 DWork 桌面端</h2>
+        <p class="text-muted-2 fs-5 mx-auto" style="max-width:40rem">
+          提供「安装版」与「便携版」两种形态，按需选择，开箱即用。
+        </p>
+        <div class="mt-3">
+          <span class="badge badge-brand rounded-pill px-3 py-2">
+            <i class="bi bi-box-seam me-1"></i>最新版本 <span id="dwVersion">—</span><span id="dwPublished" class="fw-normal opacity-75"></span>
+          </span>
+        </div>
+      </div>
+
+      <div class="row g-4 justify-content-center">
+        <!-- 安装版 -->
+        <div class="col-md-6 col-lg-5 reveal">
+          <div class="feature h-100 d-flex flex-column">
+            <div class="d-flex align-items-center gap-3 mb-3">
+              <div class="feat-ico"><i class="bi bi-box-arrow-in-down"></i></div>
+              <div>
+                <h5 class="fw-800 text-ink mb-0">安装版</h5>
+                <div class="text-muted-2 small">标准安装，写入开始菜单与桌面快捷方式</div>
+              </div>
+            </div>
+            <ul class="list-unstyled small text-muted-2 mb-4 d-grid gap-2">
+              <li><i class="bi bi-check2 text-brand me-2"></i>引导式安装，自动关联文件类型</li>
+              <li><i class="bi bi-check2 text-brand me-2"></i>支持自动更新（如已配置）</li>
+              <li><i class="bi bi-check2 text-brand me-2"></i>适合长期固定使用的设备</li>
+            </ul>
+            <a id="dlInstaller" href="#" data-kind="安装版"
+               class="btn btn-brand btn-lg rounded-3 mt-auto">
+              <i class="bi bi-download me-2"></i>下载安装版
+            </a>
+            <div class="text-center text-muted-2 small mt-2">Windows · .exe 安装程序</div>
+          </div>
+        </div>
+
+        <!-- 便携版 -->
+        <div class="col-md-6 col-lg-5 reveal">
+          <div class="feature h-100 d-flex flex-column">
+            <div class="d-flex align-items-center gap-3 mb-3">
+              <div class="feat-ico"><i class="bi bi-usb-drive"></i></div>
+              <div>
+                <h5 class="fw-800 text-ink mb-0">便携版</h5>
+                <div class="text-muted-2 small">免安装，解压即用，可放入 U 盘随身携带</div>
+              </div>
+            </div>
+            <ul class="list-unstyled small text-muted-2 mb-4 d-grid gap-2">
+              <li><i class="bi bi-check2 text-brand me-2"></i>不写注册表，绿色无残留</li>
+              <li><i class="bi bi-check2 text-brand me-2"></i>适合内网隔离 / 临时环境</li>
+              <li><i class="bi bi-check2 text-brand me-2"></i>多版本并存互不干扰</li>
+            </ul>
+            <a id="dlPortable" href="#" data-kind="便携版"
+               class="btn btn-outline-brand btn-lg rounded-3 mt-auto">
+              <i class="bi bi-download me-2"></i>下载便携版
+            </a>
+            <div class="text-center text-muted-2 small mt-2">Windows · 免安装压缩包</div>
+          </div>
+        </div>
+      </div>
+
+      <p class="text-center text-muted-2 small mt-4 mb-0">
+        <i class="bi bi-shield-check text-brand me-1"></i>由公司统一提供，数据保存在本地，使用安全可控。
+      </p>
+    </div>
+  </section>
+
+  <!-- ===== CTA ===== -->
+  <section class="section">
+    <div class="container">
+      <div class="cta-band p-4 p-md-5 reveal">
+        <div class="row align-items-center g-4">
+          <div class="col-lg-8">
+            <h2 class="fw-800 mb-2">现在就开始用 DWork</h2>
+            <p class="mb-0 opacity-75 fs-5">下载客户端，几分钟内拥有属于你的全模态 AI 生产力助手。</p>
+          </div>
+          <div class="col-lg-4 text-lg-end">
+            <a href="#download" class="btn btn-light btn-lg rounded-3 px-4 fw-700 text-ink">
+              <i class="bi bi-download me-2"></i>立即下载
+            </a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== Footer ===== -->
+  <footer class="pt-5 pb-4">
+    <div class="container">
+      <div class="row g-4">
+        <div class="col-lg-5">
+          <a class="d-inline-flex align-items-center gap-2 mb-3 text-decoration-none" href="#">
+            <svg width="32" height="32"><use href="#dwBolt"/></svg>
+            <span class="dw-wordmark fs-4" style="color:#fff">DWork</span>
+          </a>
+          <p class="small mb-0" style="max-width:24rem; color:#9aa3ad">
+            全模态 AI 生产力工作站。对话、文档、图像、网页自动化与整机操控集于一体，下载即用，数据本地保存。
+          </p>
+        </div>
+        <div class="col-6 col-lg-2">
+          <div class="fw-700 text-white mb-3 small">了解</div>
+          <ul class="list-unstyled small d-grid gap-2">
+            <li><a href="#features">核心能力</a></li>
+            <li><a href="#scenes">使用场景</a></li>
+            <li><a href="#start">快速上手</a></li>
+          </ul>
+        </div>
+        <div class="col-6 col-lg-2">
+          <div class="fw-700 text-white mb-3 small">获取</div>
+          <ul class="list-unstyled small d-grid gap-2">
+            <li><a href="#download">下载安装版</a></li>
+            <li><a href="#download">下载便携版</a></li>
+          </ul>
+        </div>
+        <div class="col-lg-3">
+          <div class="fw-700 text-white mb-3 small">使用支持</div>
+          <p class="small mb-0" style="color:#9aa3ad">
+            <i class="bi bi-headset me-2"></i>如遇问题，请联系内部 IT 支持<br>
+            <span class="d-inline-block mt-2"><i class="bi bi-shield-check me-2"></i>数据本地保存 · 安全可控</span>
+          </p>
+        </div>
+      </div>
+      <hr class="my-4" style="border-color:#2a2f36" />
+      <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 small" style="color:#9aa3ad">
+        <span>© 2026 DWork. 保留所有权利。</span>
+        <span class="d-inline-flex align-items-center gap-2">
+          <i class="bi bi-shield-check text-brand"></i> 数据本地 · 安全可控
+        </span>
+      </div>
+    </div>
+  </footer>
+
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+  <script>
+    /* ============================================================
+     *  版本与下载：统一读取页面顶部的 #dwork-update-manifest 清单。
+     *  —— 发新版本只改那段 JSON，下载按钮与版本号会自动同步；
+     *     DWork 客户端也据同一份 version 检测更新（见 remote-control-source.ts）。
+     * ============================================================ */
+    (function wireFromManifest() {
+      let m = {};
+      try { m = JSON.parse(document.getElementById('dwork-update-manifest').textContent); } catch (e) {}
+
+      // 版本号展示
+      const ver = String(m.version || '').trim();
+      const vEl = document.getElementById('dwVersion');
+      if (vEl) vEl.textContent = ver ? ('v' + ver) : '待发布';
+      const pEl = document.getElementById('dwPublished');
+      if (pEl && m.publishedAt) pEl.textContent = ' · 更新于 ' + m.publishedAt;
+
+      // 下载按钮地址取自 manifest.downloads（留空 → 点击提示待配置，不跳空白页）
+      const dl = m.downloads || {};
+      const map = { dlInstaller: dl.winInstaller, dlPortable: dl.winPortable };
+      Object.entries(map).forEach(([id, url]) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        if (url) {
+          el.setAttribute('href', url);
+          el.setAttribute('download', '');
+        } else {
+          el.addEventListener('click', (e) => {
+            e.preventDefault();
+            alert(`「${el.dataset.kind}」下载地址尚未配置。\n请在页面顶部 <script id="dwork-update-manifest"> 的 downloads 中填写下载直链。`);
+          });
+        }
+      });
+    })();
+
+    // Reveal on scroll
+    const io = new IntersectionObserver((entries) => {
+      entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); } });
+    }, { threshold: .12 });
+    document.querySelectorAll('.reveal').forEach((el, i) => {
+      el.style.transitionDelay = (i % 4 * 60) + 'ms';
+      io.observe(el);
+    });
+    // Close mobile navbar on link click
+    document.querySelectorAll('#nav .nav-link, #nav .btn').forEach(a => {
+      a.addEventListener('click', () => {
+        const c = bootstrap.Collapse.getInstance(document.getElementById('nav'));
+        if (c && window.innerWidth < 992) c.hide();
+      });
+    });
+  </script>
+</body>
+</html>

@@ -137,29 +137,31 @@
 
   /* ── 终端 / midnight terminal — near-black charcoal + phosphor-green primary,
      tuned for deep-night / SSH-console sessions ──────────────────────────── */
+  /* ── 终端 — 仿 VS Code Dark+ ：#1e1e1e 编辑器底、#252526 面板、#007acc 蓝主色、
+   *    浅灰字(#d4d4d4)。冷调中性灰(hue 220 极低饱和) + VS Code 蓝点缀。 */
   .skin-terminal {
-    --background: 150 10% 6%;
-    --foreground: 150 14% 86%;
-    --card: 152 10% 9%;
-    --card-foreground: 150 14% 86%;
-    --popover: 152 10% 10%;
-    --popover-foreground: 150 14% 86%;
-    --primary: 142 70% 50%;
-    --primary-foreground: 150 45% 7%;
-    --secondary: 152 8% 15%;
-    --secondary-foreground: 150 14% 86%;
-    --muted: 152 8% 15%;
-    --muted-foreground: 150 8% 56%;
-    --accent: 152 9% 19%;
-    --accent-foreground: 150 14% 90%;
-    --destructive: 0 70% 55%;
+    --background: 220 6% 11%;          /* #1e1e1e editor */
+    --foreground: 0 0% 83%;            /* #d4d4d4 */
+    --card: 220 4% 15%;                /* #252526 panel */
+    --card-foreground: 0 0% 83%;
+    --popover: 220 4% 16%;             /* menus / dropdowns */
+    --popover-foreground: 0 0% 86%;
+    --primary: 204 100% 40%;           /* #007acc VS Code blue */
+    --primary-foreground: 0 0% 100%;
+    --secondary: 220 4% 19%;
+    --secondary-foreground: 0 0% 85%;
+    --muted: 220 4% 19%;
+    --muted-foreground: 0 0% 55%;      /* #8c8c8c description text */
+    --accent: 220 5% 24%;              /* neutral hover (≈#2a2d2e) */
+    --accent-foreground: 0 0% 92%;
+    --destructive: 0 72% 55%;          /* #f14c4c-ish error red */
     --destructive-foreground: 0 0% 100%;
-    --border: 152 9% 17%;
-    --input: 152 9% 17%;
-    --ring: 142 70% 50%;
-    --sidebar: 150 12% 4%;
-    --sidebar-foreground: 150 14% 84%;
-    --sidebar-border: 152 9% 13%;
+    --border: 220 4% 24%;              /* #3c3c3c */
+    --input: 220 4% 24%;
+    --ring: 204 100% 45%;              /* #007fd4 focus border */
+    --sidebar: 220 4% 15%;             /* #252526 activity/side bar */
+    --sidebar-foreground: 0 0% 80%;
+    --sidebar-border: 220 4% 19%;
   }
 
   /* ── DWork — white-dominant theme with #FF8921 orange accent ────────────────
@@ -216,13 +218,37 @@
     text-rendering: optimizeLegibility;
     font-feature-settings: "kern";
   }
-  /* Per-platform overrides via .platform-win / .platform-mac on <html> */
-  html.platform-mac body { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
-  html.platform-win body { -webkit-font-smoothing: auto; }
-  ::-webkit-scrollbar { width: 5px; height: 5px; }
+  /* Mac-style grayscale font smoothing app-wide (opted in) — lighter, softer text
+   * on both platforms. Note on Windows this trades ClearType subpixel sharpness for
+   * the macOS look (CJK small text reads slightly softer). */
+  html.platform-mac body, html.platform-win body { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+
+  /* macOS vibrancy / Windows 11 acrylic: punch the window background transparent
+   * so the OS-composited backdrop shows through the translucent chrome (title bar
+   * + sidebar are bg-sidebar/80). The main content pane keeps an opaque background
+   * so only the chrome reads as frosted glass — the classic macOS sidebar look.
+   * Gated on .platform-vibrancy, which the renderer only sets when the main process
+   * actually enabled a window material; opaque platforms (Win10/Linux) never match. */
+  html.platform-vibrancy,
+  html.platform-vibrancy body,
+  html.platform-vibrancy .app-shell { background: transparent !important; }
+  html.platform-vibrancy .app-content { background: hsl(var(--background)); }
+  /* Mac-style overlay scrollbars: invisible at rest, fade in only while the
+   * scroll container is hovered. Floating rounded pill (transparent inset border
+   * via bg-clip-padding) instead of an always-on rail. */
+  ::-webkit-scrollbar { width: 11px; height: 11px; }
   ::-webkit-scrollbar-track { background: transparent; }
-  ::-webkit-scrollbar-thumb { @apply bg-border/80 rounded-full; }
-  ::-webkit-scrollbar-thumb:hover { @apply bg-muted-foreground/30; }
+  ::-webkit-scrollbar-thumb {
+    background-color: transparent;
+    border-radius: 9999px;
+    border: 3px solid transparent;
+    background-clip: padding-box;
+    transition: background-color 0.15s ease;
+  }
+  :hover::-webkit-scrollbar-thumb { background-color: hsl(var(--muted-foreground) / 0.32); }
+  ::-webkit-scrollbar-thumb:hover { background-color: hsl(var(--muted-foreground) / 0.5); }
+  ::-webkit-scrollbar-thumb:active { background-color: hsl(var(--muted-foreground) / 0.6); }
+  ::-webkit-scrollbar-corner { background: transparent; }
 
   /* Prominent scrollbar variant — for content panels where the user needs
    * an obvious affordance to scroll (chat, conversations). Wider thumb that
@@ -252,6 +278,65 @@
   .text-\[10px\], .text-\[11px\] { line-height: 1.5; }
   /* Default body text inherits text-sm sizing */
   body { font-size: 12.5px; line-height: 1.55; }
+
+  /* macOS-style native checkbox and radio (app-wide). Replaces the OS-drawn
+   * square box with a rounded, primary-filled control plus a CSS checkmark or
+   * dot. Applied by element selector so every existing input is Mac-ified with
+   * no per-site refactor; any existing width or height utility still wins on
+   * size. Opt out with the .native-control class for a raw OS control. */
+  input[type='checkbox']:not(.native-control),
+  input[type='radio']:not(.native-control) {
+    -webkit-appearance: none;
+    appearance: none;
+    position: relative;
+    width: 16px;
+    height: 16px;
+    margin: 0;
+    flex-shrink: 0;
+    display: inline-grid;
+    place-content: center;
+    border: 1.5px solid hsl(var(--muted-foreground) / 0.45);
+    background: hsl(var(--card));
+    cursor: pointer;
+    transition: background-color 0.13s ease, border-color 0.13s ease, box-shadow 0.13s ease;
+  }
+  input[type='checkbox']:not(.native-control) { border-radius: 5px; }
+  input[type='radio']:not(.native-control) { border-radius: 9999px; }
+  input[type='checkbox']:not(.native-control):hover,
+  input[type='radio']:not(.native-control):hover { border-color: hsl(var(--primary) / 0.6); }
+  input[type='checkbox']:not(.native-control):checked,
+  input[type='radio']:not(.native-control):checked {
+    background: hsl(var(--primary));
+    border-color: hsl(var(--primary));
+  }
+  /* Absolute-centered checkmark so it stays centered at any box size; the -55%
+   * Y nudge optically centers the rotated tick. Uses --primary-foreground to
+   * match the on-primary color the buttons already use. */
+  input[type='checkbox']:not(.native-control):checked::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 4px;
+    height: 8px;
+    border: solid hsl(var(--primary-foreground));
+    border-width: 0 2px 2px 0;
+    transform: translate(-50%, -55%) rotate(45deg);
+  }
+  input[type='radio']:not(.native-control):checked::after {
+    content: '';
+    width: 6px;
+    height: 6px;
+    border-radius: 9999px;
+    background: hsl(var(--primary-foreground));
+  }
+  input[type='checkbox']:not(.native-control):focus-visible,
+  input[type='radio']:not(.native-control):focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 3px hsl(var(--ring) / 0.3);
+  }
+  input[type='checkbox']:not(.native-control):disabled,
+  input[type='radio']:not(.native-control):disabled { opacity: 0.5; cursor: not-allowed; }
 }
 
 @layer components {

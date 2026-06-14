@@ -52,9 +52,9 @@ const groups: Array<{ title: string; items: Array<{ keys: string[]; label: strin
 export function ShortcutsHelp({ open, onClose }: Props) {
   if (!open) return null
   return (
-    <div className="fixed inset-0 z-[300] bg-black/55 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
+    <div className="fixed inset-0 z-[300] bg-black/55 backdrop-blur-sm flex items-center justify-center p-4 animate-overlay-in" onClick={onClose}>
       <div
-        className="bg-popover border border-border rounded-xl shadow-2xl w-[640px] max-w-full max-h-[80vh] overflow-y-auto"
+        className="bg-popover border border-border rounded-xl shadow-2xl w-[640px] max-w-full max-h-[80vh] overflow-y-auto animate-dialog-in"
         onClick={e => e.stopPropagation()}
       >
         <header className="flex items-center justify-between px-5 py-3 border-b border-border">

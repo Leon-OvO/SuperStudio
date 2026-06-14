@@ -69,7 +69,7 @@ export function ToastHost() {
         <div
           key={t.id}
           className={cn(
-            'pointer-events-auto flex items-start gap-2 px-3 py-2 rounded-lg shadow-lg border text-sm',
+            'pointer-events-auto flex items-start gap-2 px-3 py-2 rounded-lg shadow-lg border text-sm animate-toast-in',
             t.tone === 'success' && 'bg-emerald-50 border-emerald-200 text-emerald-900 dark:bg-emerald-950/60 dark:border-emerald-800 dark:text-emerald-100',
             t.tone === 'error' && 'bg-destructive/10 border-destructive/30 text-destructive',
             t.tone === 'info' && 'bg-popover border-border text-foreground'

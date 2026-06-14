@@ -1,10 +1,11 @@
 import { useState, useMemo, useRef, useEffect } from 'react'
-import { Plus, MessageSquare, Trash2, Search, X, Loader2, Archive, ArchiveRestore } from 'lucide-react'
+import { Plus, MessageSquare, Trash2, Search, X, Loader2, Archive, ArchiveRestore, Users } from 'lucide-react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { cn } from '../../lib/utils'
-import type { Session } from '../../../../shared/ipc-types'
+import type { Session, EmployeeInfo } from '../../../../shared/ipc-types'
 import { DateRangeFilter, resolveDateRange, type DateFilter } from './DateRangeFilter'
 import { formatCostUsd } from '../../lib/format-cost'
+import { dept } from '../../lib/departments'
 import { useUIStore } from '../../stores/ui'
 
 interface Props {
@@ -13,8 +14,12 @@ interface Props {
   /** Ids of sessions with an in-flight agent run (each shows a spinner on its
    *  row). Navigation is never blocked — clicking any session always switches. */
   runningSessionIds: string[]
+  /** Hired employees — used to show a dept-emoji badge on employee-bound rows. */
+  employees?: EmployeeInfo[]
   onSelect: (id: string) => void
   onNew: () => void
+  /** Open the "新建群聊" dialog (multi-agent). */
+  onNewGroup?: () => void
   onDelete: (id: string) => void
   onArchive: (id: string, archived: boolean) => void
 }
@@ -42,8 +47,13 @@ type Row =
 const HEADER_HEIGHT = 30
 const SESSION_HEIGHT = 38
 
-export function SessionList({ sessions, activeId, runningSessionIds, onSelect, onNew, onDelete, onArchive }: Props) {
+export function SessionList({ sessions, activeId, runningSessionIds, employees, onSelect, onNew, onNewGroup, onDelete, onArchive }: Props) {
   const width = useUIStore(u => u.chatSidebarWidth)
+  const employeeMap = useMemo(() => {
+    const m = new Map<string, EmployeeInfo>()
+    for (const e of employees ?? []) m.set(e.id, e)
+    return m
+  }, [employees])
   const [query, setQuery] = useState('')
   const [dateFilter, setDateFilter] = useState<DateFilter>({ kind: 'all' })
   const [contentMatchedIds, setContentMatchedIds] = useState<Set<string> | null>(null)
@@ -133,15 +143,25 @@ export function SessionList({ sessions, activeId, runningSessionIds, onSelect, o
 
   return (
     <aside style={{ width }} className="flex flex-col border-r border-border bg-sidebar shrink-0">
-      {/* New chat button */}
-      <div className="p-2.5 border-b border-border/60">
+      {/* New chat + new group buttons */}
+      <div className="p-2.5 border-b border-border/60 flex gap-2">
         <button
           onClick={onNew}
-          className="w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-primary text-primary-foreground text-xs font-medium hover:opacity-90 active:scale-95 transition-all shadow-sm"
+          className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-primary text-primary-foreground text-xs font-medium hover:opacity-90 active:scale-95 transition-all shadow-sm"
         >
           <Plus size={13} />
           新建对话
         </button>
+        {onNewGroup && (
+          <button
+            onClick={onNewGroup}
+            title="新建群聊：多名员工组队，互相讨论"
+            className="shrink-0 flex items-center justify-center gap-1 px-2.5 py-2 rounded-lg border border-border text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-muted/60 active:scale-95 transition-all"
+          >
+            <Users size={13} />
+            群聊
+          </button>
+        )}
       </div>
 
       {/* Search */}
@@ -223,6 +243,10 @@ export function SessionList({ sessions, activeId, runningSessionIds, onSelect, o
                       session={row.session}
                       active={activeId === row.session.id}
                       running={runningSessionIds.includes(row.session.id)}
+                      employee={row.session.employeeId ? employeeMap.get(row.session.employeeId) : undefined}
+                      groupEmployees={row.session.groupEmployeeIds?.length
+                        ? row.session.groupEmployeeIds.map(id => employeeMap.get(id)).filter((e): e is EmployeeInfo => !!e)
+                        : undefined}
                       onSelect={onSelect}
                       onDelete={onDelete}
                       onArchive={onArchive}
@@ -239,16 +263,20 @@ export function SessionList({ sessions, activeId, runningSessionIds, onSelect, o
 }
 
 function SessionItem({
-  session, active, running, onSelect, onDelete, onArchive
+  session, active, running, employee, groupEmployees, onSelect, onDelete, onArchive
 }: {
   session: Session
   active: boolean
   running: boolean
+  employee?: EmployeeInfo
+  groupEmployees?: EmployeeInfo[]
   onSelect: (id: string) => void
   onDelete: (id: string) => void
   onArchive: (id: string, archived: boolean) => void
 }) {
   const isArchived = session.archived === 1
+  const isGroup = !!groupEmployees && groupEmployees.length > 0
+  const empDept = employee ? dept(employee.dept) : null
   return (
     <div
       className={cn(
@@ -267,8 +295,17 @@ function SessionItem({
         ? <Loader2 size={12} className="shrink-0 animate-spin text-primary" />
         : isArchived
           ? <Archive size={12} className="shrink-0 opacity-50" />
-          : <MessageSquare size={12} className="shrink-0 opacity-60" />}
+          : isGroup
+            ? <span className="shrink-0 inline-flex items-center" title={`群聊：${groupEmployees!.map(e => e.name).join('、')}`}>
+                <Users size={12} className="opacity-70" />
+              </span>
+            : empDept
+              ? <span className="shrink-0 text-[13px] leading-none" title={`与员工「${employee!.name}」的对话`}>{empDept.emoji}</span>
+              : <MessageSquare size={12} className="shrink-0 opacity-60" />}
       <span className="flex-1 truncate leading-tight">{session.title}</span>
+      {isGroup && (
+        <span className="shrink-0 text-[10px] text-muted-foreground/60 tabular-nums" title="群聊人数">{groupEmployees!.length}人</span>
+      )}
       {session.totalCostUsd != null && session.totalCostUsd > 0 && (
         <span
           className="shrink-0 text-[10px] text-muted-foreground/60 tabular-nums opacity-100 group-hover:opacity-0 transition-opacity"

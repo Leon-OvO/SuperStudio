@@ -3,6 +3,7 @@ import { Plus, Play, Pencil, Trash2, CheckCircle2, XCircle, MoonStar, Clock, Bot
 import { cn } from '../../lib/utils'
 import { toast } from '../../components/ui/Toast'
 import { useConfirmDialog } from '../../components/ui/ConfirmDialog'
+import { Switch } from '../../components/ui/Switch'
 import type { ScheduledTask } from '../../../../shared/ipc-types'
 import { scheduleLabel, formatNextFire } from './scheduleLabel'
 import { TEMPLATES, type ScheduledTaskTemplate } from './templates'
@@ -249,24 +250,13 @@ function TaskCard({
         >
           <Play size={13} />
         </button>
-        <button
-          onClick={onToggle}
+        <Switch
+          size="sm"
+          checked={!!task.enabled}
+          onChange={() => onToggle()}
           title={task.enabled ? '点击暂停' : '点击启用'}
-          role="switch"
-          aria-checked={!!task.enabled}
-          aria-label={task.enabled ? '暂停任务' : '启用任务'}
-          className={cn(
-            'relative inline-flex h-[18px] w-8 shrink-0 items-center rounded-full transition-colors mx-1',
-            task.enabled ? 'bg-primary' : 'bg-muted-foreground/30 hover:bg-muted-foreground/40'
-          )}
-        >
-          <span
-            className={cn(
-              'inline-block h-3.5 w-3.5 transform rounded-full bg-background shadow-sm transition-transform',
-              task.enabled ? 'translate-x-[15px]' : 'translate-x-0.5'
-            )}
-          />
-        </button>
+          className="mx-1"
+        />
         <button
           onClick={onEdit}
           title="编辑"

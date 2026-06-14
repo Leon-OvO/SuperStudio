@@ -1,9 +1,12 @@
 import React, { useEffect, useRef } from 'react'
 import { useChatStore } from '../../stores/chat'
 import { useUIStore } from '../../stores/ui'
+import { useEmployeesStore } from '../../stores/employees'
 import { resolveModel } from '../../lib/auto-router'
+import { Users } from 'lucide-react'
 import { SessionList } from './SessionList'
 import { SessionListResizer } from './SessionListResizer'
+import { NewGroupDialog } from './NewGroupDialog'
 import { MessageList } from './MessageList'
 import { ChatInput } from './ChatInput'
 import { AgentProgress } from './AgentProgress'
@@ -25,8 +28,14 @@ export function ChatPage() {
     setSessions, setActiveSession, addSession, removeSession, updateSessionTitle,
     setMessages, addMessage, upsertMessage, appendStreamDelta, removeMessage, removeMessagesFrom, updateMessageContent,
     startRun, stopRun, updateStep,
-    setSessionModel, setComputerMode, setSessionWorkingDir
+    setSessionModel, setComputerMode, setSessionWorkingDir, setSessionAssignee, setSessionGroupEmployees
   } = useChatStore()
+
+  // Hired employees — for the ChatHeader "与员工单独对话" picker + session badges.
+  const employees = useEmployeesStore(s => s.employees)
+  const employeesLoaded = useEmployeesStore(s => s.loaded)
+  const refreshEmployees = useEmployeesStore(s => s.refresh)
+  useEffect(() => { refreshEmployees() }, [refreshEmployees])
 
   // "Running" from the active session's point of view — used to gate sending /
   // editing in the current conversation. Navigation between sessions is NOT
@@ -35,7 +44,8 @@ export function ChatPage() {
 
   const {
     pendingChatAttachments, setPendingChatAttachments,
-    pendingChatImageMode, setPendingChatImageMode
+    pendingChatImageMode, setPendingChatImageMode,
+    pendingChatEmployeeId, setPendingChatEmployeeId
   } = useUIStore()
 
   const unsubRef = useRef<Array<() => void>>([])
@@ -57,6 +67,7 @@ export function ChatPage() {
   const [editorSrc, setEditorSrc] = React.useState<string | null>(null)
   const [providersCount, setProvidersCount] = React.useState<number | null>(null)
   const [defaultChatModel, setDefaultChatModelState] = React.useState<string>('')
+  const [showNewGroup, setShowNewGroup] = React.useState(false)
   const [computerUseEnabled, setComputerUseEnabled] = React.useState<boolean>(false)
   // If the user disables the Computer Use plugin, drop any leftover per-turn
   // computerMode so it doesn't silently re-arm when the plugin is turned back on.
@@ -114,11 +125,13 @@ export function ChatPage() {
     // Live token streaming — append chunks to a placeholder message keyed by the
     // run's messageId; AGENT_DONE then reconciles it into the final message.
     const uDelta = window.api.onAgentDelta((d) => {
-      if (d?.sessionId && d?.messageId) appendStreamDelta(d.sessionId, d.messageId, d.delta)
+      if (d?.sessionId && d?.messageId) appendStreamDelta(d.sessionId, d.messageId, d.delta, d.speakerEmployeeId)
     })
     const u2 = window.api.onAgentDone((data: unknown) => {
-      const d = data as { sessionId: string; content: string; messageId: string; toolCallLog?: Array<{ toolName: string; args: unknown; result: unknown }>; cancelled?: boolean; sessionTitle?: string; meta?: { model?: string; providerId?: string; providerName?: string; durationMs?: number } }
-      stopRun(d.sessionId)
+      const d = data as { sessionId: string; content: string; messageId: string; toolCallLog?: Array<{ toolName: string; args: unknown; result: unknown }>; cancelled?: boolean; sessionTitle?: string; meta?: { model?: string; providerId?: string; providerName?: string; durationMs?: number }; more?: boolean; speakerEmployeeId?: string }
+      // Group chat fires one DONE per speaker; only the final speaker (more===false)
+      // clears the running state, so the spinner stays up through the whole round.
+      if (!d.more) stopRun(d.sessionId)
       if (d.sessionTitle) updateSessionTitle(d.sessionId, d.sessionTitle)
       if (d.content) {
         const autoRoute = pendingAutoRouteRef.current[d.sessionId]
@@ -140,7 +153,8 @@ export function ChatPage() {
             ...d.meta,
             ...(autoRoute ? { autoRoutedModel: true, autoRoutedIntent: autoRoute.intent } : {})
           },
-          createdAt: Date.now()
+          createdAt: Date.now(),
+          speakerEmployeeId: d.speakerEmployeeId
         })
       }
     })
@@ -184,6 +198,22 @@ export function ChatPage() {
       setPendingChatImageMode(false)
     }
   }, [pendingChatImageMode, activeSessionId, setSessionModel, setPendingChatImageMode])
+
+  // Company「谈话」handoff: open a fresh conversation bound to the chosen employee.
+  // Wait for the roster to load so we can resolve their name/model; if the
+  // employee is gone by then, just drop the request.
+  useEffect(() => {
+    if (!pendingChatEmployeeId || !employeesLoaded) return
+    // StrictMode (dev) runs this effect twice with the SAME closure, so the
+    // stale `pendingChatEmployeeId` would open two conversations for one 「谈话」
+    // click. Re-read the live store value instead — zustand's set is synchronous,
+    // so the first run has already nulled it and the second run bails here.
+    const id = useUIStore.getState().pendingChatEmployeeId
+    if (!id) return
+    setPendingChatEmployeeId(null)
+    if (employees.some(e => e.id === id)) void startEmployeeChat(id)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingChatEmployeeId, employeesLoaded, employees])
 
   // Clear attachments + the per-turn force-image toggle when switching sessions
   useEffect(() => {
@@ -249,6 +279,70 @@ export function ChatPage() {
     else toast.error(res?.error || '设置工作目录失败')
   }
 
+  /** Bind / unbind a hired employee to the active session. Persists the link,
+   *  mirrors it into the store, and defaults the session model to the employee's
+   *  model on bind (still user-overridable) — or back to the global default on
+   *  unbind. The soul persona is injected by the engine from the saved link. */
+  async function handleBindEmployee(employeeId: string | null) {
+    const sid = await ensureSession()
+    await window.api.setSessionAssignee(sid, employeeId)
+    setSessionAssignee(sid, employeeId)
+    const emp = employeeId ? employees.find(e => e.id === employeeId) : null
+    if (emp?.providerId && emp?.modelId) setSessionModel(sid, emp.providerId, emp.modelId)
+    else if (defaultModelRef.current) setSessionModel(sid, defaultModelRef.current.providerId, defaultModelRef.current.model)
+  }
+
+  /** Open a brand-new conversation already bound to an employee (used by the
+   *  Company「谈话」 entry). Titles it after the employee for quick scanning. */
+  async function startEmployeeChat(employeeId: string) {
+    const emp = employees.find(e => e.id === employeeId)
+    const session = await window.api.createSession(emp ? `与 ${emp.name} 对话` : undefined, { employeeId })
+    addSession(session)
+    setActiveSession(session.id)
+    setMessages(session.id, [])
+    if (emp?.providerId && emp?.modelId) setSessionModel(session.id, emp.providerId, emp.modelId)
+    else if (defaultModelRef.current) setSessionModel(session.id, defaultModelRef.current.providerId, defaultModelRef.current.model)
+  }
+
+  // ---- Group chat (multi-agent) -------------------------------------------
+  /** Create a new group-chat session with the chosen employees and switch to it. */
+  async function handleNewGroup(employeeIds: string[]) {
+    const names = employeeIds.map(id => employees.find(e => e.id === id)?.name).filter(Boolean) as string[]
+    const title = (names.length ? `群聊 · ${names.join('、')}` : '员工群聊').slice(0, 40)
+    const session = await window.api.createSession(title, { groupEmployeeIds: employeeIds })
+    addSession(session)
+    setActiveSession(session.id)
+    setMessages(session.id, [])
+    setShowNewGroup(false)
+  }
+
+  /** Send the user's turn into a group session, then let every member speak once. */
+  async function handleGroupSend(text: string) {
+    if (!activeSessionId || isRunning) return
+    startRun(activeSessionId)
+    addMessage(activeSessionId, { id: randomId(), sessionId: activeSessionId, role: 'user', content: text, createdAt: Date.now() })
+    await window.api.groupRun(activeSessionId, text)
+  }
+
+  /** "继续讨论" — run another round with no new user input. */
+  async function handleGroupContinue() {
+    if (!activeSessionId || isRunning) return
+    startRun(activeSessionId)
+    await window.api.groupRun(activeSessionId)
+  }
+
+  /** 拉员工进群 / 移出：mutate the active group's member list. */
+  async function handleAddGroupMember(employeeId: string) {
+    if (!activeSessionId) return
+    const res = await window.api.addGroupMember(activeSessionId, employeeId)
+    if (res?.ok) setSessionGroupEmployees(activeSessionId, res.groupEmployeeIds)
+  }
+  async function handleRemoveGroupMember(employeeId: string) {
+    if (!activeSessionId) return
+    const res = await window.api.removeGroupMember(activeSessionId, employeeId)
+    if (res?.ok) setSessionGroupEmployees(activeSessionId, res.groupEmployeeIds)
+  }
+
   async function handleSelectSession(id: string) {
     // Navigation is always allowed — even while a run is in flight. The running
     // agent keeps streaming into its own session (events are keyed by sessionId),
@@ -295,6 +389,9 @@ export function ChatPage() {
 
   async function handleSend(text: string, attachments?: Array<{ name: string; path: string; mimeType: string }>) {
     if (isRunning) return
+    // Group session → route to the multi-agent round instead of a single agent.
+    const cur = sessions.find(s => s.id === activeSessionId)
+    if ((cur?.groupEmployeeIds?.length ?? 0) > 0) { await handleGroupSend(text); return }
     // No active session yet (first use)? Create one on the fly so the user can
     // type+send straight away without first clicking 「新建对话」.
     const sessionId = await ensureSession()
@@ -341,6 +438,8 @@ export function ChatPage() {
     // clear the running state. The engine discards its (now stale) result.
     if (!activeSessionId) return
     stopRun(activeSessionId)
+    const cur = sessions.find(s => s.id === activeSessionId)
+    if ((cur?.groupEmployeeIds?.length ?? 0) > 0) { await window.api.stopGroup(activeSessionId); return }
     await window.api.stopAgent(activeSessionId)
   }
 
@@ -464,6 +563,11 @@ export function ChatPage() {
   const canRetry = !isRunning && !!(activeSessionId && lastSentRef.current[activeSessionId])
   const isImageMode = !!(currentOverride?.model && defaultImageModel && currentOverride.model === defaultImageModel)
   const activeSession = sessions.find(s => s.id === activeSessionId)
+  const activeIsGroup = (activeSession?.groupEmployeeIds?.length ?? 0) > 0
+  // Resolved, still-employed members of the active group (for @-mention + roster).
+  const groupMembers = activeIsGroup
+    ? (activeSession!.groupEmployeeIds!.map(id => employees.find(e => e.id === id)).filter(Boolean) as typeof employees)
+    : []
   const currentImageParams = activeSessionId ? (imageParamsMap[activeSessionId] || defaultImageRules) : defaultImageRules
 
   return (
@@ -471,8 +575,10 @@ export function ChatPage() {
       <SessionList
         sessions={sessions}
         activeId={activeSessionId}
+        employees={employees}
         onSelect={handleSelectSession}
         onNew={handleNewSession}
+        onNewGroup={() => setShowNewGroup(true)}
         onDelete={handleDeleteSession}
         onArchive={handleArchiveSession}
         runningSessionIds={runningSessionIds}
@@ -488,10 +594,17 @@ export function ChatPage() {
             await window.api.renameSession(activeSessionId, newTitle)
             updateSessionTitle(activeSessionId, newTitle)
           } : undefined}
+          employees={employees}
+          boundEmployeeId={activeSession?.employeeId ?? null}
+          groupEmployeeIds={activeSession?.groupEmployeeIds ?? null}
+          onBindEmployee={activeIsGroup ? undefined : handleBindEmployee}
+          onAddGroupMember={activeIsGroup ? handleAddGroupMember : undefined}
+          onRemoveGroupMember={activeIsGroup ? handleRemoveGroupMember : undefined}
         />
         <MessageList
           messages={currentMessages}
           sessionId={activeSessionId}
+          employees={employees}
           onRetry={canRetry ? handleRetry : undefined}
           onEditImage={setEditorSrc}
           onUseAsReference={handleUseAsReference}
@@ -503,6 +616,17 @@ export function ChatPage() {
           isRunning={isRunning}
           onChoose={(value) => handleSend(value)}
         />
+        {/* 群聊：让员工再聊一轮（无需新输入） */}
+        {activeIsGroup && !isRunning && currentMessages.length > 0 && (
+          <div className="px-4 pb-1 shrink-0">
+            <button
+              onClick={handleGroupContinue}
+              className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded-lg border border-dashed border-border text-xs text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
+            >
+              <Users size={12} /> 让大家继续讨论一轮
+            </button>
+          </div>
+        )}
         <AgentProgress />
         <ChatInput
           onSend={handleSend}
@@ -528,6 +652,7 @@ export function ChatPage() {
           imageParams={currentImageParams}
           onImageParamsChange={params => activeSessionId && setImageParamsMap(prev => ({ ...prev, [activeSessionId]: params }))}
           onEditImage={setEditorSrc}
+          mentionEmployees={activeIsGroup ? groupMembers.map(e => ({ id: e.id, name: e.name, dept: e.dept })) : undefined}
         />
       </div>
 
@@ -536,6 +661,13 @@ export function ChatPage() {
           src={editorSrc}
           sessionId={activeSessionId ?? undefined}
           onClose={() => setEditorSrc(null)}
+        />
+      )}
+      {showNewGroup && (
+        <NewGroupDialog
+          employees={employees}
+          onClose={() => setShowNewGroup(false)}
+          onCreate={handleNewGroup}
         />
       )}
       {dlg.element}
