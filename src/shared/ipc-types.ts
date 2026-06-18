@@ -17,6 +17,8 @@ export const IPC = {
   SESSIONS_ARCHIVE: 'sessions:archive',
   SESSIONS_SET_WORKING_DIR: 'sessions:set-working-dir', // pin a per-conversation working directory (opt-in)
   SESSIONS_SET_ASSIGNEE: 'sessions:set-assignee', // bind/unbind a hired employee to a conversation
+  SESSIONS_SET_PINNED: 'sessions:set-pinned',     // pin/unpin a conversation (top section + skip auto-archive)
+  SESSIONS_CHANGED: 'sessions:changed',           // main → renderer: list changed in the background (auto-tidy) → reload
   SESSIONS_ADD_MEMBER: 'sessions:add-member',     // pull an employee into a group chat
   SESSIONS_REMOVE_MEMBER: 'sessions:remove-member', // remove an employee from a group chat
   MESSAGES_LIST: 'messages:list',
@@ -35,6 +37,7 @@ export const IPC = {
   GROUP_STOP: 'group:stop',           // stop the in-flight group round
   AGENT_CLASSIFY_INTENT: 'agent:classify-intent',  // renderer → main (auto-router smart mode)
   AGENT_PROGRESS: 'agent:progress',   // main → renderer (event)
+  AGENT_PHASE: 'agent:phase',         // main → renderer (event — coarse "what is it doing now" phase + per-phase timing)
   AGENT_DELTA: 'agent:delta',         // main → renderer (event — streamed assistant text chunks)
   AGENT_DONE: 'agent:done',           // main → renderer (event)
   AGENT_ERROR: 'agent:error',         // main → renderer (event)
@@ -249,6 +252,7 @@ export const IPC = {
 
   // SSH client: connection CRUD (creds encrypted at rest) + per-exec confirm.
   SSH_LIST: 'ssh:list',
+  SSH_LIST_META: 'ssh:list-meta',                 // credential-free connection list for the @-mention picker
   SSH_SAVE: 'ssh:save',
   SSH_DELETE: 'ssh:delete',
   SSH_TEST: 'ssh:test',
@@ -320,6 +324,44 @@ export interface AgentProgressEvent {
   status: 'running' | 'done' | 'error'
   message?: string
   artifact?: { type: 'image' | 'video'; path: string; thumbnailPath?: string }
+}
+
+/** Coarse "what is the run doing RIGHT NOW" phase, emitted on every transition so
+ *  the UI can show an honest current-phase label + per-phase elapsed time + a
+ *  pre-timeout warning, instead of a single static spinner. */
+export type AgentPhase = 'connecting' | 'thinking' | 'responding' | 'tool' | 'waiting' | 'generating'
+export interface AgentPhaseEvent {
+  sessionId: string
+  phase: AgentPhase
+  /** Human label for the phase (e.g. "等待模型响应…", "执行 web_search…"). */
+  label: string
+  /** Health of the current phase — drives the amber "slow / about to time out" banner. */
+  status?: 'ok' | 'slow' | 'timeout-soon'
+  toolName?: string
+  /** Unix ms when this phase began — the renderer derives the per-phase clock. */
+  startedAt: number
+}
+
+/** A non-attachment reference the user pinned via `@` for this turn (a prior
+ *  message to follow up on, a produced file, or "the whole conversation"). */
+export interface ContextRef {
+  kind: 'message' | 'file' | 'summary'
+  /** Inlined content for kind:'message' (the quoted message body). */
+  text?: string
+  /** Absolute path for kind:'file'. */
+  path?: string
+  /** Short human label shown back in the composer / used in the injected note. */
+  label: string
+}
+
+/** Credential-free SSH connection summary for the @-mention picker. */
+export interface SshConnectionMeta {
+  id: string
+  name: string
+  host: string
+  port: number
+  username: string
+  group?: string
 }
 
 // Video generation
@@ -492,6 +534,11 @@ export interface AppSettings {
   kbGlobalSpaceIds: string[]
   /** Auto-capture long-term memories from conversations / company work. */
   memoryAutoCapture?: boolean
+  /** 会话整理：超过这么多天没活动的普通会话自动归档（可逆，可在「显示归档」找回）。
+   *  0 = 关闭自动归档。默认 30。置顶/员工单聊/群聊/定时会话不归档。 */
+  autoArchiveDays?: number
+  /** 会话整理：自动删除「随手新建却没发过消息、且超过一天」的空「新对话」。默认 true。 */
+  autoPruneEmptyChats?: boolean
   /** Master switch for Computer Use (let the agent control mouse/keyboard/screen). Default off. */
   computerUseEnabled?: boolean
   /** Privacy curtain ("伪锁屏"): during a Computer Use run, cover all screens with a
@@ -896,6 +943,9 @@ export interface Session {
    *  SessionList renders these under a separate "📅 定时" group; deleting
    *  one auto-pauses the owning task. */
   isScheduled?: number
+  /** 1 = pinned — sorts into the top「置顶」section and is excluded from
+   *  auto-archive. 0/undefined = normal. */
+  pinned?: number
   /** Sum of cost_usd across all messages in this session (0 if none priced). */
   totalCostUsd?: number
   totalInputTokens?: number
@@ -1014,6 +1064,9 @@ export interface MessageMeta {
   inputTokens?: number
   outputTokens?: number
   costUsd?: number
+  /** Per-phase wall-clock breakdown of the turn (思考 / 工具 / 输出 …), shown as a
+   *  footnote so a slow turn's cost is legible ("思考 1.2s · 工具 3.5s · 输出 2.1s"). */
+  phases?: Array<{ phase: string; ms: number }>
   /** Diagnostic info captured on the assistant turn — surfaced in exported
    *  JSON to make stuck/abort cases reproducible without console access. */
   debug?: {

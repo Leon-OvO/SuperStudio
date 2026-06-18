@@ -36,15 +36,25 @@ interface Props {
    *  variant's phase label. Pass `null` to suppress it entirely — use that when a
    *  richer status banner already states the phase (avoids a duplicate "思考中"). */
   idleLabel?: string | null
+  /** Live coarse phase from the engine (等待响应 / 思考 / 执行 X / 输出中). When set it
+   *  becomes the honest headline + drives a per-phase sub-clock. */
+  phaseLabel?: string
+  /** Unix ms when the current phase began — drives the per-phase clock. */
+  phaseStartedAt?: number
+  /** Health of the current phase — turns the indicator amber as a model slows /
+   *  approaches the stall timeout. */
+  phaseStatus?: 'ok' | 'slow' | 'timeout-soon'
 }
 
 /** Compact terminal-style "is working" indicator: a spinner + REAL elapsed time
  *  and a short buffer of REAL activity lines (tool/step messages). When nothing
  *  concrete has happened yet it shows a single honest phase label — never
- *  fabricated activity. */
-export function ThinkingConsole({ active, variant, liveLine, startedAt, className, idleLabel }: Props) {
+ *  fabricated activity. The engine's live phase (when provided) becomes the
+ *  headline with its own sub-clock + a pre-timeout warning. */
+export function ThinkingConsole({ active, variant, liveLine, startedAt, className, idleLabel, phaseLabel, phaseStartedAt, phaseStatus }: Props) {
   const [lines, setLines] = useState<string[]>([])
   const [elapsed, setElapsed] = useState(0)
+  const [phaseElapsed, setPhaseElapsed] = useState(0)
   const startRef = useRef<number>(startedAt ?? Date.now())
 
   // Reset on (re)start or variant change.
@@ -54,12 +64,21 @@ export function ThinkingConsole({ active, variant, liveLine, startedAt, classNam
     setLines([])
   }, [startedAt, variant])
 
-  // Elapsed clock only — no fabricated phrase rotation.
+  // Elapsed clock only — no fabricated phrase rotation. Also ticks the per-phase
+  // sub-clock off phaseStartedAt so a long single phase reads as live, not frozen.
   useEffect(() => {
     if (!active) return
-    const id = setInterval(() => setElapsed(Math.floor((Date.now() - startRef.current) / 1000)), TICK_MS)
+    const id = setInterval(() => {
+      setElapsed(Math.floor((Date.now() - startRef.current) / 1000))
+      if (phaseStartedAt) setPhaseElapsed(Math.max(0, Math.floor((Date.now() - phaseStartedAt) / 1000)))
+    }, TICK_MS)
     return () => clearInterval(id)
-  }, [active])
+  }, [active, phaseStartedAt])
+
+  // Recompute the phase clock immediately when the phase changes.
+  useEffect(() => {
+    setPhaseElapsed(phaseStartedAt ? Math.max(0, Math.floor((Date.now() - phaseStartedAt) / 1000)) : 0)
+  }, [phaseStartedAt])
 
   // Fold each REAL status line into the buffer (scrubbed of addresses + deduped).
   useEffect(() => {
@@ -71,25 +90,39 @@ export function ThinkingConsole({ active, variant, liveLine, startedAt, classNam
 
   if (!active) return null
 
-  const mm = Math.floor(elapsed / 60)
-  const ss = elapsed % 60
-  const elapsedLabel = mm > 0 ? `${mm}:${String(ss).padStart(2, '0')}` : `${ss}s`
+  const fmt = (sec: number): string => {
+    const mm = Math.floor(sec / 60)
+    const ss = sec % 60
+    return mm > 0 ? `${mm}:${String(ss).padStart(2, '0')}` : `${ss}s`
+  }
+  const elapsedLabel = fmt(elapsed)
+  const warn = phaseStatus === 'slow' || phaseStatus === 'timeout-soon'
   // No real activity yet → one honest phase label (the model IS working; we just
   // don't fabricate what it's doing). `idleLabel={null}` suppresses it when a
-  // surrounding banner already states the phase.
+  // surrounding banner already states the phase. The live engine phase wins.
   const fallback = idleLabel === undefined ? (PHASE_LABEL[variant] ?? PHASE_LABEL.chat) : idleLabel
-  const shown = lines.length ? lines : (fallback ? [fallback] : [])
+  const headline = phaseLabel ?? (lines.length ? undefined : fallback)
+  const shown = lines.length ? lines : (fallback && !phaseLabel ? [fallback] : [])
 
   return (
     <div className={cn(
-      'rounded-md border border-border/60 bg-muted/30 px-2.5 py-1.5 font-mono text-[11px] leading-relaxed',
+      'rounded-md border bg-muted/30 px-2.5 py-1.5 font-mono text-[11px] leading-relaxed',
+      warn ? 'border-amber-400/60 bg-amber-400/[0.06]' : 'border-border/60',
       className
     )}>
-      <div className="flex items-center gap-1.5 text-muted-foreground/70 mb-0.5">
-        <Loader2 size={10} className="animate-spin text-primary shrink-0" />
-        <span className="text-[10px]">运行中</span>
-        <span className="ml-auto tabular-nums text-[10px]">已用时 {elapsedLabel}</span>
+      <div className={cn('flex items-center gap-1.5 mb-0.5', warn ? 'text-amber-600 dark:text-amber-400' : 'text-muted-foreground/70')}>
+        <Loader2 size={10} className={cn('animate-spin shrink-0', warn ? 'text-amber-500' : 'text-primary')} />
+        {/* Heartbeat dot — proves "still alive" even during a long silent phase. */}
+        <span className={cn('w-1.5 h-1.5 rounded-full shrink-0 animate-pulse', warn ? 'bg-amber-500' : 'bg-primary/70')} />
+        <span className="text-[10px] truncate">{headline ?? '运行中'}</span>
+        {phaseLabel && phaseStartedAt != null && (
+          <span className="tabular-nums text-[10px] opacity-70">· {fmt(phaseElapsed)}</span>
+        )}
+        <span className="ml-auto tabular-nums text-[10px] shrink-0">已用时 {elapsedLabel}</span>
       </div>
+      {phaseStatus === 'timeout-soon' && (
+        <div className="text-[10px] text-amber-600 dark:text-amber-400 mb-0.5">即将超时——可点「停止」后重试，或检查模型 / 网络代理。</div>
+      )}
       {shown.map((ln, i) => {
         const last = i === shown.length - 1
         return (

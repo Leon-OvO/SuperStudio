@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Plus, Edit2, Trash2, Server, KeyRound, Lock, Upload, Loader2, Copy, Search, X,
-  ChevronDown, ChevronRight, Activity, CheckCircle2, XCircle, FolderClosed, Zap, UserCog, SlidersHorizontal
+  ChevronDown, Activity, CheckCircle2, XCircle, Zap, UserCog, SlidersHorizontal
 } from 'lucide-react'
 import type { SshConnection } from '../../../../shared/ipc-types'
 import { Select } from '../../components/ui/Select'
+import { SshTree } from '../../components/ssh/SshTree'
 import { cn } from '../../lib/utils'
 
 type SortKey = 'name' | 'host' | 'recent'
@@ -23,8 +24,6 @@ interface Props {
   importing: boolean
 }
 
-const UNGROUPED = '未分组'
-
 /** Run an async task over items with a small concurrency cap. */
 async function runPool<T>(items: T[], n: number, fn: (t: T) => Promise<void>): Promise<void> {
   let i = 0
@@ -36,7 +35,6 @@ export function SshList({ connections, onEdit, onDelete, onBulkDelete, onBulkSet
   const [query, setQuery] = useState('')
   const [sortKey, setSortKey] = useState<SortKey>('name')
   const [selected, setSelected] = useState<Set<string>>(new Set())
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   const [status, setStatus] = useState<Record<string, TestState>>({})
   const [bulkTesting, setBulkTesting] = useState(false)
   const [settingAuto, setSettingAuto] = useState(false)
@@ -55,31 +53,22 @@ export function SshList({ connections, onEdit, onDelete, onBulkDelete, onBulkSet
     return () => document.removeEventListener('mousedown', onDoc)
   }, [bulkMenuOpen])
 
-  // Filter → group → sort.
-  const groups = useMemo(() => {
+  // Filter (the nested folder tree + per-folder sort is built by <SshTree>).
+  const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
-    const filtered = q
+    return q
       ? connections.filter(c => (c.name + ' ' + c.host + ' ' + c.username + ' ' + (c.group || '')).toLowerCase().includes(q))
       : connections
-    const byGroup = new Map<string, SshConnection[]>()
-    for (const c of filtered) {
-      const g = c.group?.trim() || UNGROUPED
-      ;(byGroup.get(g) ?? byGroup.set(g, []).get(g)!).push(c)
-    }
-    const cmp = (a: SshConnection, b: SshConnection): number => {
-      if (sortKey === 'host') return a.host.localeCompare(b.host)
-      if (sortKey === 'recent') return (b.createdAt ?? 0) - (a.createdAt ?? 0)
-      return a.name.localeCompare(b.name)
-    }
-    const names = [...byGroup.keys()].sort((a, b) =>
-      a === UNGROUPED ? 1 : b === UNGROUPED ? -1 : a.localeCompare(b))
-    return names.map(name => ({ name, items: byGroup.get(name)!.sort(cmp) }))
-  }, [connections, query, sortKey])
+  }, [connections, query])
+  const sortItems = (a: SshConnection, b: SshConnection): number => {
+    if (sortKey === 'host') return a.host.localeCompare(b.host)
+    if (sortKey === 'recent') return (b.createdAt ?? 0) - (a.createdAt ?? 0)
+    return a.name.localeCompare(b.name)
+  }
 
-  const visibleIds = useMemo(() => groups.flatMap(g => g.items.map(c => c.id)), [groups])
+  const visibleIds = useMemo(() => filtered.map(c => c.id), [filtered])
   const selectedVisible = visibleIds.filter(id => selected.has(id))
   const allSelected = visibleIds.length > 0 && selectedVisible.length === visibleIds.length
-  const multipleGroups = groups.length > 1 || (groups[0]?.name !== UNGROUPED)
 
   function toggle(id: string) {
     setSelected(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n })
@@ -89,9 +78,6 @@ export function SshList({ connections, onEdit, onDelete, onBulkDelete, onBulkSet
   }
   function toggleAll() {
     setSelected(allSelected ? new Set() : new Set(visibleIds))
-  }
-  function toggleCollapse(name: string) {
-    setCollapsed(prev => { const n = new Set(prev); n.has(name) ? n.delete(name) : n.add(name); return n })
   }
 
   async function testOne(c: SshConnection) {
@@ -266,79 +252,71 @@ export function SshList({ connections, onEdit, onDelete, onBulkDelete, onBulkSet
             </div>
           )}
 
-          {/* grouped list */}
-          <div className="space-y-3">
-            {groups.map(group => {
-              const ids = group.items.map(c => c.id)
-              const groupAll = ids.length > 0 && ids.every(id => selected.has(id))
-              const isCollapsed = collapsed.has(group.name)
-              return (
-                <div key={group.name}>
-                  {multipleGroups && (
-                    <div className="flex items-center gap-2 mb-1.5 text-xs text-muted-foreground">
-                      <input type="checkbox" checked={groupAll} onChange={e => toggleGroup(ids, e.target.checked)} className="accent-primary" />
-                      <button onClick={() => toggleCollapse(group.name)} className="flex items-center gap-1 hover:text-foreground">
-                        {isCollapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
-                        <FolderClosed size={12} />
-                        <span className="font-medium">{group.name}</span>
-                        <span className="text-muted-foreground/60">· {group.items.length}</span>
-                      </button>
+          {/* nested folder tree (MobaXterm-style) */}
+          {filtered.length === 0 ? (
+            <div className="text-center text-muted-foreground text-sm py-6">没有匹配的连接</div>
+          ) : (
+            <SshTree
+              connections={filtered}
+              forceExpand={!!query.trim()}
+              sortItems={sortItems}
+              renderFolderExtra={(_path, conns) => {
+                const ids = conns.map(c => c.id)
+                const groupAll = ids.length > 0 && ids.every(id => selected.has(id))
+                return (
+                  <input type="checkbox" checked={groupAll}
+                    onChange={e => toggleGroup(ids, e.target.checked)}
+                    onClick={e => e.stopPropagation()}
+                    className="accent-primary shrink-0" title="选中此文件夹下全部连接" />
+                )
+              }}
+              renderItem={(c) => (
+                <div className={cn(
+                  'border rounded-lg p-3 flex items-center gap-3 bg-card shadow-sm transition-colors',
+                  selected.has(c.id) ? 'border-primary/50 bg-primary/[0.04]' : 'border-border'
+                )}>
+                  <input type="checkbox" checked={selected.has(c.id)} onChange={() => toggle(c.id)} className="accent-primary shrink-0" />
+                  <StatusDot id={c.id} />
+                  <Server size={14} className="text-muted-foreground shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="font-medium truncate">{c.name}</span>
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground inline-flex items-center gap-1 shrink-0">
+                        {c.authType === 'privateKey' ? <><KeyRound size={9} /> 私钥</> : <><Lock size={9} /> 密码</>}
+                      </span>
+                      {c.autoConfirm && (
+                        <span title="免确认执行：Agent 在此连接上执行命令不弹窗确认"
+                          className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-700 dark:text-amber-400 inline-flex items-center gap-1 shrink-0">
+                          <Zap size={9} /> 免确认
+                        </span>
+                      )}
+                      {c.becomeRoot && (
+                        <span title={`登录后自动 sudo 切换到 ${c.becomeUser || 'root'} 执行`}
+                          className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-700 dark:text-blue-400 inline-flex items-center gap-1 shrink-0">
+                          <UserCog size={9} /> →{c.becomeUser || 'root'}
+                        </span>
+                      )}
                     </div>
-                  )}
-                  {!isCollapsed && (
-                    <div className="space-y-2">
-                      {group.items.map(c => (
-                        <div key={c.id} className={cn(
-                          'border rounded-lg p-3 flex items-center gap-3 bg-card shadow-sm transition-colors',
-                          selected.has(c.id) ? 'border-primary/50 bg-primary/[0.04]' : 'border-border'
-                        )}>
-                          <input type="checkbox" checked={selected.has(c.id)} onChange={() => toggle(c.id)} className="accent-primary shrink-0" />
-                          <StatusDot id={c.id} />
-                          <Server size={14} className="text-muted-foreground shrink-0" />
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-2">
-                              <span className="font-medium truncate">{c.name}</span>
-                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground inline-flex items-center gap-1 shrink-0">
-                                {c.authType === 'privateKey' ? <><KeyRound size={9} /> 私钥</> : <><Lock size={9} /> 密码</>}
-                              </span>
-                              {c.autoConfirm && (
-                                <span title="免确认执行：Agent 在此连接上执行命令不弹窗确认"
-                                  className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-700 dark:text-amber-400 inline-flex items-center gap-1 shrink-0">
-                                  <Zap size={9} /> 免确认
-                                </span>
-                              )}
-                              {c.becomeRoot && (
-                                <span title={`登录后自动 sudo 切换到 ${c.becomeUser || 'root'} 执行`}
-                                  className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-700 dark:text-blue-400 inline-flex items-center gap-1 shrink-0">
-                                  <UserCog size={9} /> →{c.becomeUser || 'root'}
-                                </span>
-                              )}
-                            </div>
-                            <div className="text-xs text-muted-foreground mt-0.5 truncate">{c.username}@{c.host}:{c.port || 22}</div>
-                          </div>
-                          <div className="flex items-center gap-0.5 shrink-0">
-                            <button onClick={() => testOne(c)} className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-accent rounded" title="测试连接">
-                              <Activity size={14} />
-                            </button>
-                            <button onClick={() => onDuplicate(c)} className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-accent rounded" title="复制">
-                              <Copy size={14} />
-                            </button>
-                            <button onClick={() => onEdit(c)} className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-accent rounded" title="编辑">
-                              <Edit2 size={14} />
-                            </button>
-                            <button onClick={() => onDelete(c.id)} className="p-1.5 text-muted-foreground hover:text-destructive hover:bg-accent rounded" title="删除">
-                              <Trash2 size={14} />
-                            </button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
+                    <div className="text-xs text-muted-foreground mt-0.5 truncate">{c.username}@{c.host}:{c.port || 22}</div>
+                  </div>
+                  <div className="flex items-center gap-0.5 shrink-0">
+                    <button onClick={() => testOne(c)} className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-accent rounded" title="测试连接">
+                      <Activity size={14} />
+                    </button>
+                    <button onClick={() => onDuplicate(c)} className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-accent rounded" title="复制">
+                      <Copy size={14} />
+                    </button>
+                    <button onClick={() => onEdit(c)} className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-accent rounded" title="编辑">
+                      <Edit2 size={14} />
+                    </button>
+                    <button onClick={() => onDelete(c.id)} className="p-1.5 text-muted-foreground hover:text-destructive hover:bg-accent rounded" title="删除">
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
                 </div>
-              )
-            })}
-            {groups.length === 0 && <div className="text-center text-muted-foreground text-sm py-6">没有匹配的连接</div>}
-          </div>
+              )}
+            />
+          )}
         </>
       )}
     </div>

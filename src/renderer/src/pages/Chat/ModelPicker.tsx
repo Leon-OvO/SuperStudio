@@ -70,7 +70,12 @@ export function ModelPicker({ providerId, model, onChange, autoRoute }: Props & 
   ]
 
   const selectedRole = getModelRole(model, settings)
-  const displayLabel = model || '使用全局默认'
+  // Show 提供商 + 模型. With no per-session override, resolve the global default so
+  // the user still sees which provider/model will actually run.
+  const effModel = model || settings?.defaultChatModel || ''
+  const effProviderId = providerId || settings?.defaultChatProviderId || ''
+  const effProviderName = providers.find(p => p.id === effProviderId)?.name || ''
+  const isDefault = !providerId && !model
   const autoEnabled = settings?.autoModelEnabled
 
   if (autoRoute?.pending) {
@@ -102,9 +107,19 @@ export function ModelPicker({ providerId, model, onChange, autoRoute }: Props & 
               ? 'bg-muted text-foreground ring-1 ring-ring/40'
               : 'bg-muted/40 text-foreground/80 hover:bg-muted/70 hover:text-foreground'}`}
         >
-          {autoEnabled && <Zap size={11} className="shrink-0 text-amber-500" title="自动切换模型已启用" />}
+          {autoEnabled && (
+            <span title="自动切换模型已启用" className="shrink-0 inline-flex"><Zap size={11} className="text-amber-500" /></span>
+          )}
           <span className="shrink-0 text-muted-foreground">{ROLE_ICON[selectedRole]}</span>
-          <span className="max-w-[140px] truncate">{displayLabel}</span>
+          <span className="max-w-[230px] truncate">
+            {effModel ? (
+              <>
+                {effProviderName && <span className="text-muted-foreground">{effProviderName} · </span>}
+                <span>{effModel}</span>
+                {isDefault && <span className="text-muted-foreground/70"> · 默认</span>}
+              </>
+            ) : '使用全局默认'}
+          </span>
           <ChevronDown size={11} className={`shrink-0 text-muted-foreground transition-transform ${open ? 'rotate-180' : ''}`} />
         </span>
       )}

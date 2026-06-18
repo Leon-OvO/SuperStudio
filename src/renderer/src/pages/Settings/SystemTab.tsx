@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { BRAND } from '@shared/brand'
-import { Loader2, Power, MousePointerClick, AlertTriangle, Home, Check, Globe, PanelLeft, Network, Minimize2 } from 'lucide-react'
+import { Loader2, Power, MousePointerClick, AlertTriangle, Home, Check, Globe, PanelLeft, Network, Minimize2, Archive, Trash2 } from 'lucide-react'
 import type { AppSettings, ProviderConfig, ProxyMode } from '../../../../shared/ipc-types'
 import { cn } from '../../lib/utils'
 import { toast } from '../../components/ui/Toast'
@@ -248,6 +248,41 @@ function SystemSection({
           onChange={toggleShellIntegration}
         />
       </SettingsGroup>
+
+      {/* 会话整理 —— 自动收敛对话列表 ------------------------------------- */}
+      <div>
+        <h3 className="text-sm font-semibold mb-2">会话整理</h3>
+        <SettingsGroup>
+          <SettingsRow
+            align="start"
+            icon={<Archive size={16} className="text-primary" />}
+            title="自动归档久未活动的对话"
+            description="超过所选天数没有新消息的普通对话会自动移入「归档」（不删除，可在对话列表点「显示归档」找回）。置顶 / 员工单聊 / 群聊 / 定时任务的对话不会被自动归档。"
+            control={
+              <Select<string>
+                value={String(settings?.autoArchiveDays ?? 30)}
+                onChange={(v) => { if (settings) onSave({ ...settings, autoArchiveDays: Number(v) }) }}
+                options={[
+                  { value: '0', label: '关闭' },
+                  { value: '7', label: '7 天' },
+                  { value: '30', label: '30 天' },
+                  { value: '90', label: '90 天' },
+                ]}
+                size="md"
+                disabled={!settings}
+              />
+            }
+          />
+          <SimpleToggleRow
+            icon={<Trash2 size={16} className="text-primary" />}
+            title="自动清理空「新对话」"
+            description="把随手新建、却一条消息都没发、且超过一天的空「新对话」自动删除，减少列表里的无用占位。默认开启。"
+            checked={settings?.autoPruneEmptyChats !== false}
+            pending={false}
+            onChange={(v) => { if (settings) onSave({ ...settings, autoPruneEmptyChats: v }) }}
+          />
+        </SettingsGroup>
+      </div>
 
       {/* 网络代理 ---------------------------------------------------------- */}
       <ProxySection settings={settings} onSave={onSave} />

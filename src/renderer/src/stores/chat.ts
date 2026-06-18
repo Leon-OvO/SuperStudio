@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { Session, Message, AgentProgressEvent } from '../../../shared/ipc-types'
+import type { Session, Message, AgentProgressEvent, AgentPhaseEvent } from '../../../shared/ipc-types'
 
 interface AgentStep {
   index: number
@@ -22,6 +22,10 @@ interface ChatState {
   /** Progress steps keyed by session. Global state here would mean switching to
    *  / starting another session wipes the in-flight session's step list. */
   stepsBySession: Record<string, AgentStep[]>
+  /** Current coarse phase per session (等待响应 / 思考 / 工具 / 输出), driving the
+   *  honest "what is it doing now" header + per-phase clock + slow/timeout warning.
+   *  Cleared on run start/stop so a stale phase never lingers. */
+  phaseBySession: Record<string, AgentPhaseEvent | null>
   mountedSpaceIds: string[]
   /** Per-turn "电脑操控" mode toggle (runs the screenshot loop on send). */
   computerMode: boolean
@@ -52,6 +56,8 @@ interface ChatState {
   stopRun: (sessionId: string) => void
   updateStep: (step: AgentProgressEvent) => void
   clearSteps: (sessionId: string) => void
+  /** Record the latest phase event for its session (driven by onAgentPhase). */
+  setPhase: (event: AgentPhaseEvent) => void
   setMountedSpaces: (ids: string[]) => void
   setComputerMode: (on: boolean) => void
   setSessionModel: (sessionId: string, providerId: string, model: string) => void
@@ -61,6 +67,8 @@ interface ChatState {
   /** Update a session's bound employee in the local list (after the main process
    *  has persisted it via setSessionAssignee IPC). null = unbound. */
   setSessionAssignee: (sessionId: string, employeeId: string | null) => void
+  /** Update a session's pinned flag locally (after setSessionPinned IPC). */
+  setSessionPinned: (sessionId: string, pinned: boolean) => void
   /** Update a group session's member list locally (after add/remove member IPC). */
   setSessionGroupEmployees: (sessionId: string, ids: string[]) => void
 }
@@ -71,6 +79,7 @@ export const useChatStore = create<ChatState>((set) => ({
   messages: {},
   runningSessionIds: [],
   stepsBySession: {},
+  phaseBySession: {},
   mountedSpaceIds: [],
   computerMode: false,
   sessionModel: {},
@@ -130,10 +139,12 @@ export const useChatStore = create<ChatState>((set) => ({
     runningSessionIds: s.runningSessionIds.includes(sessionId)
       ? s.runningSessionIds
       : [...s.runningSessionIds, sessionId],
-    stepsBySession: { ...s.stepsBySession, [sessionId]: [] }
+    stepsBySession: { ...s.stepsBySession, [sessionId]: [] },
+    phaseBySession: { ...s.phaseBySession, [sessionId]: null }
   })),
   stopRun: (sessionId) => set(s => ({
-    runningSessionIds: s.runningSessionIds.filter(id => id !== sessionId)
+    runningSessionIds: s.runningSessionIds.filter(id => id !== sessionId),
+    phaseBySession: { ...s.phaseBySession, [sessionId]: null }
   })),
   updateStep: (event) => set(s => {
     const steps = [...(s.stepsBySession[event.sessionId] || [])]
@@ -153,6 +164,9 @@ export const useChatStore = create<ChatState>((set) => ({
   clearSteps: (sessionId) => set(s => ({
     stepsBySession: { ...s.stepsBySession, [sessionId]: [] }
   })),
+  setPhase: (event) => set(s => ({
+    phaseBySession: { ...s.phaseBySession, [event.sessionId]: event }
+  })),
   setMountedSpaces: (ids) => set({ mountedSpaceIds: ids }),
   setComputerMode: (on) => set({ computerMode: on }),
   setSessionModel: (sessionId, providerId, model) => set(s => ({
@@ -163,6 +177,9 @@ export const useChatStore = create<ChatState>((set) => ({
   })),
   setSessionAssignee: (sessionId, employeeId) => set(s => ({
     sessions: s.sessions.map(sess => sess.id === sessionId ? { ...sess, employeeId } : sess)
+  })),
+  setSessionPinned: (sessionId, pinned) => set(s => ({
+    sessions: s.sessions.map(sess => sess.id === sessionId ? { ...sess, pinned: pinned ? 1 : 0 } : sess)
   })),
   setSessionGroupEmployees: (sessionId, ids) => set(s => ({
     sessions: s.sessions.map(sess => sess.id === sessionId ? { ...sess, groupEmployeeIds: ids } : sess)

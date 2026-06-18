@@ -1,11 +1,13 @@
 import { useState, useRef, useCallback, useEffect, useMemo, Fragment } from 'react'
+import { createPortal } from 'react-dom'
 import { BRAND } from '@shared/brand'
 import type { GeneratedImageRef } from './extractGeneratedImages'
-import type { GalleryItem } from '../../../../shared/ipc-types'
+import type { GalleryItem, SshConnectionMeta, ContextRef } from '../../../../shared/ipc-types'
+import { RichComposer, type RichComposerHandle } from './RichComposer'
 
 /** Max 素材库 results the @-picker requests per query (LIMIT pushed into SQL). */
 const MENTION_GALLERY_LIMIT = 40
-import { Send, Square, Paperclip, X, ImagePlus, FileText, ImageOff, Monitor, Folder, FolderOpen, Check, AtSign } from 'lucide-react'
+import { Send, Square, Paperclip, X, ImagePlus, FileText, ImageOff, Monitor, Folder, FolderOpen, AtSign, Server, MessageSquare, MessagesSquare, ChevronDown, ChevronRight, Trash2 } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { ModelPicker } from './ModelPicker'
 import { Select } from '../../components/ui/Select'
@@ -15,8 +17,11 @@ import { type ImageParams, IMAGE_RATIOS, computeImageSize } from './ChatHeader'
 
 interface Attachment { name: string; path: string; mimeType: string }
 
+/** Extra @-mentioned references sent alongside the text + attachments. */
+interface MentionPayload { sshDefaultConnIds?: string[]; contextRefs?: ContextRef[] }
+
 interface Props {
-  onSend: (text: string, attachments?: Attachment[]) => void
+  onSend: (text: string, attachments?: Attachment[], mentions?: MentionPayload) => void
   onStop: () => void
   isRunning: boolean
   disabled: boolean
@@ -37,11 +42,15 @@ interface Props {
   /** Set or clear the working directory (receives '' to clear). When provided,
    *  the 工作目录 chip is shown in the toolbar. */
   onSetWorkingDir?: (dir: string) => void
-  /** Controlled attachments state (lifted to parent so external sources can inject). */
+  /** Controlled attachments state (lifted to parent so external sources can inject).
+   *  These are pasted/dropped/selected files — shown as LEFT-side tiles. @-mentioned
+   *  refs instead become inline chips inside the rich editor. */
   attachments: Attachment[]
   setAttachments: React.Dispatch<React.SetStateAction<Attachment[]>>
   /** Images this conversation generated — for the `@` mention picker. */
   generatedImages?: GeneratedImageRef[]
+  /** Recent messages of this conversation — for `@`-referencing one to follow up on. */
+  recentMessages?: Array<{ id: string; role: string; content: string }>
   /** Currently-selected model (provider + model name); empty strings = use defaults. */
   providerId: string
   model: string
@@ -52,8 +61,22 @@ interface Props {
   /** Open the global ImageEditor with the given src. */
   onEditImage: (src: string) => void
   /** Group chat: members that can be @-mentioned. When provided, typing `@`
-   *  opens an employee picker (to direct a turn) instead of the image picker. */
+   *  opens an employee picker (to direct a turn) instead of the rich picker. */
   mentionEmployees?: Array<{ id: string; name: string; dept: string }>
+}
+
+/** A single row in the rich `@` picker (attachment / image / SSH server / context). */
+type MentionEntry =
+  | { kind: 'image'; key: string; label: string; sub: string; path: string; group: string }
+  | { kind: 'file'; key: string; label: string; sub: string; path: string; name: string; mime: string }
+  | { kind: 'ssh'; key: string; label: string; sub: string; conn: SshConnectionMeta }
+  | { kind: 'msg'; key: string; label: string; sub: string; text: string }
+  | { kind: 'summary'; key: string; label: string; sub: string }
+
+/** Short one-line preview of a message body (strip think blocks + collapse space). */
+function msgSnippet(s: string): string {
+  const clean = (s || '').replace(/<(think|thinking|reasoning)>[\s\S]*?<\/\1>/g, '').replace(/\s+/g, ' ').trim()
+  return clean.length > 40 ? clean.slice(0, 40) + '…' : clean
 }
 
 export function ChatInput({
@@ -61,55 +84,133 @@ export function ChatInput({
   forceImage, onForceImageChange,
   computerMode, onComputerModeChange, computerUseEnabled,
   workingDir, onSetWorkingDir,
-  attachments, setAttachments, generatedImages,
+  attachments, setAttachments, generatedImages, recentMessages,
   providerId, model, onModelChange,
   imageParams, onImageParamsChange,
   onEditImage, mentionEmployees
 }: Props) {
-  // Group session → `@` mentions employees (to direct a turn) instead of images.
+  // Group session → `@` mentions employees (to direct a turn) instead of the rich
+  // picker (images / 服务器 / 上下文).
   const employeeMentionMode = (mentionEmployees?.length ?? 0) > 0
-  const [text, setText] = useState('')
+  const composerRef = useRef<RichComposerHandle>(null)
+  const [composerEmpty, setComposerEmpty] = useState(true)
   const [previewSrc, setPreviewSrc] = useState<string | null>(null)
-  // `@` mention picker: {start} = index of the '@'. Multi-select — clicking a row
-  // toggles a reference live and the popup STAYS open; the @query token is removed
-  // only when the picker closes (Enter/Tab/Esc/blur).
-  const [mention, setMention] = useState<{ query: string; start: number } | null>(null)
+  // Active `@` query (null = picker closed), reported by the rich editor.
+  const [mentionQuery, setMentionQuery] = useState<string | null>(null)
   const [mentionIndex, setMentionIndex] = useState(0)
   // 素材库 results, searched on-demand (debounced, LIMIT'd) so a huge library never
   // loads wholesale. Cap reached => MENTION_GALLERY_LIMIT exactly.
   const [galleryResults, setGalleryResults] = useState<GeneratedImageRef[]>([])
-  const mentionAddedRef = useRef<Set<string>>(new Set())  // paths toggled-on this @ session
-  const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const [sshConns, setSshConns] = useState<SshConnectionMeta[]>([])
+  // Folded attachments panel (above the box) open/closed.
+  const [attachOpen, setAttachOpen] = useState(true)
   const ctxMenu = useImageContextMenu()
 
-  // Group employee @-mention matches (filtered by the @query). Empty unless in a
-  // group session — so the image picker below stays the default everywhere else.
+  // Lazy-load the credential-free SSH connection list once (skip in group chat).
+  useEffect(() => {
+    if (employeeMentionMode) return
+    let cancelled = false
+    window.api.sshListMeta?.().then((list: SshConnectionMeta[]) => { if (!cancelled) setSshConns(list || []) }).catch(() => {})
+    return () => { cancelled = true }
+  }, [employeeMentionMode])
+
+  // 右键消息「引用追问」→ 把那段内容插成一个「引用」行内胶囊（随消息以 contextRef 发送）。
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const text = ((e as CustomEvent).detail?.text || '').trim()
+      if (!text) return
+      composerRef.current?.insertRef({ kind: 'msg', text, label: msgSnippet(text) })
+      composerRef.current?.focus()
+    }
+    window.addEventListener('chat:quote', handler)
+    return () => window.removeEventListener('chat:quote', handler)
+  }, [])
+
+  const active = mentionQuery !== null
+
+  // Group employee @-mention matches (filtered by the @query).
   const employeeMatches = useMemo(() => {
-    if (!mention || !employeeMentionMode) return []
-    const q = mention.query.toLowerCase()
+    if (!active || !employeeMentionMode) return []
+    const q = (mentionQuery ?? '').toLowerCase()
     return (mentionEmployees ?? []).filter(e => !q || e.name.toLowerCase().includes(q))
-  }, [mention, employeeMentionMode, mentionEmployees])
+  }, [active, mentionQuery, employeeMentionMode, mentionEmployees])
 
   // 本对话生成 (in-memory, filtered by query) + 素材库 (server-searched), de-duped by path.
-  const mentionItems = useMemo(() => {
-    if (!mention || employeeMentionMode) return []
-    const q = mention.query.toLowerCase()
+  const imageMatches = useMemo(() => {
+    if (!active || employeeMentionMode) return []
+    const q = (mentionQuery ?? '').toLowerCase()
     const chat = (generatedImages ?? []).filter(g =>
       !q || g.label.toLowerCase().includes(q) || (g.path.split(/[\\/]/).pop() || '').toLowerCase().includes(q))
     const seen = new Set(chat.map(g => g.path))
     return [...chat, ...galleryResults.filter(g => !seen.has(g.path))]
-  }, [mention, generatedImages, galleryResults])
-  useEffect(() => { setMentionIndex(0) }, [mention?.query])
-  // How many currently-shown picker items are already referenced (footer count).
-  const pickedCount = mention ? mentionItems.filter(g => attachments.some(a => a.path === g.path)).length : 0
+  }, [active, mentionQuery, employeeMentionMode, generatedImages, galleryResults])
+
+  // Rich picker rows: 当前附件(优先) + 图片 + 服务器 + 上下文(历史消息 / 整段摘要). Filtered by the @query.
+  const richSections = useMemo((): Array<{ key: string; title: string; entries: MentionEntry[] }> => {
+    if (!active || employeeMentionMode) return []
+    const q = (mentionQuery ?? '').toLowerCase()
+    const match = (s?: string) => !q || (s || '').toLowerCase().includes(q)
+
+    // 当前附件优先：已带入的附件排在最前，@ 选中后在文中插一个指针胶囊。
+    const attach: MentionEntry[] = attachments
+      .filter(a => match(a.name))
+      .map(a => a.mimeType.startsWith('image/')
+        ? { kind: 'image', key: 'att:' + a.path, label: a.name, sub: '附件', path: a.path, group: '当前附件' }
+        : { kind: 'file', key: 'att:' + a.path, label: a.name, sub: '附件', path: a.path, name: a.name, mime: a.mimeType })
+
+    const images: MentionEntry[] = imageMatches.map(g => ({
+      kind: 'image', key: 'img:' + g.path, label: g.label,
+      sub: g.path.split(/[\\/]/).pop() || '', path: g.path, group: g.group || '本对话生成'
+    }))
+    const servers: MentionEntry[] = sshConns
+      .filter(c => match(c.name) || match(c.host) || match(c.username))
+      .slice(0, 20)
+      .map(c => ({ kind: 'ssh', key: 'ssh:' + c.id, label: c.name, sub: `${c.username}@${c.host}`, conn: c }))
+    const msgs: MentionEntry[] = (recentMessages ?? [])
+      .filter(m => (m.content || '').trim())
+      .slice(-15).reverse()
+      .filter(m => match(m.content))
+      .slice(0, 8)
+      .map(m => ({ kind: 'msg', key: 'msg:' + m.id, label: (m.role === 'user' ? '我' : 'AI') + '：' + msgSnippet(m.content), sub: '', text: m.content }))
+    const summary: MentionEntry[] = (!q || '整段对话摘要 对话摘要 摘要 summary'.includes(q))
+      ? [{ kind: 'summary', key: 'summary', label: '整段对话摘要', sub: '基于本对话整体来回答这次追问' }]
+      : []
+
+    const out: Array<{ key: string; title: string; entries: MentionEntry[] }> = []
+    if (attach.length) out.push({ key: 'attach', title: '当前附件（优先）', entries: attach })
+    if (images.length) out.push({ key: 'image', title: '图片（参考图）', entries: images })
+    if (servers.length) out.push({ key: 'ssh', title: '服务器（设为本轮默认）', entries: servers })
+    if (msgs.length || summary.length) out.push({ key: 'ctx', title: '对话上下文', entries: [...msgs, ...summary] })
+    return out
+  }, [active, mentionQuery, employeeMentionMode, attachments, imageMatches, sshConns, recentMessages])
+
+  // Category filter for the picker — keeps it scannable when many @ types match.
+  type MentionCat = 'all' | 'attach' | 'image' | 'ssh' | 'ctx'
+  const [mentionCat, setMentionCat] = useState<MentionCat>('all')
+  useEffect(() => { if (!active) setMentionCat('all') }, [active])
+  const visibleSections = useMemo(
+    () => mentionCat === 'all' ? richSections : richSections.filter(s => s.key === mentionCat),
+    [richSections, mentionCat]
+  )
+  const flatEntries = useMemo(() => visibleSections.flatMap(s => s.entries), [visibleSections])
+  useEffect(() => { setMentionIndex(0) }, [mentionQuery, mentionCat])
+  // Tabs to show: 全部 + whichever categories currently have matches.
+  const catTabs = useMemo(() => {
+    const tabs: Array<{ key: MentionCat; label: string }> = [{ key: 'all', label: '全部' }]
+    if (richSections.some(s => s.key === 'attach')) tabs.push({ key: 'attach', label: '附件' })
+    if (richSections.some(s => s.key === 'image')) tabs.push({ key: 'image', label: '图片' })
+    if (richSections.some(s => s.key === 'ssh')) tabs.push({ key: 'ssh', label: '服务器' })
+    if (richSections.some(s => s.key === 'ctx')) tabs.push({ key: 'ctx', label: '上下文' })
+    return tabs
+  }, [richSections])
 
   // Debounced 素材库 search whenever the @query changes (skip in employee-mention mode).
   useEffect(() => {
-    if (!mention || employeeMentionMode) { setGalleryResults([]); mentionAddedRef.current = new Set(); return }
+    if (!active || employeeMentionMode) { setGalleryResults([]); return }
     let cancelled = false
     const t = setTimeout(async () => {
       try {
-        const items = (await window.api.searchGallery(mention.query, MENTION_GALLERY_LIMIT)) as GalleryItem[]
+        const items = (await window.api.searchGallery(mentionQuery ?? '', MENTION_GALLERY_LIMIT)) as GalleryItem[]
         if (cancelled) return
         setGalleryResults(items.map(it => ({
           path: it.filePath,
@@ -119,88 +220,38 @@ export function ChatInput({
       } catch { if (!cancelled) setGalleryResults([]) }
     }, 180)
     return () => { cancelled = true; clearTimeout(t) }
-  }, [mention])
+  }, [active, mentionQuery, employeeMentionMode])
 
-  // Detect an `@token` immediately left of the caret (no whitespace inside, `@` at a
-  // word boundary). Always allows `@` so 素材库 can be searched even with no chat images.
-  const detectMention = useCallback((value: string, caret: number): { query: string; start: number } | null => {
-    const upto = value.slice(0, caret)
-    const at = upto.lastIndexOf('@')
-    if (at === -1) return null
-    const between = upto.slice(at + 1)
-    if (/\s/.test(between)) return null
-    const before = at === 0 ? '' : value[at - 1]
-    if (before && !/\s/.test(before)) return null
-    return { query: between, start: at }
-  }, [])
-
-  const handleTextChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    setText(e.target.value)
-    setMention(detectMention(e.target.value, e.target.selectionStart ?? e.target.value.length))
-  }
-
-  // Close the picker: strip the "@query" token from the text. Selections are already
-  // applied live, so closing never loses them.
-  const closeMention = useCallback(() => {
-    setMention(m => {
-      if (m) setText(prev => {
-        // Drop "@query" plus one trailing space so "a @x b" → "a b", not "a  b".
-        const after = prev.slice(m.start + 1 + m.query.length).replace(/^[ \t]/, '')
-        return prev.slice(0, m.start) + after
-      })
-      return null
-    })
-    setGalleryResults([])
-    mentionAddedRef.current = new Set()
-  }, [])
-
-  // Group chat: replace the typed "@query" token with "@姓名 " — directs the next
-  // round at that employee. Closes the picker.
-  const insertEmployeeMention = useCallback((name: string) => {
-    setText(prev => {
-      if (!mention) return prev
-      const after = prev.slice(mention.start + 1 + mention.query.length)
-      return prev.slice(0, mention.start) + '@' + name + ' ' + after
-    })
-    setMention(null)
-    setTimeout(() => textareaRef.current?.focus(), 0)
-  }, [mention])
-
-  // Toolbar "引用图片" entry: insert an `@` at the caret and open the picker — makes
-  // the @-reference feature discoverable instead of a hidden keystroke.
-  const insertMentionTrigger = useCallback(() => {
-    const el = textareaRef.current
-    const caret = el?.selectionStart ?? text.length
-    const before = text.slice(0, caret)
-    const insert = (before.length > 0 && !/\s$/.test(before) ? ' ' : '') + '@'
-    const next = before + insert + text.slice(caret)
-    const newCaret = before.length + insert.length
-    setText(next)
-    setMention(detectMention(next, newCaret))
-    setTimeout(() => {
-      const e2 = textareaRef.current
-      if (e2) { e2.focus(); e2.setSelectionRange(newCaret, newCaret) }
-    }, 0)
-  }, [text, detectMention])
-
-  // Toggle an image as a reference attachment (multi-select). Popup stays open.
-  const toggleMentionImage = useCallback((item: GeneratedImageRef) => {
-    const p = item.path
-    if (attachments.some(a => a.path === p)) {
-      mentionAddedRef.current.delete(p)
-      setAttachments(prev => prev.filter(a => a.path !== p))
-      return
-    }
-    const name = p.split(/[\\/]/).pop() || 'reference.png'
-    const ext = (name.split('.').pop() || 'png').toLowerCase()
-    const mime = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg'
+  const mimeForImagePath = (p: string): string => {
+    const ext = (p.split('.').pop() || 'png').toLowerCase()
+    return ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg'
       : ext === 'webp' ? 'image/webp' : ext === 'gif' ? 'image/gif'
       : ext === 'bmp' ? 'image/bmp' : 'image/png'
-    // Already allowlisted for gallery/generated, but approve defensively (imports).
-    void window.api.approvePath(p)
-    mentionAddedRef.current.add(p)
-    setAttachments(prev => prev.some(a => a.path === p) ? prev : [...prev, { name: item.label, path: p, mimeType: mime }])
-  }, [attachments, setAttachments])
+  }
+
+  // Pick a rich-picker row → insert an inline chip ONLY. @-referenced resources live
+  // as inline chips (carrying their own attachment), NOT the folded panel above; they
+  // merge in (de-duped by path) at send time.
+  const pickEntry = useCallback((e: MentionEntry) => {
+    if (e.kind === 'image') {
+      void window.api.approvePath(e.path)
+      composerRef.current?.insertRef({ kind: 'image', path: e.path, label: e.label, mime: mimeForImagePath(e.path) })
+    } else if (e.kind === 'file') {
+      composerRef.current?.insertRef({ kind: 'file', path: e.path, name: e.name, mime: e.mime })
+    } else if (e.kind === 'ssh') {
+      composerRef.current?.insertRef({ kind: 'ssh', conn: e.conn })
+    } else if (e.kind === 'msg') {
+      composerRef.current?.insertRef({ kind: 'msg', text: e.text, label: msgSnippet(e.text) })
+    } else {
+      composerRef.current?.insertRef({ kind: 'summary' })
+    }
+    setMentionQuery(null)
+  }, [])
+
+  const insertEmployeeMention = useCallback((name: string) => {
+    composerRef.current?.insertText('@' + name + ' ')
+    setMentionQuery(null)
+  }, [])
 
   // Close preview on Escape
   useEffect(() => {
@@ -213,59 +264,53 @@ export function ChatInput({
   }, [previewSrc])
 
   const handleSend = useCallback(() => {
-    const trimmed = text.trim()
-    if (!trimmed || isRunning) return
-    onSend(trimmed, attachments.length ? attachments : undefined)
-    setText('')
+    if (isRunning) return
+    const ser = composerRef.current?.serialize()
+    const text = (ser?.text || '').trim()
+    // Inline 图/文件 chips (@-referenced, carry their own file) + the folded panel's
+    // brought-in attachments → one list, de-duped by path (inline wins on collision).
+    const seen = new Set<string>()
+    const finalAttachments: Attachment[] = []
+    for (const a of [...(ser?.inlineAttachments ?? []), ...attachments]) {
+      if (seen.has(a.path)) continue
+      seen.add(a.path)
+      finalAttachments.push(a)
+    }
+    if (!text && finalAttachments.length === 0) return
+    const mentions: MentionPayload | undefined = (ser && (ser.sshDefaultConnIds.length || ser.contextRefs.length))
+      ? { sshDefaultConnIds: ser.sshDefaultConnIds, contextRefs: ser.contextRefs }
+      : undefined
+    onSend(text, finalAttachments.length ? finalAttachments : undefined, mentions)
+    composerRef.current?.clear()
     setAttachments([])
-    if (textareaRef.current) {
-      textareaRef.current.style.height = 'auto'
-    }
-  }, [text, attachments, isRunning, onSend, setAttachments])
+  }, [isRunning, attachments, onSend, setAttachments])
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    // Group chat: the @-employee picker drives arrow/enter while open.
-    if (mention && employeeMentionMode && employeeMatches.length > 0) {
+  // While the picker is open, drive Arrow/Enter/Tab/Esc from the rich editor's
+  // keydown. Returns true when a key was consumed (editor then preventDefaults).
+  const onMentionKeyDown = useCallback((e: React.KeyboardEvent): boolean => {
+    if (!active) return false
+    if (employeeMentionMode && employeeMatches.length > 0) {
       const len = employeeMatches.length
-      if (e.key === 'ArrowDown') { e.preventDefault(); setMentionIndex(i => (i + 1) % len); return }
-      if (e.key === 'ArrowUp') { e.preventDefault(); setMentionIndex(i => (i - 1 + len) % len); return }
-      if (e.key === 'Enter' || e.key === 'Tab') {
-        e.preventDefault()
-        const hi = employeeMatches[Math.min(mentionIndex, len - 1)]
-        if (hi) insertEmployeeMention(hi.name)
-        return
-      }
-      if (e.key === 'Escape') { e.preventDefault(); setMention(null); return }
+      if (e.key === 'ArrowDown') { setMentionIndex(i => (i + 1) % len); return true }
+      if (e.key === 'ArrowUp') { setMentionIndex(i => (i - 1 + len) % len); return true }
+      if (e.key === 'Enter' || e.key === 'Tab') { const hi = employeeMatches[Math.min(mentionIndex, len - 1)]; if (hi) insertEmployeeMention(hi.name); return true }
+      if (e.key === 'Escape') { setMentionQuery(null); return true }
+      return false
     }
-    // While the @-mention (image) popup is open, the arrow/enter keys drive it.
-    if (mention && mentionItems.length > 0) {
-      const len = mentionItems.length
-      if (e.key === 'ArrowDown') { e.preventDefault(); setMentionIndex(i => (i + 1) % len); return }
-      if (e.key === 'ArrowUp') { e.preventDefault(); setMentionIndex(i => (i - 1 + len) % len); return }
-      if (e.key === 'Enter' || e.key === 'Tab') {
-        e.preventDefault()
-        // If nothing was multi-selected this session, treat Enter as quick-pick of the
-        // highlighted row (backward-compatible single select); otherwise just finish.
-        if (mentionAddedRef.current.size === 0) {
-          const hi = mentionItems[Math.min(mentionIndex, len - 1)]
-          if (hi) toggleMentionImage(hi)
-        }
-        closeMention()
-        return
-      }
-      if (e.key === 'Escape') { e.preventDefault(); closeMention(); return }
+    if (!employeeMentionMode && flatEntries.length > 0) {
+      const len = flatEntries.length
+      if (e.key === 'ArrowDown') { setMentionIndex(i => (i + 1) % len); return true }
+      if (e.key === 'ArrowUp') { setMentionIndex(i => (i - 1 + len) % len); return true }
+      if (e.key === 'Enter' || e.key === 'Tab') { const hi = flatEntries[Math.min(mentionIndex, len - 1)]; if (hi) pickEntry(hi); return true }
+      if (e.key === 'Escape') { setMentionQuery(null); return true }
+      return false
     }
-    // IME guard: Enter that confirms a composition candidate must not send.
-    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-      e.preventDefault()
-      handleSend()
-    }
-  }
+    return false
+  }, [active, employeeMentionMode, employeeMatches, flatEntries, mentionIndex, insertEmployeeMention, pickEntry])
 
   const removeAttachment = (i: number) => setAttachments(a => a.filter((_, j) => j !== i))
 
-  // Pick a working directory for this conversation. The chosen folder becomes the
-  // agent's default save location + an approved read/write root for the session.
+  // Pick a working directory for this conversation.
   const handlePickWorkingDir = useCallback(async () => {
     if (!onSetWorkingDir) return
     const paths = await window.api.openFileDialog({ properties: ['openDirectory'] })
@@ -274,29 +319,22 @@ export function ChatInput({
 
   const workingDirName = workingDir ? (workingDir.split(/[\\/]/).filter(Boolean).pop() || workingDir) : ''
 
-  const handlePaste = async (e: React.ClipboardEvent) => {
-    const imageItems = Array.from(e.clipboardData.items).filter(item => item.type.startsWith('image/'))
-    if (!imageItems.length) return
-    e.preventDefault()
-    for (const item of imageItems) {
-      const file = item.getAsFile()
-      if (!file) continue
+  // Images pasted/dropped into the editor → left-side tiles (written to a temp file).
+  const addPastedFiles = useCallback(async (files: File[]) => {
+    for (const file of files) {
       try {
         const base64 = await blobToBase64(file)
-        const ext = (item.type.split('/')[1] || 'png').replace('jpeg', 'jpg')
-        // ASCII-only filesystem name → safe for multipart Content-Disposition headers
-        // and for local-file:// protocol URLs. Display name stays human-friendly.
+        const ext = (file.type.split('/')[1] || 'png').replace('jpeg', 'jpg')
         const rand = Math.random().toString(36).slice(2, 8)
         const filename = `paste-${Date.now()}-${rand}.${ext}`
-        const displayName = `粘贴图片.${ext}`
         const result = await window.api.writeTempFile({ name: filename, data: base64 })
-        setAttachments(prev => [...prev, { name: displayName, path: result.path, mimeType: item.type }])
+        setAttachments(prev => [...prev, { name: `粘贴图片.${ext}`, path: result.path, mimeType: file.type || 'image/png' }])
       } catch (err) {
         console.error('[paste]', err)
         toast.error('粘贴图片失败：' + (err as Error).message)
       }
     }
-  }
+  }, [setAttachments])
 
   const handleFileSelect = async () => {
     const paths = await window.api.openFileDialog({ properties: ['openFile', 'multiSelections'] })
@@ -317,18 +355,13 @@ export function ChatInput({
     }))])
   }
 
-  // Drag-and-drop file upload. Dropped File objects no longer carry .path on
-  // Electron 32+, so resolve via webUtils (window.api.getPathForFile); if a file
-  // has no disk backing, fall back to writing a temp file (same as paste).
+  // Drag-and-drop file upload → left-side tiles.
   const [dragOver, setDragOver] = useState(false)
-
   const addDroppedFiles = useCallback(async (files: File[]) => {
     for (const file of files) {
       try {
         const realPath = window.api.getPathForFile(file)
         if (realPath) {
-          // Drag-drop bypasses the picker/paste allowlisting — approve the path
-          // first, else the local-file:// thumbnail preview 403s (broken image).
           await window.api.approvePath(realPath)
           setAttachments(prev => [...prev, { name: file.name, path: realPath, mimeType: file.type || getMimeType(realPath) }])
         } else {
@@ -352,7 +385,6 @@ export function ChatInput({
     setDragOver(true)
   }
   const handleDragLeave = (e: React.DragEvent) => {
-    // Ignore leave events caused by moving over a child element.
     if (e.currentTarget.contains(e.relatedTarget as Node | null)) return
     setDragOver(false)
   }
@@ -364,52 +396,66 @@ export function ChatInput({
     if (files.length) addDroppedFiles(files)
   }
 
-  // Image controls (params row + 参考图 button) show in classic image mode OR when
-  // the per-turn 生成图片 toggle is on — so a chat model can generate this turn.
   const showImageControls = !!imageMode || !!forceImage
 
   const placeholder = isRunning
     ? '⏳ Agent 正在执行中，可点击「停止」中断…'
     : showImageControls
       ? '描述你想生成的图片内容…'
-      : `与 ${BRAND.displayName} 对话… (Enter 发送，Shift+Enter 换行)`
+      : `与 ${BRAND.displayName} 对话…  @ 引用图片/服务器/上下文`
 
-  const canSend = !!text.trim() && !disabled
+  const canSend = (!composerEmpty || attachments.length > 0) && !disabled
+  const showEmployeePicker = active && employeeMentionMode && employeeMatches.length > 0
+  const showRichPicker = active && !employeeMentionMode && richSections.length > 0
 
   return (
     <div className="px-4 pb-4 pt-1 shrink-0">
 
-      {/* Attachment previews */}
+      {/* Folded attachments panel — ABOVE the box. Resources brought in via
+          paste/drop/select/Gallery live here as a collapsible list of thumbnails /
+          file rows (not chips); @-referencing one inserts a pointer chip in the text. */}
       {attachments.length > 0 && (
-        <div className="mb-2 flex flex-wrap gap-2 px-1">
-          {attachments.map((att, i) => (
-            att.mimeType.startsWith('image/') ? (
-              <ImageAttachmentThumb
-                key={i}
-                src={toLocalFileUrl(att.path)}
-                name={att.name}
-                onPreview={() => setPreviewSrc(toLocalFileUrl(att.path))}
-                onRemove={() => removeAttachment(i)}
-                onContextMenu={e => ctxMenu.open(e, {
-                  filePath: att.path,
-                  src: toLocalFileUrl(att.path),
-                  onPreview: () => setPreviewSrc(toLocalFileUrl(att.path)),
-                  onEdit: () => onEditImage(toLocalFileUrl(att.path))
-                })}
-              />
-            ) : (
-              <div key={i} className="flex items-center gap-1.5 pl-2 pr-1.5 py-1.5 rounded-xl bg-muted border border-border/60 text-xs max-w-[180px] group">
-                <FileText size={12} className="shrink-0 text-muted-foreground" />
-                <span className="truncate text-foreground/80">{att.name}</span>
-                <button
-                  onClick={() => removeAttachment(i)}
-                  className="shrink-0 text-muted-foreground hover:text-foreground ml-0.5 opacity-0 group-hover:opacity-100 transition-opacity"
-                >
-                  <X size={10} />
-                </button>
-              </div>
-            )
-          ))}
+        <div className="mb-2 rounded-xl border border-border bg-card/60 overflow-hidden">
+          <div className="w-full flex items-center justify-between px-3 py-1.5 text-xs text-muted-foreground">
+            <button
+              type="button"
+              onClick={() => setAttachOpen(o => !o)}
+              className="flex items-center gap-1.5 hover:text-foreground transition-colors"
+            >
+              <Paperclip size={13} /> 附件 · {attachments.length}
+              {attachOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+            </button>
+            <button
+              type="button"
+              onClick={() => setAttachments([])}
+              disabled={isRunning}
+              title="清空全部附件"
+              className="flex items-center gap-1 hover:text-destructive transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <Trash2 size={12} /> 清空
+            </button>
+          </div>
+          {attachOpen && (
+            <div className="px-3 pb-2 flex flex-wrap gap-2">
+              {attachments.map((att, i) => (
+                <AttachmentItem
+                  key={i}
+                  att={att}
+                  onPreview={() => att.mimeType.startsWith('image/') && setPreviewSrc(toLocalFileUrl(att.path))}
+                  onRemove={() => removeAttachment(i)}
+                  onContextMenu={e => {
+                    if (!att.mimeType.startsWith('image/')) return
+                    ctxMenu.open(e, {
+                      filePath: att.path,
+                      src: toLocalFileUrl(att.path),
+                      onPreview: () => setPreviewSrc(toLocalFileUrl(att.path)),
+                      onEdit: () => onEditImage(toLocalFileUrl(att.path))
+                    })
+                  }}
+                />
+              ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -434,8 +480,8 @@ export function ChatInput({
           </div>
         )}
 
-        {/* @-employee picker (group chat) — pick a member to direct this turn at. */}
-        {mention && employeeMentionMode && employeeMatches.length > 0 && (
+        {/* @-employee picker (group chat). */}
+        {showEmployeePicker && (
           <div className="absolute bottom-full left-2 mb-2 z-30 w-60 max-h-72 overflow-y-auto rounded-xl border border-border bg-popover shadow-xl p-1">
             <div className="px-2 py-1 text-[10px] text-muted-foreground select-none">@ 点名让某位员工发言</div>
             {employeeMatches.map((emp, i) => (
@@ -456,64 +502,75 @@ export function ChatInput({
           </div>
         )}
 
-        {/* @-mention picker — multi-select images (本对话生成 / 素材库) as references.
-            Click toggles live; popup stays open. Finish via 「完成」 / click-away / Enter. */}
-        {mention && mentionItems.length > 0 && (
-          <div className="absolute bottom-full left-2 mb-2 z-30 w-72 max-h-72 overflow-y-auto rounded-xl border border-border bg-popover shadow-xl p-1">
-            <div className="px-2 py-1 text-[10px] text-muted-foreground select-none">
-              @ 引用图片作为参考图（可多选，点缩略图即添加）
-            </div>
-            {mentionItems.map((g, i) => {
-              const curGroup = g.group || '本对话生成'
-              const showHeader = curGroup !== (i > 0 ? (mentionItems[i - 1].group || '本对话生成') : null)
-              const fname = g.path.split(/[\\/]/).pop() || ''
-              const checked = attachments.some(a => a.path === g.path)
-              return (
-                <Fragment key={g.path}>
-                  {showHeader && (
-                    <div className="px-2 pt-1.5 pb-0.5 text-[10px] font-medium text-muted-foreground/80 select-none">{curGroup}</div>
-                  )}
+        {/* Rich @-picker — pick a 图片 / 服务器 / 上下文 row to insert an inline chip. */}
+        {showRichPicker && (
+          <div className="absolute bottom-full left-2 mb-2 z-30 w-80 max-h-80 overflow-y-auto rounded-xl border border-border bg-popover shadow-xl p-1">
+            <div className="px-2.5 pt-1.5 pb-1 text-[11px] font-medium text-foreground/80 select-none">可能 @ 的内容</div>
+            {catTabs.length > 2 && (
+              <div className="flex items-center gap-1 px-2 pb-1.5 flex-wrap">
+                {catTabs.map(tab => (
                   <button
+                    key={tab.key}
                     type="button"
-                    onMouseDown={e => { e.preventDefault(); toggleMentionImage(g) }}
-                    onMouseEnter={() => setMentionIndex(i)}
+                    onMouseDown={e => { e.preventDefault(); setMentionCat(tab.key) }}
                     className={cn(
-                      'w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-left transition-colors',
-                      i === mentionIndex ? 'bg-accent' : 'hover:bg-accent/60'
+                      'px-2 py-0.5 rounded-full text-[10.5px] transition-colors',
+                      mentionCat === tab.key ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground hover:bg-accent'
                     )}
                   >
-                    <span className={cn(
-                      'w-4 h-4 rounded border flex items-center justify-center shrink-0',
-                      checked ? 'bg-primary border-primary text-primary-foreground' : 'border-border'
-                    )}>
-                      {checked && <Check size={11} />}
-                    </span>
-                    <img src={toLocalFileUrl(g.path)} loading="lazy" className="w-9 h-9 rounded object-cover border border-border shrink-0" alt={g.label} />
-                    <span className="text-xs font-medium shrink-0">{g.label}</span>
-                    {fname !== g.label && <span className="text-[10px] text-muted-foreground truncate">{fname}</span>}
+                    {tab.label}
                   </button>
+                ))}
+              </div>
+            )}
+            {(() => {
+              let flatIdx = -1
+              return visibleSections.map(section => (
+                <Fragment key={section.key}>
+                  <div className="px-2 pt-1.5 pb-0.5 text-[10px] font-medium text-muted-foreground/80 select-none">{section.title}</div>
+                  {section.entries.map(entry => {
+                    flatIdx++
+                    const i = flatIdx
+                    const activeRow = i === mentionIndex
+                    return (
+                      <button
+                        key={entry.key}
+                        type="button"
+                        onMouseDown={e => { e.preventDefault(); pickEntry(entry) }}
+                        onMouseEnter={() => setMentionIndex(i)}
+                        className={cn(
+                          'w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-left transition-colors',
+                          activeRow ? 'bg-accent' : 'hover:bg-accent/60'
+                        )}
+                      >
+                        {entry.kind === 'image' ? (
+                          <img src={toLocalFileUrl(entry.path)} loading="lazy" className="w-8 h-8 rounded object-cover border border-border shrink-0" alt={entry.label} />
+                        ) : (
+                          <span className={cn('w-8 h-8 rounded flex items-center justify-center shrink-0',
+                            entry.kind === 'ssh' ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground')}>
+                            {entry.kind === 'ssh' ? <Server size={14} /> : entry.kind === 'summary' ? <MessagesSquare size={14} /> : entry.kind === 'file' ? <FileText size={14} /> : <MessageSquare size={14} />}
+                          </span>
+                        )}
+                        <span className="min-w-0 flex-1">
+                          <span className="block text-xs font-medium truncate">{entry.label}</span>
+                          {entry.sub && <span className="block text-[10px] text-muted-foreground truncate">{entry.sub}</span>}
+                        </span>
+                      </button>
+                    )
+                  })}
                 </Fragment>
-              )
-            })}
+              ))
+            })()}
+            {!flatEntries.length && (
+              <div className="px-2.5 py-2 text-[11px] text-muted-foreground/70 select-none">没有匹配的内容，换个关键词试试</div>
+            )}
             {galleryResults.length >= MENTION_GALLERY_LIMIT && (
               <div className="px-2 pt-1 pb-0.5 text-[10px] text-muted-foreground/70 select-none">素材库结果较多，输入关键词缩小范围</div>
             )}
-            {/* Confirm bar — so finishing isn't Enter-only. */}
-            <div className="sticky bottom-0 -mx-1 -mb-1 mt-1 px-2.5 py-1.5 bg-popover border-t border-border/60 flex items-center justify-between">
-              <span className="text-[10px] text-muted-foreground">已选 {pickedCount} 张 · 点空白处也可结束</span>
-              <button
-                type="button"
-                onMouseDown={e => { e.preventDefault(); closeMention(); setTimeout(() => textareaRef.current?.focus(), 0) }}
-                className="px-2.5 py-1 rounded-md bg-primary text-primary-foreground text-[11px] font-medium hover:opacity-90 active:scale-95 transition-transform"
-              >
-                完成
-              </button>
-            </div>
           </div>
         )}
 
-        {/* Top toolbar — WeChat-desktop style: a row of borderless icons. Toggles
-            collapse to an icon when off and expand to a tinted icon+label when on. */}
+        {/* Top toolbar */}
         <div className="flex items-center gap-1 px-2.5 pt-2 pb-1">
           <ToolbarIcon
             icon={<Paperclip size={16} />}
@@ -523,8 +580,8 @@ export function ChatInput({
           />
           <ToolbarIcon
             icon={<AtSign size={16} />}
-            title="引用图片作为参考图：选本对话生成图或素材库（输入 @ 也可）"
-            onClick={insertMentionTrigger}
+            title="@ 引用：图片做参考图 / 服务器设为本轮默认 / 对话内容追问（输入 @ 也可）"
+            onClick={() => composerRef.current?.triggerMention()}
             disabled={isRunning}
           />
           {!imageMode && onForceImageChange && (
@@ -562,89 +619,51 @@ export function ChatInput({
                   className="opacity-60 hover:opacity-100 disabled:opacity-30"><X size={11} /></button>
               </div>
             ) : (
-              <ToolbarIcon icon={<Folder size={16} />} title="设置本对话的工作目录：之后新建 / 读写文件默认放这里" onClick={handlePickWorkingDir} disabled={isRunning} />
+              <ToolbarIcon icon={<Folder size={16} />} title="设置本对话的工作目录：之后新建 / 读写文件默认放这里；目录内的 .claude/skills 与 .mcp.json 会自动加载" onClick={handlePickWorkingDir} disabled={isRunning} />
             )
           )}
         </div>
 
-        {/* Textarea */}
-        <textarea
-          ref={textareaRef}
-          value={text}
-          onChange={handleTextChange}
-          onSelect={e => setMention(detectMention(e.currentTarget.value, e.currentTarget.selectionStart ?? e.currentTarget.value.length))}
-          onBlur={() => setTimeout(() => { if (mention && document.activeElement !== textareaRef.current) closeMention() }, 150)}
-          onKeyDown={handleKeyDown}
-          onPaste={handlePaste}
-          disabled={isRunning || disabled}
+        {/* Rich editor */}
+        <RichComposer
+          ref={composerRef}
           placeholder={placeholder}
-          rows={2}
-          className={cn(
-            'w-full px-4 pt-3.5 pb-2 resize-none bg-transparent text-base outline-none',
-            'placeholder:text-muted-foreground/60 leading-relaxed',
-            (isRunning || disabled) && 'cursor-not-allowed'
-          )}
-          style={{ maxHeight: 240, minHeight: 56 }}
-          onInput={e => {
-            const el = e.currentTarget
-            el.style.height = 'auto'
-            el.style.height = Math.min(el.scrollHeight, 240) + 'px'
-          }}
+          disabled={isRunning || disabled}
+          onMention={setMentionQuery}
+          onEnter={handleSend}
+          onEmptyChange={setComposerEmpty}
+          onPasteFiles={addPastedFiles}
+          onMentionKeyDown={onMentionKeyDown}
         />
 
-        {/* Image parameters row — shown in image mode or when 生成图片 toggle is on */}
+        {/* Image parameters row */}
         {showImageControls && (
           <div className="flex items-center gap-2 px-3 pb-1.5 pt-1 flex-wrap text-[10.5px] text-muted-foreground border-t border-border/40">
             <span className="font-medium text-foreground/70">图片参数</span>
-
             <Select<ImageParams['resolution']>
               value={imageParams.resolution}
               onChange={v => onImageParamsChange({ ...imageParams, resolution: v })}
-              options={[
-                { value: '1K', label: '1K' },
-                { value: '2K', label: '2K' },
-                { value: '4K', label: '4K' }
-              ]}
-              size="sm"
-              title="分辨率"
-              placement="top"
+              options={[{ value: '1K', label: '1K' }, { value: '2K', label: '2K' }, { value: '4K', label: '4K' }]}
+              size="sm" title="分辨率" placement="top"
             />
-
             <Select<ImageParams['quality']>
               value={imageParams.quality}
               onChange={v => onImageParamsChange({ ...imageParams, quality: v })}
-              options={[
-                { value: 'standard', label: '标准' },
-                { value: 'hd', label: '高清' }
-              ]}
-              size="sm"
-              title="品质"
-              placement="top"
+              options={[{ value: 'standard', label: '标准' }, { value: 'hd', label: '高清' }]}
+              size="sm" title="品质" placement="top"
             />
-
             <Select
               value={imageParams.ratio}
               onChange={v => onImageParamsChange({ ...imageParams, ratio: v })}
               options={IMAGE_RATIOS.map(r => ({ value: r, label: r }))}
-              size="sm"
-              title="比例"
-              placement="top"
+              size="sm" title="比例" placement="top"
             />
-
             <Select
               value={String(imageParams.count)}
               onChange={v => onImageParamsChange({ ...imageParams, count: Number(v) as ImageParams['count'] })}
-              options={[
-                { value: '1', label: '×1' },
-                { value: '2', label: '×2' },
-                { value: '3', label: '×3' },
-                { value: '4', label: '×4' }
-              ]}
-              size="sm"
-              title="数量"
-              placement="top"
+              options={[{ value: '1', label: '×1' }, { value: '2', label: '×2' }, { value: '3', label: '×3' }, { value: '4', label: '×4' }]}
+              size="sm" title="数量" placement="top"
             />
-
             <span className="text-muted-foreground/60 text-[10px] ml-auto">
               {computeImageSize(imageParams.resolution, imageParams.ratio)}
               {imageParams.count > 1 ? ` · ${imageParams.count} 张` : ''}
@@ -652,14 +671,11 @@ export function ChatInput({
           </div>
         )}
 
-        {/* Bottom bar — WeChat style: model picker on the left, 发送 on the right. */}
+        {/* Bottom bar — model picker on the left, 发送 on the right. */}
         <div className="flex items-center gap-2 px-3 pb-2.5 pt-0.5">
-
           <div className="flex items-center gap-1.5 flex-1 min-w-0">
             <ModelPicker providerId={providerId} model={model} onChange={onModelChange} />
           </div>
-
-          {/* Right: Send / Stop */}
           {isRunning ? (
             <button
               onClick={onStop}
@@ -693,7 +709,7 @@ export function ChatInput({
         </p>
       )}
 
-      {/* Attachment lightbox — click to enlarge, click outside or Esc to close */}
+      {/* Attachment lightbox */}
       {previewSrc && (
         <div
           className="fixed inset-0 z-50 bg-black/85 flex items-center justify-center p-6"
@@ -719,48 +735,71 @@ export function ChatInput({
   )
 }
 
-function ImageAttachmentThumb({
-  src, name, onPreview, onRemove, onContextMenu
-}: {
-  src: string
-  name: string
+/** An item in the folded attachments panel: an image thumbnail tile or a file
+ *  row, each with a remove × and a hover preview (enlarged image / file path). */
+function AttachmentItem({ att, onPreview, onRemove, onContextMenu }: {
+  att: { name: string; path: string; mimeType: string }
   onPreview: () => void
   onRemove: () => void
   onContextMenu?: (e: React.MouseEvent) => void
 }) {
   const [failed, setFailed] = useState(false)
-
+  // Hover preview is portaled to <body> with fixed positioning so the folded
+  // panel's overflow-hidden (and any clipping ancestor) can't cut it off.
+  const [hoverRect, setHoverRect] = useState<DOMRect | null>(null)
+  const tileRef = useRef<HTMLDivElement>(null)
+  const isImg = att.mimeType.startsWith('image/')
+  const src = toLocalFileUrl(att.path)
   return (
-    <div className="relative group shrink-0" onContextMenu={onContextMenu}>
-      <button
-        type="button"
-        onClick={onPreview}
-        title={`${name}  (点击放大预览 · 右键菜单可编辑)`}
-        className="block h-24 w-24 rounded-xl border border-border shadow-sm overflow-hidden hover:ring-2 hover:ring-ring/40 transition-all"
-      >
-        {failed ? (
-          <span className="w-full h-full flex flex-col items-center justify-center gap-0.5 bg-muted text-muted-foreground">
-            <ImageOff size={16} />
-            <span className="text-[8px]">加载失败</span>
-          </span>
-        ) : (
-          <img
-            src={src}
-            className="w-full h-full object-cover"
-            alt={name}
-            onError={() => setFailed(true)}
-          />
-        )}
-      </button>
+    <div
+      ref={tileRef}
+      className="relative group shrink-0"
+      onContextMenu={onContextMenu}
+      onMouseEnter={() => setHoverRect(tileRef.current?.getBoundingClientRect() ?? null)}
+      onMouseLeave={() => setHoverRect(null)}
+    >
+      {isImg ? (
+        <button
+          type="button"
+          onClick={onPreview}
+          title={`${att.name}  (点击放大 · 悬停预览)`}
+          className="block h-14 w-14 rounded-lg border border-border overflow-hidden hover:ring-2 hover:ring-ring/40 transition-all"
+        >
+          {failed ? (
+            <span className="w-full h-full flex items-center justify-center bg-muted text-muted-foreground"><ImageOff size={15} /></span>
+          ) : (
+            <img src={src} className="w-full h-full object-cover" alt={att.name} onError={() => setFailed(true)} />
+          )}
+        </button>
+      ) : (
+        <div className="flex items-center gap-1.5 h-14 px-2.5 rounded-lg bg-muted border border-border/60 text-xs max-w-[170px]">
+          <FileText size={14} className="shrink-0 text-muted-foreground" />
+          <span className="truncate text-foreground/80">{att.name}</span>
+        </div>
+      )}
+      {hoverRect && createPortal(
+        <div
+          className="fixed z-[120] -translate-x-1/2 -translate-y-full pointer-events-none"
+          style={{ left: hoverRect.left + hoverRect.width / 2, top: hoverRect.top - 8 }}
+        >
+          {isImg && !failed ? (
+            <img src={src} alt={att.name} className="max-w-[280px] max-h-[220px] rounded-lg border border-border shadow-xl bg-card object-contain" />
+          ) : (
+            <div className="max-w-[300px] rounded-lg border border-border bg-popover shadow-xl p-2 text-xs">
+              <span className="block font-medium truncate">{att.name}</span>
+              <span className="block text-[10px] text-muted-foreground break-all">{att.path}</span>
+            </div>
+          )}
+        </div>,
+        document.body
+      )}
       <button
         onClick={onRemove}
         className="absolute -top-1.5 -right-1.5 bg-background border border-border text-muted-foreground hover:text-foreground rounded-full p-0.5 shadow opacity-0 group-hover:opacity-100 transition-opacity"
+        title="移除"
       >
         <X size={10} />
       </button>
-      <div className="absolute bottom-0 left-0 right-0 bg-black/60 text-white text-[9px] rounded-b-xl px-1.5 py-0.5 truncate opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
-        {name}
-      </div>
     </div>
   )
 }
@@ -785,8 +824,7 @@ function ToolbarIcon({ icon, title, onClick, disabled }: {
   )
 }
 
-/** A per-turn toggle in the top toolbar: an icon when off, an icon + tinted label
- *  when on — so the active state reads at a glance without a separate chip. */
+/** A per-turn toggle in the top toolbar. */
 function ToolbarToggle({ icon, label, active, tone, title, onClick, disabled }: {
   icon: React.ReactNode
   label: string

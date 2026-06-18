@@ -43,6 +43,8 @@ interface Props {
   onRename?: (newTitle: string) => void
   /** Export the active session. Format chosen via dropdown. */
   onExport?: (format: 'markdown' | 'json') => void
+  /** Open the「对话长截图」dialog (export all / selected messages as one PNG). */
+  onExportImage?: () => void
   /** Hired employees, for the "与员工单独对话" picker. */
   employees?: EmployeeInfo[]
   /** Currently-bound employee id for this session (null = unbound). */
@@ -60,7 +62,7 @@ interface Props {
  * Slim chat header — shows the current session title prominently and a few
  * top-right actions. Click the title (or the pencil) to rename inline.
  */
-export function ChatHeader({ sessionId, sessionTitle, onSaveAsWorkflow, onRename, onExport, employees, boundEmployeeId, onBindEmployee, groupEmployeeIds, onAddGroupMember, onRemoveGroupMember }: Props) {
+export function ChatHeader({ sessionId, sessionTitle, onSaveAsWorkflow, onRename, onExport, onExportImage, employees, boundEmployeeId, onBindEmployee, groupEmployeeIds, onAddGroupMember, onRemoveGroupMember }: Props) {
   const t = useT()
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(sessionTitle)
@@ -240,6 +242,15 @@ export function ChatHeader({ sessionId, sessionTitle, onSaveAsWorkflow, onRename
                     JSON (.json)
                     <span className="block text-[10px] text-muted-foreground/70">完整结构，可再导入</span>
                   </button>
+                  {onExportImage && (
+                    <button
+                      onClick={() => { onExportImage(); setExportOpen(false) }}
+                      className="w-full text-left px-3 py-1.5 text-xs hover:bg-accent transition-colors border-t border-border/60"
+                    >
+                      长截图 (.png)
+                      <span className="block text-[10px] text-muted-foreground/70">整段或勾选部分，拼成一张图分享</span>
+                    </button>
+                  )}
                 </div>
               )}
             </div>

@@ -314,11 +314,26 @@ export function removeSkillDir(id: string): void {
 }
 
 export function readSkillResource(id: string, relPath: string): string {
-  const abs = safeJoin(skillDir(id), relPath)
+  return readSkillResourceAt(skillDir(id), relPath)
+}
+
+/** Read a bundle-relative file under an arbitrary base dir (same traversal guard
+ *  + size cap as readSkillResource). Used by ephemeral 工作目录 skills, whose
+ *  bundle lives at its original on-disk path rather than under userData/skills. */
+export function readSkillResourceAt(baseDir: string, relPath: string): string {
+  const abs = safeJoin(baseDir, relPath)
   const stat = fs.statSync(abs)
   if (!stat.isFile()) throw new Error('不是文件')
   if (stat.size > MAX_READ_SIZE) throw new Error(`文件过大 (${(stat.size / 1024).toFixed(0)} KB)`)
   return fs.readFileSync(abs, 'utf8')
+}
+
+/** List bundle-relative (posix) file paths under `dir`, enforcing the same
+ *  count/size caps as an import. Used to populate an ephemeral skill's
+ *  resourceFiles without copying anything. Returns [] on any failure. */
+export function listBundleFiles(dir: string): string[] {
+  try { return listLocalBundleFiles(dir).files }
+  catch { return [] }
 }
 
 /** Strip the leading YAML frontmatter block and pull name + description. */

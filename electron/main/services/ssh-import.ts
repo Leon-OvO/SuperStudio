@@ -81,10 +81,12 @@ export function parseMobaXterm(buf: Buffer): { sessions: ParsedMobaSession[]; sk
     if (line.startsWith('[')) { currentGroup = undefined; continue } // new section
     const subM = line.match(/^SubRep\s*=(.*)$/)
     if (subM) {
-      // e.g. "<root>\tokeng" → group "tokeng"; a bare root (no backslash) → ungrouped.
-      const v = subM[1]
-      const bs = v.lastIndexOf('\\')
-      currentGroup = bs >= 0 ? (v.slice(bs + 1).trim() || undefined) : undefined
+      // Keep the FULL nested folder path (minus the leading root marker) so the
+      // renderer can build a multi-level tree. "root\电魂\web\A类" → "电魂/web/A类";
+      // "root\prod" → "prod"; bare "" → ungrouped.
+      const segs = subM[1].split('\\').map(s => s.trim()).filter(Boolean)
+      if (segs.length && /^<?root>?$/i.test(segs[0])) segs.shift()
+      currentGroup = segs.length ? segs.join('/') : undefined
       continue
     }
     if (/^ImgNum\s*=/.test(line)) continue

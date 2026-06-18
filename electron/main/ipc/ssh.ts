@@ -2,13 +2,16 @@ import { ipcMain } from 'electron'
 import { randomUUID } from 'crypto'
 import { IPC } from '../../../src/shared/ipc-types'
 import type { SshConnection } from '../../../src/shared/ipc-types'
-import { getSshConnections, saveSshConnection, deleteSshConnection } from '../services/store'
+import { getSshConnections, saveSshConnection, deleteSshConnection, listSshMeta } from '../services/store'
 import { testSshConnection } from '../services/ssh-service'
 import { revokeSshTrust } from '../services/ssh-guard'
 import { importMobaXtermFile } from '../services/ssh-import'
 
 export function sshHandlers(): void {
   ipcMain.handle(IPC.SSH_LIST, () => getSshConnections())
+
+  // Credential-free list for the @-mention picker — never returns secrets.
+  ipcMain.handle(IPC.SSH_LIST_META, () => listSshMeta())
 
   ipcMain.handle(IPC.SSH_SAVE, (_e, conn: SshConnection) => {
     saveSshConnection(conn)

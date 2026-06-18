@@ -159,6 +159,16 @@ function resolveOutputPath(kind: 'image' | 'video' | 'audio', mime: string): str
 
 class McpManager {
   private clients = new Map<string, ConnectedClient>()
+  // qualifiedName → owning server, kept current as tools are listed (store OR
+  // ephemeral 工作目录 servers). Lets callTool resolve a tool to its connected
+  // client without re-scanning only the store servers.
+  private toolIndex = new Map<string, { serverId: string; serverName: string; toolName: string }>()
+
+  private indexTools(tools: McpTool[]): void {
+    for (const t of tools) {
+      this.toolIndex.set(t.qualifiedName, { serverId: t.serverId, serverName: t.serverName, toolName: t.toolName })
+    }
+  }
 
   async connect(config: McpServerConfig): Promise<Client> {
     const existing = this.clients.get(config.id)
@@ -228,6 +238,7 @@ class McpManager {
       entry.toolsCache = tools
       entry.cachedAt = Date.now()
     }
+    this.indexTools(tools)
     return tools
   }
 
@@ -246,6 +257,32 @@ class McpManager {
   }
 
   /**
+   * Connect + list tools for ad-hoc configs (工作目录 .mcp.json) NOT in the global
+   * store. Connections are cached by config.id like store servers; call
+   * disconnectEphemeral(ids) when the run ends to reap their subprocesses.
+   */
+  async listToolsForConfigs(configs: McpServerConfig[]): Promise<McpTool[]> {
+    const all: McpTool[] = []
+    for (const cfg of configs) {
+      try {
+        const tools = await this.listToolsFor(cfg)
+        all.push(...tools)
+      } catch (e) {
+        console.warn(`[mcp] 工作目录 MCP "${cfg.name}" 加载失败：`, (e as Error).message)
+      }
+    }
+    return all
+  }
+
+  /** Reap ephemeral 工作目录 connections + drop their tool-index entries. */
+  async disconnectEphemeral(ids: string[]): Promise<void> {
+    for (const id of ids) {
+      for (const [k, v] of this.toolIndex) if (v.serverId === id) this.toolIndex.delete(k)
+      await this.disconnect(id)
+    }
+  }
+
+  /**
    * Call a tool. Any image/video/audio content the server returns is decoded
    * from base64, written to disk, and (for image/video) registered in the
    * gallery so it survives across sessions. The returned `text` includes the
@@ -256,11 +293,18 @@ class McpManager {
     args: unknown,
     ctx: McpCallContext = {}
   ): Promise<McpCallResult> {
-    const all = await this.listAllTools()
-    const tool = all.find(t => t.qualifiedName === qualifiedName)
-    if (!tool) throw new Error(`MCP tool not found: ${qualifiedName}`)
-    const entry = this.clients.get(tool.serverId)
+    // Resolve via the live tool index (covers store + ephemeral 工作目录 servers).
+    // Fall back to a fresh store listing for a cold index (e.g. after a restart).
+    let idx = this.toolIndex.get(qualifiedName)
+    let entry = idx ? this.clients.get(idx.serverId) : undefined
+    if (!idx || !entry) {
+      await this.listAllTools()
+      idx = this.toolIndex.get(qualifiedName)
+      entry = idx ? this.clients.get(idx.serverId) : undefined
+    }
+    if (!idx) throw new Error(`MCP tool not found: ${qualifiedName}`)
     if (!entry) throw new Error(`MCP server not connected for tool: ${qualifiedName}`)
+    const tool: McpTool = { serverId: idx.serverId, serverName: idx.serverName, qualifiedName, toolName: idx.toolName, inputSchema: {} }
     if (ctx.signal?.aborted) throw new Error(`工具调用已取消 ${qualifiedName}`)
     const result = await withTimeout(
       entry.client.callTool(

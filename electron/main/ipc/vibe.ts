@@ -55,6 +55,7 @@ import { getSoul } from '../services/talent-pool'
 import { dbRun } from '../db/sqlite'
 import { writeProposalMd, writeTasksMd } from '../services/vibe-spec'
 import { getActiveSkillsForScenario, type InstalledSkill } from '../services/skills-db'
+import { scanWorkdirSkills } from '../services/workdir-extensions'
 import { buildSkillTools } from '../agent/skill-tools'
 import { classifyVibeIntent } from '../agent/classify'
 import { agentRunSemaphore } from '../agent/semaphore'
@@ -71,10 +72,19 @@ import { computeCost } from '../services/model-pricing'
  * Build a system-prompt fragment from the skills the user enabled for the
  * "vibe" (build) scenario. Returns '' when no skills apply.
  */
-function buildVibeSkillsSection(): { section: string; skills: InstalledSkill[] } {
+function buildVibeSkillsSection(projectPath?: string): { section: string; skills: InstalledSkill[] } {
   let skills: InstalledSkill[] = []
   try { skills = getActiveSkillsForScenario('vibe') }
   catch (e) { console.warn('[vibe] failed to load active skills:', (e as Error).message) }
+  // 工作目录扩展（随项目临时生效）：<project>/.claude/skills 里的技能仅为本次运行加载，
+  // 不写 DB、不进全局「技能中心」。按 name 去重，已启用的同名技能优先。
+  if (projectPath) {
+    try {
+      const have = new Set(skills.map(s => s.name.toLowerCase()))
+      const wd = scanWorkdirSkills(projectPath, 'vibe').filter(s => !have.has(s.name.toLowerCase()))
+      if (wd.length) skills = [...skills, ...wd]
+    } catch (e) { console.warn('[vibe] 工作目录技能加载失败：', (e as Error).message) }
+  }
   if (!skills.length) return { section: '', skills: [] }
 
   // Legacy skills inject their full prompt; runtime skills only list name +
@@ -1297,7 +1307,7 @@ export function vibeHandlers(): void {
           ? opts.buildTools(projectPath, toolEmit, ctl.signal)
           : undefined
 
-        const { section: skillsSection, skills: activeSkills } = buildVibeSkillsSection()
+        const { section: skillsSection, skills: activeSkills } = buildVibeSkillsSection(projectPath)
         let tools: Record<string, Tool> | undefined =
           rawTools ? applyVibeSkillsFilter(rawTools, activeSkills) : undefined
         // Merge progressive-disclosure skill tools when this mode has tools.
@@ -1527,7 +1537,7 @@ export function vibeHandlers(): void {
         const userContent = buildVibeUserContent(userPrompt, args.attachments)
 
         let captured: z.infer<typeof ProposalSchema> | null = null
-        const { section: proposeSkillsSection } = buildVibeSkillsSection()
+        const { section: proposeSkillsSection } = buildVibeSkillsSection(projectPath)
         const result = streamText({
           model,
           system: PROPOSE_SYSTEM + (isPromotion
@@ -1803,7 +1813,7 @@ export function vibeHandlers(): void {
       }
     }
     const rawTools = buildVibeTools(projectPath, taskToolEmit, signal)
-    const { section: applySkillsSection, skills: applySkills } = buildVibeSkillsSection()
+    const { section: applySkillsSection, skills: applySkills } = buildVibeSkillsSection(projectPath)
     let tools: Record<string, Tool> = applyVibeSkillsFilter(rawTools, applySkills)
     const applyRuntimeSkills = applySkills.filter(s => s.runtime)
     if (applyRuntimeSkills.length) {

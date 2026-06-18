@@ -13,10 +13,14 @@ import { AgentProgress } from './AgentProgress'
 import { ChatHeader, computeImageSize, DEFAULT_IMAGE_PARAMS } from './ChatHeader'
 import type { ImageParams } from './ChatHeader'
 import { extractGeneratedImages } from './extractGeneratedImages'
-import type { AgentProgressEvent, Message } from '../../../../shared/ipc-types'
+import type { AgentProgressEvent, AgentPhaseEvent, Message, ContextRef } from '../../../../shared/ipc-types'
+
+/** Per-turn @-mentioned references sent alongside text + attachments. */
+interface MentionPayload { sshDefaultConnIds?: string[]; contextRefs?: ContextRef[] }
 import { randomId } from '../../lib/id'
 import { ImageEditor } from '../../components/ui/ImageEditor'
 import { buildExportTarget } from '../../lib/session-export'
+import { ConversationImageDialog } from './ConversationImageDialog'
 import { useConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { toast } from '../../components/ui/Toast'
 
@@ -27,8 +31,8 @@ export function ChatPage() {
     sessions, activeSessionId, messages, runningSessionIds, sessionModel, computerMode,
     setSessions, setActiveSession, addSession, removeSession, updateSessionTitle,
     setMessages, addMessage, upsertMessage, appendStreamDelta, removeMessage, removeMessagesFrom, updateMessageContent,
-    startRun, stopRun, updateStep,
-    setSessionModel, setComputerMode, setSessionWorkingDir, setSessionAssignee, setSessionGroupEmployees
+    startRun, stopRun, updateStep, setPhase,
+    setSessionModel, setComputerMode, setSessionWorkingDir, setSessionAssignee, setSessionGroupEmployees, setSessionPinned
   } = useChatStore()
 
   // Hired employees — for the ChatHeader "与员工单独对话" picker + session badges.
@@ -53,7 +57,7 @@ export function ChatPage() {
   const defaultImageModelRef = useRef<{ providerId: string; model: string } | null>(null)
   // Keyed by sessionId — concurrent runs across sessions must not clobber each
   // other's last-sent text (retry) or pending auto-route intent (DONE tagging).
-  const lastSentRef = useRef<Record<string, { text: string; attachments?: Array<{ name: string; path: string; mimeType: string }> }>>({})
+  const lastSentRef = useRef<Record<string, { text: string; attachments?: Array<{ name: string; path: string; mimeType: string }>; mentions?: MentionPayload }>>({})
   const pendingAutoRouteRef = useRef<Record<string, { intent: string }>>({})
   const [imageParamsMap, setImageParamsMap] = React.useState<Record<string, ImageParams>>({})
   const [defaultImageModel, setDefaultImageModel] = React.useState<string>('')
@@ -65,6 +69,8 @@ export function ChatPage() {
   const [attachments, setAttachments] = React.useState<Attachment[]>([])
   // Top-level ImageEditor — any image in the chat surface can open it.
   const [editorSrc, setEditorSrc] = React.useState<string | null>(null)
+  // 对话长截图导出弹框
+  const [imageExportOpen, setImageExportOpen] = React.useState(false)
   const [providersCount, setProvidersCount] = React.useState<number | null>(null)
   const [defaultChatModel, setDefaultChatModelState] = React.useState<string>('')
   const [showNewGroup, setShowNewGroup] = React.useState(false)
@@ -111,6 +117,10 @@ export function ChatPage() {
     window.addEventListener('app:chats-reloaded', reloadChatsHandler)
     unsubRef.current.push(() => window.removeEventListener('app:chats-reloaded', reloadChatsHandler))
 
+    // Background session tidy (auto-archive / prune empty) → reload the list.
+    const offSessionsChanged = window.api.onSessionsChanged?.(() => { loadSessions() })
+    if (offSessionsChanged) unsubRef.current.push(offSessionsChanged)
+
     // Command palette → jump to a specific session
     const selectSessionHandler = (e: Event) => {
       const detail = (e as CustomEvent).detail as { sessionId?: string }
@@ -122,13 +132,17 @@ export function ChatPage() {
     const u1 = window.api.onAgentProgress((event) => {
       updateStep(event as AgentProgressEvent)
     })
+    // Coarse phase (等待响应 / 思考 / 工具 / 输出) + slow/timeout warning.
+    const uPhase = window.api.onAgentPhase((event) => {
+      setPhase(event as AgentPhaseEvent)
+    })
     // Live token streaming — append chunks to a placeholder message keyed by the
     // run's messageId; AGENT_DONE then reconciles it into the final message.
     const uDelta = window.api.onAgentDelta((d) => {
       if (d?.sessionId && d?.messageId) appendStreamDelta(d.sessionId, d.messageId, d.delta, d.speakerEmployeeId)
     })
     const u2 = window.api.onAgentDone((data: unknown) => {
-      const d = data as { sessionId: string; content: string; messageId: string; toolCallLog?: Array<{ toolName: string; args: unknown; result: unknown }>; cancelled?: boolean; sessionTitle?: string; meta?: { model?: string; providerId?: string; providerName?: string; durationMs?: number }; more?: boolean; speakerEmployeeId?: string }
+      const d = data as { sessionId: string; content: string; messageId: string; toolCallLog?: Array<{ toolName: string; args: unknown; result: unknown }>; cancelled?: boolean; sessionTitle?: string; meta?: { model?: string; providerId?: string; providerName?: string; durationMs?: number; phases?: Array<{ phase: string; ms: number }> }; more?: boolean; speakerEmployeeId?: string }
       // Group chat fires one DONE per speaker; only the final speaker (more===false)
       // clears the running state, so the spinner stays up through the whole round.
       if (!d.more) stopRun(d.sessionId)
@@ -179,7 +193,7 @@ export function ChatPage() {
       }
     })
 
-    unsubRef.current = [u1, uDelta, u2, u3]
+    unsubRef.current = [u1, uPhase, uDelta, u2, u3]
     return () => { unsubRef.current.forEach(fn => fn?.()) }
   }, [])
 
@@ -365,7 +379,12 @@ export function ChatPage() {
     setSessions(data)
   }
 
-  async function doSend(sessionId: string, text: string, attachments?: Array<{ name: string; path: string; mimeType: string }>) {
+  async function handlePinSession(id: string, pinned: boolean) {
+    setSessionPinned(id, pinned) // optimistic local update
+    await window.api.setSessionPinned(id, pinned)
+  }
+
+  async function doSend(sessionId: string, text: string, attachments?: Array<{ name: string; path: string; mimeType: string }>, mentions?: MentionPayload) {
     startRun(sessionId)
     const override = sessionModel[sessionId]
     const imgParams = imageParamsMap[sessionId] || defaultImageRules
@@ -382,12 +401,14 @@ export function ChatPage() {
         imageQuality,
         imageCount,
         computerMode: computerMode || undefined,
-        forceImage: forceImage || undefined
+        forceImage: forceImage || undefined,
+        ...(mentions?.sshDefaultConnIds?.length ? { sshDefaultConnIds: mentions.sshDefaultConnIds } : {}),
+        ...(mentions?.contextRefs?.length ? { contextRefs: mentions.contextRefs } : {})
       }
     )
   }
 
-  async function handleSend(text: string, attachments?: Array<{ name: string; path: string; mimeType: string }>) {
+  async function handleSend(text: string, attachments?: Array<{ name: string; path: string; mimeType: string }>, mentions?: MentionPayload) {
     if (isRunning) return
     // Group session → route to the multi-agent round instead of a single agent.
     const cur = sessions.find(s => s.id === activeSessionId)
@@ -395,7 +416,7 @@ export function ChatPage() {
     // No active session yet (first use)? Create one on the fly so the user can
     // type+send straight away without first clicking 「新建对话」.
     const sessionId = await ensureSession()
-    lastSentRef.current[sessionId] = { text, attachments }
+    lastSentRef.current[sessionId] = { text, attachments, mentions }
 
     // Auto-model routing: resolve before adding user message to avoid UI flicker
     try {
@@ -421,14 +442,14 @@ export function ChatPage() {
       createdAt: Date.now()
     }
     addMessage(sessionId, userMsg)
-    await doSend(sessionId, text, attachments)
+    await doSend(sessionId, text, attachments, mentions)
   }
 
   async function handleRetry() {
     if (!activeSessionId || isRunning) return
     const last = lastSentRef.current[activeSessionId]
     if (!last) return
-    await doSend(activeSessionId, last.text, last.attachments)
+    await doSend(activeSessionId, last.text, last.attachments, last.mentions)
   }
 
   async function handleStop() {
@@ -581,6 +602,7 @@ export function ChatPage() {
         onNewGroup={() => setShowNewGroup(true)}
         onDelete={handleDeleteSession}
         onArchive={handleArchiveSession}
+        onPin={handlePinSession}
         runningSessionIds={runningSessionIds}
       />
       <SessionListResizer />
@@ -590,6 +612,7 @@ export function ChatPage() {
           sessionTitle={activeSession?.title || ''}
           onSaveAsWorkflow={handleSaveAsWorkflow}
           onExport={activeSessionId ? handleExportSession : undefined}
+          onExportImage={activeSessionId ? () => setImageExportOpen(true) : undefined}
           onRename={activeSessionId ? async (newTitle) => {
             await window.api.renameSession(activeSessionId, newTitle)
             updateSessionTitle(activeSessionId, newTitle)
@@ -638,6 +661,7 @@ export function ChatPage() {
           attachments={attachments}
           setAttachments={setAttachments}
           generatedImages={mentionImages}
+          recentMessages={activeSessionId ? (messages[activeSessionId] ?? []).map(m => ({ id: m.id, role: m.role, content: m.content })) : []}
           imageMode={isImageMode}
           forceImage={forceImage}
           onForceImageChange={setForceImage}
@@ -663,6 +687,12 @@ export function ChatPage() {
           onClose={() => setEditorSrc(null)}
         />
       )}
+      <ConversationImageDialog
+        open={imageExportOpen}
+        onClose={() => setImageExportOpen(false)}
+        sessionTitle={activeSession?.title || ''}
+        messages={currentMessages}
+      />
       {showNewGroup && (
         <NewGroupDialog
           employees={employees}

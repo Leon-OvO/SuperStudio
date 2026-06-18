@@ -18,15 +18,18 @@ function isAnswering(content: string): boolean {
 }
 
 export function AgentProgress() {
-  const { runningSessionIds, stepsBySession, activeSessionId, messages } = useChatStore()
+  const { runningSessionIds, stepsBySession, phaseBySession, activeSessionId, messages } = useChatStore()
   // Only reflect a run that belongs to the session currently on screen.
   const isRunning = activeSessionId !== null && runningSessionIds.includes(activeSessionId)
   const currentSteps = activeSessionId ? (stepsBySession[activeSessionId] ?? []) : []
+  const phase = activeSessionId ? phaseBySession[activeSessionId] : null
   // Latest streamed assistant content → thinking vs answering.
   const sessionMsgs = activeSessionId ? (messages[activeSessionId] ?? []) : []
   const lastMsg = sessionMsgs[sessionMsgs.length - 1]
   const answering = lastMsg?.role === 'assistant' && isAnswering(lastMsg.content || '')
-  const [expanded, setExpanded] = useState(true)
+  // Collapsed by default — the ThinkingConsole already shows live status; the full
+  // step list is opt-in so a long run can't push the chat content off-screen.
+  const [expanded, setExpanded] = useState(false)
   const [videoProgress, setVideoProgress] = useState<VideoProgressEvent | null>(null)
   // Run start (per viewed session) — drives the "已用时" clock + resets the
   // ThinkingConsole buffer when the run (re)starts or the user switches session.
@@ -68,6 +71,9 @@ export function AgentProgress() {
         startedAt={startedAt}
         liveLine={latestStep ? scrubAddresses(latestStep.message || latestStep.name) : undefined}
         idleLabel={answering ? '正在输出回复…' : '正在思考…'}
+        phaseLabel={phase?.label}
+        phaseStartedAt={phase?.startedAt}
+        phaseStatus={phase?.status}
       />
 
       {/* Expand toggle — only when there's real detail to show. */}
@@ -82,7 +88,7 @@ export function AgentProgress() {
       )}
 
       {expanded && (
-        <div className="mt-2 space-y-1">
+        <div className="mt-2 space-y-1 max-h-48 overflow-y-auto pr-1">
           {currentSteps.map((step, i) => (
             <div key={i} className="flex items-start gap-2 text-xs">
               {step.status === 'running' && <Loader2 size={12} className="animate-spin text-primary mt-0.5 shrink-0" />}

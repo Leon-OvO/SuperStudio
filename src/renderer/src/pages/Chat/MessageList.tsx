@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { BRAND } from '@shared/brand'
 import { createPortal } from 'react-dom'
 import { useVirtualizer } from '@tanstack/react-virtual'
@@ -9,7 +9,7 @@ import { copyImageToClipboard } from '../../lib/clipboard'
 import { useImageContextMenu } from '../../components/ui/ImageContextMenu'
 import { toast } from '../../components/ui/Toast'
 import { Markdown } from '../../lib/markdown'
-import { Play, X, RotateCcw, Clock, Cpu, Copy, Check, Download, Wand2, Brain, ChevronRight, ChevronDown, ChevronUp, Pencil, Trash2, RefreshCw, Coins, ImagePlus, Wrench, CheckCircle2, XCircle, Loader2 } from 'lucide-react'
+import { Play, X, RotateCcw, Clock, Cpu, Copy, Check, Download, Wand2, Brain, ChevronRight, ChevronDown, ChevronUp, Pencil, Trash2, RefreshCw, Coins, ImagePlus, Wrench, CheckCircle2, XCircle, Loader2, Quote, Server, MessagesSquare, FileText } from 'lucide-react'
 import { formatUsageLine } from '../../lib/format-cost'
 import { scrubAddresses } from '../../../../shared/scrub'
 
@@ -17,6 +17,73 @@ function toFileUrl(p: string): string {
   // Three slashes: local-file:///F:/path — empty authority avoids Chromium treating "F:" as host
   const fwd = p.replace(/\\/g, '/').replace(/^\//, '')
   return `local-file:///${fwd}`
+}
+
+/** Short Chinese labels for the per-phase timing footnote (meta.phases). */
+const PHASE_FOOT_LABEL: Record<string, string> = {
+  connecting: '等待', thinking: '思考', responding: '输出',
+  tool: '工具', generating: '生成', waiting: '等待'
+}
+
+const MENTION_TOKEN_RE = /【(图:[^】]+|图片\d+|文件:[^】]+|服务器:[^】]+|引用:[^】]+|对话摘要)】/g
+
+/** Render a sent user message, turning inline @-reference tokens
+ *  (【图片N】/【文件:x】/【服务器:x】/【引用:…】/【对话摘要】) into chips that match how the
+ *  composer showed them. Image tokens map to the message's image attachments (in
+ *  order) for a real thumbnail + hover preview. */
+function MessageWithChips({ content, attachments }: {
+  content: string
+  attachments?: Array<{ name: string; path: string; mimeType: string }>
+}) {
+  const imgs = (attachments ?? []).filter(a => a.mimeType?.startsWith('image/'))
+  if (!content.includes('【')) return <>{content}</>
+  const nodes: ReactNode[] = []
+  const re = new RegExp(MENTION_TOKEN_RE)
+  let last = 0
+  let m: RegExpExecArray | null
+  let k = 0
+  while ((m = re.exec(content)) !== null) {
+    if (m.index > last) nodes.push(content.slice(last, m.index))
+    nodes.push(<InlineToken key={`t${k++}`} token={m[1]} imgs={imgs} />)
+    last = m.index + m[0].length
+  }
+  if (last < content.length) nodes.push(content.slice(last))
+  return <>{nodes}</>
+}
+
+function InlineToken({ token, imgs }: { token: string; imgs: Array<{ name: string; path: string }> }) {
+  const chip = (icon: ReactNode, label: string) => (
+    <span className="inline-flex items-center gap-1 align-baseline mx-0.5 px-1.5 py-0.5 rounded-md bg-primary-foreground/15 border border-primary-foreground/25 text-[0.82em] leading-none">
+      <span className="opacity-90 shrink-0">{icon}</span>
+      <span className="max-w-[180px] truncate">{label}</span>
+    </span>
+  )
+  // Image token: name-based 【图:文件名】 (current) or positional 【图片N】 (legacy).
+  const isImgToken = token.startsWith('图:') || /^图片\d+$/.test(token)
+  if (isImgToken) {
+    const imgLabel = token.startsWith('图:') ? token.slice(2) : token
+    const path = token.startsWith('图:')
+      ? imgs.find(a => a.name === imgLabel)?.path
+      : imgs[parseInt(token.slice(2), 10) - 1]?.path
+    return (
+      <span className="relative inline-flex group/itok align-baseline mx-0.5">
+        <span className="inline-flex items-center gap-1 px-1 py-0.5 rounded-md bg-primary-foreground/15 border border-primary-foreground/25 text-[0.82em] leading-none">
+          {path ? <img src={toFileUrl(path)} className="w-4 h-4 rounded object-cover" alt={imgLabel} /> : <ImagePlus size={11} />}
+          <span className="max-w-[160px] truncate">{imgLabel}</span>
+        </span>
+        {path && (
+          <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 hidden group-hover/itok:block z-40 pointer-events-none">
+            <img src={toFileUrl(path)} className="max-w-[240px] max-h-[180px] rounded-lg border border-border shadow-xl bg-card object-contain" alt={imgLabel} />
+          </span>
+        )}
+      </span>
+    )
+  }
+  if (token.startsWith('文件:')) return chip(<FileText size={11} />, token.slice(3))
+  if (token.startsWith('服务器:')) return chip(<Server size={11} />, token.slice(4))
+  if (token.startsWith('引用:')) return chip(<Quote size={11} />, token.slice(3))
+  if (token === '对话摘要') return chip(<MessagesSquare size={11} />, '对话摘要')
+  return <>{`【${token}】`}</>
 }
 
 /**
@@ -367,6 +434,11 @@ function MessageBubble({
   const [copied, setCopied] = useState(false)
   const [editing, setEditing] = useState(false)
   const [editDraft, setEditDraft] = useState('')
+  // Right-click「引用追问」menu on the text bubble. Quotes the selection (if any
+  // inside this bubble) else the whole message; the composer turns it into an
+  // inline 「引用」 chip via the `chat:quote` event.
+  const bubbleRef = useRef<HTMLDivElement>(null)
+  const [quoteMenu, setQuoteMenu] = useState<{ x: number; y: number; text: string } | null>(null)
 
   // Split <think>/<thinking> blocks off the answer (assistant messages only)
   const { reasoning, answer, streaming } = useMemo(
@@ -380,6 +452,30 @@ function MessageBubble({
   const onlyThinking = !!reasoning && !answer.trim()
   const liveStreaming = !isUser && isRunning && isLastMsg
   const thinkingAsAnswer = onlyThinking && !liveStreaming
+
+  // The text this message contributes when quoted (selection wins, else full text).
+  const quotableText = (isUser ? message.content : answer).trim()
+  const openQuoteMenu = (e: React.MouseEvent) => {
+    const sel = window.getSelection()
+    const selText = sel && !sel.isCollapsed && bubbleRef.current?.contains(sel.anchorNode)
+      ? sel.toString().trim() : ''
+    const text = selText || quotableText
+    if (!text) return
+    e.preventDefault()
+    setQuoteMenu({ x: Math.min(e.clientX, window.innerWidth - 180), y: Math.min(e.clientY, window.innerHeight - 110), text })
+  }
+  const fireQuote = (text: string) => {
+    window.dispatchEvent(new CustomEvent('chat:quote', { detail: { text } }))
+    setQuoteMenu(null)
+  }
+  useEffect(() => {
+    if (!quoteMenu) return
+    const onDown = (ev: MouseEvent) => { if (!(ev.target as HTMLElement).closest('[data-quote-menu]')) setQuoteMenu(null) }
+    const onKey = (ev: KeyboardEvent) => { if (ev.key === 'Escape') setQuoteMenu(null) }
+    window.addEventListener('mousedown', onDown)
+    window.addEventListener('keydown', onKey)
+    return () => { window.removeEventListener('mousedown', onDown); window.removeEventListener('keydown', onKey) }
+  }, [quoteMenu])
 
   async function handleLightboxCopy() {
     if (!lightboxSrc) return
@@ -449,7 +545,10 @@ function MessageBubble({
             <span className="text-[11px] text-muted-foreground">（已离职员工）</span>
           </div>
         ) : null}
-        <div className={cn(
+        <div
+          ref={bubbleRef}
+          onContextMenu={openQuoteMenu}
+          className={cn(
           'max-w-[80%] rounded-2xl px-4 py-3 text-base leading-relaxed relative',
           isUser
             ? 'bg-primary text-primary-foreground rounded-br-sm'
@@ -496,8 +595,12 @@ function MessageBubble({
               }}
             />
           ) : answer ? (
-            isUser || isError ? (
-              // User text and error banners stay plain — no Markdown parsing
+            isUser ? (
+              // User text stays plain (no Markdown), but inline @-reference tokens
+              // (【图片N】/【服务器:x】/【引用:…】/【对话摘要】) render as chips — same as
+              // the composer showed them before sending.
+              <p className="whitespace-pre-wrap break-words"><MessageWithChips content={answer} attachments={message.attachments} /></p>
+            ) : isError ? (
               <p className="whitespace-pre-wrap break-words">{answer}</p>
             ) : (
               <AssistantAnswer content={answer} duplicatePaths={[...imageArtifacts, ...videoArtifacts]} />
@@ -629,6 +732,13 @@ function MessageBubble({
                 icon={<RefreshCw size={11} />}
               />
             )}
+            {quotableText && (
+              <ActionIcon
+                title="引用追问（把这条内容作为追问对象，引到输入框）"
+                onClick={() => fireQuote(quotableText)}
+                icon={<Quote size={11} />}
+              />
+            )}
             {onDeleteMessage && (
               <ActionIcon
                 title="删除此条消息"
@@ -663,6 +773,13 @@ function MessageBubble({
                 {(meta.durationMs / 1000).toFixed(1)}s
               </span>
             )}
+            {meta.phases && meta.phases.length > 1 && (
+              <span className="text-muted-foreground/60 tabular-nums" title="本轮各阶段耗时">
+                {meta.phases
+                  .map(p => `${PHASE_FOOT_LABEL[p.phase] ?? p.phase} ${(p.ms / 1000).toFixed(1)}s`)
+                  .join(' · ')}
+              </span>
+            )}
             {(() => {
               const usage = formatUsageLine({
                 inputTokens: meta.inputTokens,
@@ -695,6 +812,32 @@ function MessageBubble({
           </div>
         )}
       </div>
+
+      {/* Right-click「引用追问」menu — portaled (the virtualized row's transform
+          would otherwise break `fixed` positioning). */}
+      {quoteMenu && createPortal(
+        <div
+          data-quote-menu
+          className="fixed z-[100] min-w-[160px] bg-popover border border-border rounded-lg shadow-xl py-1 text-sm select-none origin-top-left animate-menu-in"
+          style={{ left: quoteMenu.x, top: quoteMenu.y }}
+        >
+          <button
+            onClick={() => fireQuote(quoteMenu.text)}
+            className="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-accent text-foreground/90 hover:text-foreground transition-colors"
+          >
+            <span className="text-muted-foreground"><Quote size={13} /></span>
+            <span className="text-xs">引用追问</span>
+          </button>
+          <button
+            onClick={() => { void navigator.clipboard.writeText(quoteMenu.text); setQuoteMenu(null) }}
+            className="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-accent text-foreground/90 hover:text-foreground transition-colors"
+          >
+            <span className="text-muted-foreground"><Copy size={13} /></span>
+            <span className="text-xs">复制</span>
+          </button>
+        </div>,
+        document.body
+      )}
 
       {/* Image lightbox — portaled to body because the virtualized row's
           transform would otherwise become the containing block for `fixed`. */}

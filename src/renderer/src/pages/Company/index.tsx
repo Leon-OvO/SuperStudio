@@ -265,7 +265,9 @@ export function Market({ hiredSoulIds, onHire }: { hiredSoulIds: Set<string>; on
 // ── 员工花名册 ───────────────────────────────────────────────────────────────
 export function Roster({ employees, providers, onChange, goMarket }: { employees: EmployeeInfo[]; providers: ProviderConfig[]; onChange: () => void; goMarket: () => void }) {
   const dlg = useConfirmDialog()
-  const allModels = useMemo(() => providers.flatMap(p => p.models.map(m => ({ providerId: p.id, modelId: m, label: `${m} · ${p.name}` }))), [providers])
+  // Show 提供商 · 模型 (provider first) so the list reads "who serves what".
+  const allModels = useMemo(() => providers.flatMap(p => p.models.map(m => ({ providerId: p.id, modelId: m, label: `${p.name} · ${m}` }))), [providers])
+  const providerName = (pid: string) => providers.find(p => p.id === pid)?.name || ''
 
   if (!employees.length) {
     return (
@@ -334,7 +336,7 @@ export function Roster({ employees, providers, onChange, goMarket }: { employees
                       popoverWidth={240}
                       options={[
                         ...(!allModels.some(m => m.providerId === e.providerId && m.modelId === e.modelId) && e.modelId
-                          ? [{ value: `${e.providerId}::${e.modelId}`, label: `${e.modelId}（当前）` }] : []),
+                          ? [{ value: `${e.providerId}::${e.modelId}`, label: `${providerName(e.providerId) ? providerName(e.providerId) + ' · ' : ''}${e.modelId}（当前）` }] : []),
                         ...allModels.map(m => ({ value: `${m.providerId}::${m.modelId}`, label: m.label })),
                         ...(allModels.length === 0 ? [{ value: '::', label: '（未配置供应商）', disabled: true }] : [])
                       ]}

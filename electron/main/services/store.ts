@@ -2,7 +2,7 @@ import Store from 'electron-store'
 import { safeStorage, app } from 'electron'
 import fs from 'fs'
 import path from 'path'
-import { ProviderConfig, AppSettings, McpServerConfig, WebhookBot, RemoteModelConf, SshConnection } from '../../../src/shared/ipc-types'
+import { ProviderConfig, AppSettings, McpServerConfig, WebhookBot, RemoteModelConf, SshConnection, SshConnectionMeta } from '../../../src/shared/ipc-types'
 
 interface StoreSchema {
   providers: ProviderConfig[]
@@ -43,6 +43,8 @@ const defaults: StoreSchema = {
     kbGlobalEnabled: false,
     kbGlobalSpaceIds: [],
     memoryAutoCapture: true,
+    autoArchiveDays: 30,
+    autoPruneEmptyChats: true,
     computerUseEnabled: false,
     computerUsePrivacyCurtain: false,
     dataDirectory: '',
@@ -265,6 +267,14 @@ export function getSshConnections(): SshConnection[] {
  *  Never crosses IPC to the renderer. */
 export function getSshConnection(id: string): SshConnection | null {
   return getSshConnections().find(c => c.id === id) ?? null
+}
+
+/** Credential-free connection summaries for the @-mention picker. Reads the raw
+ *  store WITHOUT decrypting any secret — only id/name/host/port/username/group
+ *  cross IPC, never password/privateKey/passphrase. */
+export function listSshMeta(): SshConnectionMeta[] {
+  const raw = (getStore().get('sshConnections') ?? []) as SshConnection[]
+  return raw.map(c => ({ id: c.id, name: c.name, host: c.host, port: c.port, username: c.username, group: c.group }))
 }
 
 export function saveSshConnection(conn: SshConnection): void {

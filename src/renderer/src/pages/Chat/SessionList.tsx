@@ -1,5 +1,5 @@
 import { useState, useMemo, useRef, useEffect } from 'react'
-import { Plus, MessageSquare, Trash2, Search, X, Loader2, Archive, ArchiveRestore, Users } from 'lucide-react'
+import { Plus, MessageSquare, Trash2, Search, X, Loader2, Archive, ArchiveRestore, Users, Pin, PinOff, ChevronDown, ChevronRight } from 'lucide-react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { cn } from '../../lib/utils'
 import type { Session, EmployeeInfo } from '../../../../shared/ipc-types'
@@ -22,6 +22,8 @@ interface Props {
   onNewGroup?: () => void
   onDelete: (id: string) => void
   onArchive: (id: string, archived: boolean) => void
+  /** Pin / unpin a session (top「置顶」section + excluded from auto-archive). */
+  onPin: (id: string, pinned: boolean) => void
 }
 
 const DAY = 86_400_000
@@ -41,13 +43,16 @@ function bucketSession(ts: number, now: number): { label: string; rank: number }
 // headers and session items so we can pump everything through a single
 // useVirtualizer with row-type-aware height estimation.
 type Row =
-  | { kind: 'header'; label: string; count: number }
+  | { kind: 'header'; label: string; count: number; collapsed: boolean }
   | { kind: 'session'; session: Session }
+
+// Old buckets collapse by default so the list stays short; recent + 置顶 stay open.
+const DEFAULT_COLLAPSED = ['过去 30 天', '更早']
 
 const HEADER_HEIGHT = 30
 const SESSION_HEIGHT = 38
 
-export function SessionList({ sessions, activeId, runningSessionIds, employees, onSelect, onNew, onNewGroup, onDelete, onArchive }: Props) {
+export function SessionList({ sessions, activeId, runningSessionIds, employees, onSelect, onNew, onNewGroup, onDelete, onArchive, onPin }: Props) {
   const width = useUIStore(u => u.chatSidebarWidth)
   const employeeMap = useMemo(() => {
     const m = new Map<string, EmployeeInfo>()
@@ -59,7 +64,11 @@ export function SessionList({ sessions, activeId, runningSessionIds, employees, 
   const [contentMatchedIds, setContentMatchedIds] = useState<Set<string> | null>(null)
   const [searching, setSearching] = useState(false)
   const [showArchived, setShowArchived] = useState(false)
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set(DEFAULT_COLLAPSED))
   const scrollRef = useRef<HTMLDivElement>(null)
+  function toggleCollapse(label: string) {
+    setCollapsed(prev => { const n = new Set(prev); n.has(label) ? n.delete(label) : n.add(label); return n })
+  }
 
   // Full-text search: when the user types a query, hit the backend for the
   // union of (title match) + (any message content match). Debounced so we
@@ -105,10 +114,24 @@ export function SessionList({ sessions, activeId, runningSessionIds, employees, 
       })
       .sort((a, b) => (b.updatedAt ?? b.createdAt) - (a.updatedAt ?? a.createdAt))
 
+    // While searching, force everything expanded so matches aren't hidden.
+    const searching = !!q
+    const isCollapsed = (label: string) => !searching && collapsed.has(label)
     const out: Row[] = []
+    const emit = (label: string, items: Session[]) => {
+      const c = isCollapsed(label)
+      out.push({ kind: 'header', label, count: items.length, collapsed: c })
+      if (!c) for (const s of items) out.push({ kind: 'session', session: s })
+    }
+
+    // Pinned conversations float to a top「置顶」section (kept out of time buckets).
+    const pinned = matched.filter(s => s.pinned === 1)
+    const rest = matched.filter(s => s.pinned !== 1)
+    if (pinned.length) emit('置顶', pinned)
+
     const groups: Array<{ label: string; rank: number; items: Session[] }> = []
     const map = new Map<string, { label: string; rank: number; items: Session[] }>()
-    for (const s of matched) {
+    for (const s of rest) {
       const ts = s.updatedAt ?? s.createdAt
       const { label, rank } = bucketSession(ts, now)
       const existing = map.get(label)
@@ -120,13 +143,10 @@ export function SessionList({ sessions, activeId, runningSessionIds, employees, 
       }
     }
     groups.sort((a, b) => a.rank - b.rank)
-    for (const g of groups) {
-      out.push({ kind: 'header', label: g.label, count: g.items.length })
-      for (const s of g.items) out.push({ kind: 'session', session: s })
-    }
+    for (const g of groups) emit(g.label, g.items)
 
     return out
-  }, [sessions, query, dateFilter, showArchived, contentMatchedIds])
+  }, [sessions, query, dateFilter, showArchived, contentMatchedIds, collapsed])
 
   const virtualizer = useVirtualizer({
     count: rows.length,
@@ -234,10 +254,14 @@ export function SessionList({ sessions, activeId, runningSessionIds, employees, 
                   }}
                 >
                   {row.kind === 'header' ? (
-                    <h4 className="px-2 pt-2 pb-1 text-[11px] font-semibold text-muted-foreground/55 uppercase tracking-wider select-none">
-                      {row.label}
-                      <span className="ml-1.5 text-muted-foreground/40 font-normal normal-case">{row.count}</span>
-                    </h4>
+                    <button
+                      onClick={() => toggleCollapse(row.label)}
+                      className="w-full flex items-center gap-1 px-1.5 pt-2 pb-1 text-[11px] font-semibold text-muted-foreground/55 uppercase tracking-wider select-none hover:text-muted-foreground transition-colors"
+                    >
+                      {row.collapsed ? <ChevronRight size={12} className="shrink-0" /> : <ChevronDown size={12} className="shrink-0" />}
+                      <span className="normal-case">{row.label}</span>
+                      <span className="text-muted-foreground/40 font-normal normal-case">{row.count}</span>
+                    </button>
                   ) : (
                     <SessionItem
                       session={row.session}
@@ -250,6 +274,7 @@ export function SessionList({ sessions, activeId, runningSessionIds, employees, 
                       onSelect={onSelect}
                       onDelete={onDelete}
                       onArchive={onArchive}
+                      onPin={onPin}
                     />
                   )}
                 </div>
@@ -263,7 +288,7 @@ export function SessionList({ sessions, activeId, runningSessionIds, employees, 
 }
 
 function SessionItem({
-  session, active, running, employee, groupEmployees, onSelect, onDelete, onArchive
+  session, active, running, employee, groupEmployees, onSelect, onDelete, onArchive, onPin
 }: {
   session: Session
   active: boolean
@@ -273,8 +298,10 @@ function SessionItem({
   onSelect: (id: string) => void
   onDelete: (id: string) => void
   onArchive: (id: string, archived: boolean) => void
+  onPin: (id: string, pinned: boolean) => void
 }) {
   const isArchived = session.archived === 1
+  const isPinned = session.pinned === 1
   const isGroup = !!groupEmployees && groupEmployees.length > 0
   const empDept = employee ? dept(employee.dept) : null
   return (
@@ -314,6 +341,14 @@ function SessionItem({
           {formatCostUsd(session.totalCostUsd)}
         </span>
       )}
+      <button
+        onClick={(e) => { e.stopPropagation(); onPin(session.id, !isPinned) }}
+        title={isPinned ? '取消置顶' : '置顶（排到列表最前，且不被自动归档）'}
+        className={cn('transition-opacity p-0.5 rounded hover:text-foreground shrink-0',
+          isPinned ? 'opacity-100 text-primary' : 'opacity-0 group-hover:opacity-100')}
+      >
+        {isPinned ? <PinOff size={11} /> : <Pin size={11} />}
+      </button>
       <button
         onClick={(e) => { e.stopPropagation(); onArchive(session.id, !isArchived) }}
         title={isArchived ? '取消归档' : '归档（从列表隐藏，不删除）'}

@@ -628,6 +628,14 @@ app.whenReady().then(async () => {
     console.warn('[startup] scheduler start failed:', (e as Error).message)
   }
 
+  // 会话列表自动收敛：开机先整理一次（清空废「新对话」+ 归档久未活动），之后每 ~3h 一次。
+  try {
+    const { startSessionTidy } = await import('./services/session-tidy')
+    startSessionTidy()
+  } catch (e) {
+    console.warn('[startup] session tidy start failed:', (e as Error).message)
+  }
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })

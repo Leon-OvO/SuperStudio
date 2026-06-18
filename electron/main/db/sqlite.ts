@@ -387,6 +387,9 @@ function applyMigrations(): void {
   // v20: 区分「工作流」与「图片画布」—— 两者共用 workflows 表与执行引擎，用 kind 分流，
   // 列表各管各的。NULL/'workflow' = 自动化工作流；'canvas' = 图片创作画布。
   try { db.run(`ALTER TABLE workflows ADD COLUMN kind TEXT NOT NULL DEFAULT 'workflow'`) } catch { /* already exists */ }
+  // v21: 会话置顶 —— 置顶的会话排在列表最前的「置顶」区，且不参与自动归档。
+  // 1 = 置顶；0/NULL = 普通。
+  try { db.run(`ALTER TABLE sessions ADD COLUMN pinned INTEGER DEFAULT 0`) } catch { /* already exists */ }
 }
 
 // Helper: run a query and save

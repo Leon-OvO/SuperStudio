@@ -1,7 +1,7 @@
 import { streamText, tool, jsonSchema, type Tool, type CoreMessage } from 'ai'
 import { z } from 'zod'
 import { BrowserWindow } from 'electron'
-import { IPC, AgentProgressEvent } from '../../../src/shared/ipc-types'
+import { IPC, AgentProgressEvent, type AgentPhase, type AgentPhaseEvent, type ContextRef } from '../../../src/shared/ipc-types'
 import { parseJsonLoose } from '../../../src/shared/json-repair'
 import { BRAND } from '../../../src/shared/brand'
 import { createLLMClient, thinkingStreamOpts, effectiveProtocol } from '../services/llm'
@@ -21,6 +21,7 @@ import { publishXiaohongshuNote } from '../services/web-publish-playwright'
 import { saveGalleryItem } from '../services/gallery'
 import { mcpManager, type McpTool } from '../services/mcp'
 import { getActiveSkillsForScenario, type InstalledSkill } from '../services/skills-db'
+import { scanWorkdirSkills, readWorkdirMcpConfigs } from '../services/workdir-extensions'
 import { getEmployee } from '../services/employees-db'
 import { getSoul } from '../services/talent-pool'
 import { buildSkillTools } from './skill-tools'
@@ -59,6 +60,12 @@ interface RunParams {
    *  when the session model is a chat model — uses the configured DEFAULT image
    *  provider/model. Lets a single conversation mix chat turns and image turns. */
   forceImage?: boolean
+  /** @-mentioned SSH connections (ids) pinned for THIS turn — ssh_exec defaults to
+   *  the first when the model omits `connection`; all are listed in the prompt. */
+  sshDefaultConnIds?: string[]
+  /** @-mentioned context the user pinned for THIS turn (a prior message to follow
+   *  up on, a produced file, or "the whole conversation"). Injected as a note. */
+  contextRefs?: ContextRef[]
   /** Group chat: this run is ONE employee's turn inside a multi-agent round. When
    *  set, runAgent uses this employee's model + soul persona (not the session's
    *  single binding), skips inserting a user message (the orchestrator inserts it
@@ -130,8 +137,10 @@ export async function runAgent(
   params: RunParams,
   win: BrowserWindow
 ): Promise<void> {
-  const { sessionId, message, attachments = [], overrideProviderId, overrideModel, mountedSpaceIds = [], imageSize, imageQuality, imageCount, scheduledContext = false, computerMode = false, forceImage = false, groupTurn } = params
+  const { sessionId, message, attachments = [], overrideProviderId, overrideModel, mountedSpaceIds = [], imageSize, imageQuality, imageCount, scheduledContext = false, computerMode = false, forceImage = false, groupTurn, sshDefaultConnIds = [], contextRefs = [] } = params
   const runStartTime = Date.now()
+  // Ephemeral 工作目录 MCP server ids registered for THIS run — reaped in finally.
+  const ephemeralMcpIds: string[] = []
   console.log('[Agent] runAgent called', { sessionId, msgLen: message.length, atts: attachments.length, overrideProviderId, overrideModel })
   // Set when a Computer Use run minimizes the main window (to get it out of the
   // way of the target app); the run-end finally restores it for interactive runs.
@@ -161,6 +170,50 @@ export async function runAgent(
   const emit = (event: Omit<AgentProgressEvent, 'sessionId'>) => {
     if (isStaleRun()) return
     win.webContents.send(IPC.AGENT_PROGRESS, { ...event, sessionId })
+  }
+
+  // --- Phase tracking (Feature 1): the run's coarse "what is it doing NOW" phase
+  // (等待响应 / 思考 / 工具 / 输出) + per-phase wall-clock. A long first-byte wait
+  // then reads as honest progress with a live clock + pre-timeout warning, instead
+  // of a single static spinner. setPhase accumulates the prior phase's elapsed.
+  const sendPhase = (ev: Omit<AgentPhaseEvent, 'sessionId'>): void => {
+    if (isStaleRun()) return
+    win.webContents.send(IPC.AGENT_PHASE, { ...ev, sessionId })
+  }
+  const phaseDurations = new Map<string, number>()
+  let curPhase: AgentPhase | null = null
+  let curPhaseLabel = ''
+  let curPhaseStart = runStartTime
+  let phaseWarned = false
+  const setPhase = (phase: AgentPhase, label: string, toolName?: string): void => {
+    const now = Date.now()
+    if (curPhase && curPhase !== phase) {
+      phaseDurations.set(curPhase, (phaseDurations.get(curPhase) ?? 0) + (now - curPhaseStart))
+      curPhaseStart = now
+    } else if (!curPhase) {
+      curPhaseStart = now
+    }
+    curPhase = phase
+    curPhaseLabel = label
+    phaseWarned = false
+    sendPhase({ phase, label, toolName, status: 'ok', startedAt: curPhaseStart })
+  }
+  // Re-emit the current phase with a health status (slow / about-to-timeout) WITHOUT
+  // resetting its clock — drives the amber "响应较慢 / 即将超时" banner.
+  const warnPhase = (status: AgentPhaseEvent['status'], label: string): void => {
+    if (!curPhase) return
+    phaseWarned = true
+    sendPhase({ phase: curPhase, label, status, startedAt: curPhaseStart })
+  }
+  // Resumed activity after a warning → clear the amber back to OK (same phase/clock).
+  const clearWarn = (): void => {
+    if (!phaseWarned || !curPhase) return
+    phaseWarned = false
+    sendPhase({ phase: curPhase, label: curPhaseLabel, status: 'ok', startedAt: curPhaseStart })
+  }
+  const finalizePhases = (): Array<{ phase: string; ms: number }> => {
+    if (curPhase) phaseDurations.set(curPhase, (phaseDurations.get(curPhase) ?? 0) + (Date.now() - curPhaseStart))
+    return [...phaseDurations.entries()].map(([phase, ms]) => ({ phase, ms })).filter(p => p.ms >= 50)
   }
 
   // Bound global concurrency: a burst of scheduled tasks (or many windows) must
@@ -213,9 +266,12 @@ export async function runAgent(
   // throws. A leaked slot here would permanently shrink the shared pool and,
   // once drained, freeze every later 对话 + 工作台 run at acquire().
   try {
+    // Phase: preparing (MCP listing / KB / prompt build all add real latency the
+    // user feels before the first token) → reads as "正在准备…" with a live clock.
+    setPhase('connecting', '正在准备…')
     // Fetch MCP tools BEFORE building the system prompt so we can describe
     // them inline + decide whether to suppress overlapping builtin tools.
-    const mcpTools = await mcpManager.listAllTools().catch(err => {
+    let mcpTools = await mcpManager.listAllTools().catch(err => {
       console.warn('[Agent] MCP listAllTools failed:', (err as Error).message)
       return [] as McpTool[]
     })
@@ -248,8 +304,32 @@ export async function runAgent(
     // project roots) — it persists for the process and is visible to later runs of
     // other sessions. Acceptable because it only ever trusts a directory the user
     // explicitly picked this session and is never restored on startup.
+    const toolCallLog: Array<{ toolName: string; args: unknown; result: unknown }> = []
+    let stepIndex = 0
     const workingDir = readSessionWorkingDir(sessionId)
     if (workingDir) registerApprovedRoot(workingDir)
+    // 工作目录扩展（随对话临时生效）：把 <workdir>/.claude/skills 与 <workdir>/.mcp.json
+    // 里的技能 / MCP 仅为本轮加载——不写 DB、不进全局设置、不复制到 userData，换目录即失效。
+    if (workingDir) {
+      try {
+        const have = new Set(activeSkills.map(s => s.name.toLowerCase()))
+        const wd = scanWorkdirSkills(workingDir, 'chat').filter(s => !have.has(s.name.toLowerCase()))
+        if (wd.length) activeSkills = [...activeSkills, ...wd]
+      } catch (e) { console.warn('[Agent] 工作目录技能加载失败：', (e as Error).message) }
+      try {
+        const wdMcp = readWorkdirMcpConfigs(workingDir)
+        if (wdMcp.length) {
+          const wdTools = await mcpManager.listToolsForConfigs(wdMcp)
+          mcpTools = [...mcpTools, ...wdTools]
+          ephemeralMcpIds.push(...wdMcp.map(c => c.id))
+        }
+      } catch (e) { console.warn('[Agent] 工作目录 MCP 加载失败：', (e as Error).message) }
+      const wdSkillCount = activeSkills.filter(s => s.sourceUrl === 'workdir').length
+      if (wdSkillCount || ephemeralMcpIds.length) {
+        console.log(`[Agent] 工作目录扩展：${wdSkillCount} 技能 · ${ephemeralMcpIds.length} MCP`)
+        emit({ stepIndex: stepIndex++, stepName: '工作目录扩展', status: 'done', message: `已加载 ${wdSkillCount} 个技能 · ${ephemeralMcpIds.length} 个 MCP（来自工作目录）` })
+      }
+    }
     // Bound employee (single chat) OR group speaker → its soul persona becomes the
     // conversation's identity (woven into the base section inside buildSystemPrompt,
     // so it isn't overridden by the generic "you are an assistant" line). A group
@@ -283,8 +363,20 @@ export async function runAgent(
         : undefined
     const systemPrompt = buildSystemPrompt(kbContext, mcpTools, activeSkills, scheduledContext, workingDir, persona)
 
-    const toolCallLog: Array<{ toolName: string; args: unknown; result: unknown }> = []
-    let stepIndex = 0
+    // @-mentioned context the user pinned for THIS turn (引用某条历史消息 / 已生成产物 /
+    // 整段对话摘要) — injected ahead of the user message so the follow-up is anchored
+    // to exactly what they referenced. File refs are routed in as attachments instead.
+    const turnContextParts: string[] = []
+    for (const ref of contextRefs) {
+      if (ref.kind === 'message' && ref.text?.trim()) {
+        turnContextParts.push(`【用户引用了本对话中的一条消息作为追问对象${ref.label ? `（${ref.label}）` : ''}】\n"""\n${ref.text.trim()}\n"""\n请围绕这条被引用的内容来理解并回答下面的追问。`)
+      } else if (ref.kind === 'summary') {
+        turnContextParts.push(`【用户希望你基于本对话的整体内容来理解这次追问】完整对话历史已在上文，请综合全程来回答，而非只看最后一句。`)
+      } else if (ref.kind === 'file' && ref.path) {
+        turnContextParts.push(`【用户引用了一个已生成/已有文件作为追问对象】绝对路径：${ref.path}（可直接用对应工具读取/处理它）。`)
+      }
+    }
+    const turnContext = turnContextParts.length ? turnContextParts.join('\n\n') + '\n\n' : ''
 
     let streamErr: Error | null = null
     if (!effectiveProviderId || !effectiveModel) {
@@ -303,6 +395,7 @@ export async function runAgent(
       if (!imgModel || !imgProviderId) {
         throw new Error('请先在「设置 → 模型」配置默认图片模型，再开启「生成图片」。')
       }
+      setPhase('generating', '正在生成图片…')
       await runDirectImageGeneration({ message, sessionId, settings, emit, win, toolCallLog, providerId: imgProviderId, providerName: imgProviderName, model: imgModel, imageSize, imageQuality, imageCount, attachments, runStartTime, isStale: isStaleRun })
       return
     }
@@ -329,7 +422,7 @@ export async function runAgent(
       // small "what do I click next" decision, so per-click extended thinking just
       // adds latency. Trades a little reasoning depth for much snappier actions.
       const thinkOpts = thinkingStreamOpts(provType, 'fast', effectiveModel)
-      const history = await buildMessageHistory(sessionId, message, attachments, effectiveModel)
+      const history = await buildMessageHistory(sessionId, message, attachments, effectiveModel, turnContext)
       const asstMsgId = randomUUID()
       const cuLog: Array<{ toolName: string; args: unknown; result: unknown }> = []
       let fullText = ''
@@ -1353,10 +1446,18 @@ export async function runAgent(
       const connList = sshConns.length
         ? sshConns.map(c => `${c.name}(${c.username}@${c.host})`).join('、')
         : '（无，请先去「设置 → SSH 连接」添加）'
+      // @-mentioned 默认服务器（本轮）：用户用 @ 选中的连接成为 ssh_exec 的默认目标。
+      const pinnedConns = sshDefaultConnIds
+        .map(id => sshConns.find(c => c.id === id))
+        .filter((c): c is NonNullable<typeof c> => !!c)
+      const defaultConnName = pinnedConns[0]?.name
+      const pinnedDesc = pinnedConns.length
+        ? `本轮用户已用 @ 指定默认服务器：${pinnedConns.map(c => `${c.name}(${c.username}@${c.host})`).join('、')}。未指定 connection 时默认用「${defaultConnName}」；要换机器才显式传 connection。`
+        : ''
       allTools.ssh_exec = tool({
         description:
           '在【预配置的 SSH 连接】上的远程服务器执行一条 shell 命令，返回 { host, exitCode, stdout, stderr }。' +
-          `可用连接：${connList}。connection 传连接名（或其 id）。` +
+          `可用连接：${connList}。connection 传连接名（或其 id）。` + pinnedDesc +
           'connection 传 "localhost"（或 127.0.0.1 / 本机）则直接在【本机】执行（走本地 shell，无需配置 SSH，等价于 run_script）。' +
           '凭据由本机加密保管，你不会也无需知道密码/私钥。每条命令独立执行（不保留工作目录），' +
           '需要切目录就用 `cd /path && 命令`。' +
@@ -1365,10 +1466,14 @@ export async function runAgent(
           '远程连接首次执行会弹窗请用户确认。' +
           '危险/不可逆操作（删除、重启、改配置等）执行前应在回复里向用户说明。',
         parameters: z.object({
-          connection: z.string().describe('已配置的 SSH 连接名称或 id'),
+          connection: z.string().optional().describe(defaultConnName
+            ? `已配置的 SSH 连接名称或 id。省略则用本轮默认「${defaultConnName}」`
+            : '已配置的 SSH 连接名称或 id'),
           command: z.string().describe('要在远程服务器上执行的 shell 命令'),
         }),
-        execute: async ({ connection, command }) => {
+        execute: async ({ connection: rawConnection, command }) => {
+          // Fall back to the @-mentioned default when the model omits connection.
+          const connection = (rawConnection && rawConnection.trim()) ? rawConnection : (defaultConnName ?? '')
           const myIdx = stepIndex++
           const connLc = (connection || '').trim().toLowerCase()
           const isLocalhost = connLc === 'localhost' || connLc === '127.0.0.1' || connLc === '::1' || connLc === 'local' || connLc === '本机' || connLc === '本地'
@@ -1624,7 +1729,7 @@ export async function runAgent(
           groupTurn.mode === 'collaborate'
             ? `（轮到你「${groupTurn.speakerName}」。${groupTurn.task ? '你的任务：' + groupTurn.task + '。' : ''}请实际动手，按系统提示把你负责的部分写进交付物文件。）`
             : undefined)
-      : await buildMessageHistory(sessionId, message, attachments, effectiveModel)
+      : await buildMessageHistory(sessionId, message, attachments, effectiveModel, turnContext)
     // Effective protocol (not raw provider.type) — so an auto-routed Claude model
     // on a SuperCode 'custom' provider still gets Anthropic prompt-caching + thinking.
     const providerConfig = allProviders.find(p => p.id === effectiveProviderId)
@@ -1653,9 +1758,22 @@ export async function runAgent(
     const combinedSignal = AbortSignal.any([abort.signal, stallCtl.signal, progressCtl.signal])
     let stalled = false
     let stallTimer: ReturnType<typeof setTimeout> | null = null
+    // Soft pre-warning (Feature 1): before the hard stall fires, nudge the UI amber
+    // so a genuinely-slow model reads as "still waiting", not frozen — and gives a
+    // heads-up that a timeout is near so the user can Stop + retry early.
+    let softWarn1: ReturnType<typeof setTimeout> | null = null
+    let softWarn2: ReturnType<typeof setTimeout> | null = null
+    const clearStallTimers = (): void => {
+      if (stallTimer) { clearTimeout(stallTimer); stallTimer = null }
+      if (softWarn1) { clearTimeout(softWarn1); softWarn1 = null }
+      if (softWarn2) { clearTimeout(softWarn2); softWarn2 = null }
+    }
     const armStall = (ms: number = SILENT_WORK_MS): void => {
-      if (stallTimer) clearTimeout(stallTimer)
+      clearStallTimers()
       stallTimer = setTimeout(() => { if (!combinedSignal.aborted) { stalled = true; stallCtl.abort() } }, ms)
+      const warnAt = Math.min(45000, Math.floor(ms * 0.5))
+      softWarn1 = setTimeout(() => { if (!combinedSignal.aborted) warnPhase('slow', '响应较慢，仍在等待模型…') }, warnAt)
+      softWarn2 = setTimeout(() => { if (!combinedSignal.aborted) warnPhase('timeout-soon', '即将超时，可点「停止」后重试') }, Math.floor(ms * 0.85))
     }
 
     // 扩展思考策略(B)：按设置把 Anthropic 的 thinking providerOptions 注入。auto=不动。
@@ -1729,16 +1847,21 @@ export async function runAgent(
           if (combinedSignal.aborted) break
           // 吐字间隙用紧窗口，其余「干活不吐字」阶段(思考/工具)给宽窗口。
           armStall(part.type === 'text-delta' ? STREAM_GAP_MS : SILENT_WORK_MS)
+          clearWarn() // resumed activity → drop any amber "响应较慢/即将超时" banner
           if (part.type === 'reasoning' && part.textDelta) {
+            if (curPhase !== 'thinking') setPhase('thinking', '正在思考…')
             if (!inReasoning) { inReasoning = true; sendDelta('<think>') }
             reasoningText += part.textDelta
             sendDelta(part.textDelta)
           } else if (part.type === 'text-delta' && part.textDelta) {
+            if (curPhase !== 'responding') setPhase('responding', '正在输出回复…')
             closeThink()
             fullText += part.textDelta
             chunkCount++
             sendDelta(part.textDelta)
           } else if (part.type === 'tool-call') {
+            const tn = (part as { toolName?: string }).toolName
+            setPhase('tool', tn ? `执行 ${tn}…` : '执行工具…', tn)
             closeThink()
           } else if (part.type === 'error') {
             streamErr = part.error as Error
@@ -1749,10 +1872,13 @@ export async function runAgent(
         console.error('[Agent] fullStream iteration threw', iterErr)
         streamErr = iterErr as Error
       } finally {
-        if (stallTimer) clearTimeout(stallTimer)
+        clearStallTimers()
       }
     }
     console.log('[Agent] streaming started')
+    // Phase: request sent, now blocked on the model's first byte — the wait users
+    // most often misread as "frozen". A live clock + heartbeat makes it legible.
+    setPhase('connecting', '等待模型响应…')
     let retriedEmpty = false
     let result = makeStream([])
     await consumeStream(result)
@@ -2015,6 +2141,7 @@ export async function runAgent(
       ...(outTok != null ? { outputTokens: outTok } : {}),
       ...(costUsd != null ? { costUsd } : {}),
       ...(incomplete ? { incomplete: true } : {}),
+      ...(() => { const ph = finalizePhases(); return ph.length ? { phases: ph } : {} })(),
       ...(debugBundle ? { debug: debugBundle } : {})
     }
 
@@ -2090,6 +2217,8 @@ export async function runAgent(
   } finally {
     // Only evict our own entry — a newer run for this session must survive.
     if (runningAgents.get(sessionId) === abort) runningAgents.delete(sessionId)
+    // Reap ephemeral 工作目录 MCP subprocesses opened for this run.
+    if (ephemeralMcpIds.length) void mcpManager.disconnectEphemeral(ephemeralMcpIds)
     // Tear down any Computer Use arming (overlay + global Esc) when the run ends.
     disarmComputerUse()
     // Restore the main window if a Computer Use run minimized it (interactive only).
@@ -2177,7 +2306,8 @@ async function buildMessageHistory(
   sessionId: string,
   currentMessage: string,
   attachments: Array<{ name: string; path: string; mimeType: string }>,
-  effectiveModel?: string
+  effectiveModel?: string,
+  extraContext = ''
 ) {
   // Pull tool_calls + attachments too — prior-turn artifacts/attachment paths
   // would otherwise vanish, so a follow-up like "edit that image" / "add a
@@ -2230,9 +2360,13 @@ async function buildMessageHistory(
   const priorKnown = [...knownPaths].filter(p => !currentPaths.has(p))
   const manifestSections: string[] = []
   if (attachments.length) {
+    // List each attachment by its file name; the composer inserts name-based pointer
+    // tokens (【图:文件名】/【文件:文件名】) when the user @-references one, so the model
+    // resolves a token to the same-named entry here.
+    const lines = attachments.map(a => `  - ${a.name}  (${a.mimeType})\n      绝对路径: ${a.path}`).join('\n')
     manifestSections.push(
-      `用户本次附加了 ${attachments.length} 个文件，绝对路径如下：\n` +
-      attachments.map((a, i) => `  [${i + 1}] ${a.name}  (${a.mimeType})\n      绝对路径: ${a.path}`).join('\n')
+      `用户本次附加了 ${attachments.length} 个文件，绝对路径如下：\n` + lines +
+      `\n（用户消息里出现的【图:文件名】或【文件:文件名】就指代上面对应文件名的那个附件。）`
     )
   }
   if (priorKnown.length) {
@@ -2241,10 +2375,10 @@ async function buildMessageHistory(
       priorKnown.map(p => `  - ${p}`).join('\n')
     )
   }
-  const manifest = manifestSections.length
+  const manifest = (extraContext || '') + (manifestSections.length
     ? manifestSections.join('\n\n') +
       `\n\n如需读取、修改或分析上述文件，请把"绝对路径"完整拷贝到工具调用的 filePath / imagePath / referenceImagePath 参数里（不要发明新路径，也不要省略盘符）。\n\n`
-    : ''
+    : '')
 
   let userContent: string | UserPart[] = manifest ? manifest + currentMessage : currentMessage
   if (attachments.length) {

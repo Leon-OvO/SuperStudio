@@ -44,6 +44,7 @@ export function sessionHandlers(): void {
              s.updated_at AS updatedAt,
              COALESCE(s.archived, 0) AS archived,
              COALESCE(s.is_scheduled, 0) AS isScheduled,
+             COALESCE(s.pinned, 0) AS pinned,
              s.working_dir AS workingDir,
              s.employee_id AS employeeId,
              s.group_employee_ids AS groupEmployeeIdsJson,
@@ -122,6 +123,13 @@ export function sessionHandlers(): void {
     // Archiving a chat = a natural "done" signal → distill long-term memories
     // from it in the background (best-effort, never blocks the reply).
     if (archived) void captureSessionMemoryInBackground(id)
+    return { ok: true }
+  })
+
+  // Pin / unpin a conversation. Pinned sessions sort into a top「置顶」section and
+  // are excluded from auto-archive (see session-tidy.ts).
+  ipcMain.handle(IPC.SESSIONS_SET_PINNED, (_e, id: string, pinned: boolean) => {
+    dbRun(`UPDATE sessions SET pinned = ? WHERE id = ?`, [pinned ? 1 : 0, id])
     return { ok: true }
   })
 

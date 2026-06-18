@@ -1,6 +1,6 @@
 import { tool, type Tool } from 'ai'
 import { z } from 'zod'
-import { readSkillResource } from '../services/skill-files'
+import { readSkillResource, readSkillResourceAt } from '../services/skill-files'
 import { runShell } from '../services/shell'
 import type { InstalledSkill } from '../services/skills-db'
 
@@ -93,7 +93,12 @@ export function buildSkillTools(opts: BuildSkillToolsOpts): Record<string, Tool>
           return result
         }
         try {
-          const content = readSkillResource(found.id, p)
+          // Ephemeral 工作目录 skills live at their original on-disk path (installPath),
+          // not under userData/skills — resolve from installPath when present so their
+          // bundled references load too. For installed skills installPath === skillDir(id).
+          const content = found.installPath
+            ? readSkillResourceAt(found.installPath, p)
+            : readSkillResource(found.id, p)
           hooks?.onResult?.('read_skill_file', { skill, path: p }, { bytes: content.length }, false)
           return { content }
         } catch (e) {

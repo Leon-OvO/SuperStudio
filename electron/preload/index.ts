@@ -125,6 +125,13 @@ const api = {
     ipcRenderer.invoke(IPC.SESSIONS_SET_WORKING_DIR, id, dir) as Promise<{ ok: boolean; error?: string; workingDir?: string }>,
   setSessionAssignee: (id: string, employeeId: string | null) =>
     ipcRenderer.invoke(IPC.SESSIONS_SET_ASSIGNEE, id, employeeId) as Promise<{ ok: boolean }>,
+  setSessionPinned: (id: string, pinned: boolean) =>
+    ipcRenderer.invoke(IPC.SESSIONS_SET_PINNED, id, pinned) as Promise<{ ok: boolean }>,
+  onSessionsChanged: (cb: () => void) => {
+    const listener = () => cb()
+    ipcRenderer.on(IPC.SESSIONS_CHANGED, listener)
+    return () => ipcRenderer.removeListener(IPC.SESSIONS_CHANGED, listener)
+  },
   addGroupMember: (id: string, employeeId: string) =>
     ipcRenderer.invoke(IPC.SESSIONS_ADD_MEMBER, id, employeeId) as Promise<{ ok: boolean; groupEmployeeIds: string[] }>,
   removeGroupMember: (id: string, employeeId: string) =>
@@ -145,7 +152,7 @@ const api = {
     sessionId: string,
     message: string,
     attachments?: unknown[],
-    overrides?: { providerId?: string; model?: string; mountedSpaceIds?: string[]; imageSize?: string; imageQuality?: string; imageCount?: number; computerMode?: boolean; forceImage?: boolean }
+    overrides?: { providerId?: string; model?: string; mountedSpaceIds?: string[]; imageSize?: string; imageQuality?: string; imageCount?: number; computerMode?: boolean; forceImage?: boolean; sshDefaultConnIds?: string[]; contextRefs?: import('../../src/shared/ipc-types').ContextRef[] }
   ) => ipcRenderer.invoke(IPC.AGENT_RUN, sessionId, message, attachments, overrides),
   stopAgent: (sessionId: string) => ipcRenderer.invoke(IPC.AGENT_STOP, sessionId),
   // --- Group chat (multi-agent) ---
@@ -157,6 +164,11 @@ const api = {
   onAgentProgress: (cb: (event: unknown) => void) => {
     ipcRenderer.on(IPC.AGENT_PROGRESS, (_e, data) => cb(data))
     return () => ipcRenderer.removeAllListeners(IPC.AGENT_PROGRESS)
+  },
+  onAgentPhase: (cb: (event: unknown) => void) => {
+    const listener = (_e: unknown, data: unknown) => cb(data)
+    ipcRenderer.on(IPC.AGENT_PHASE, listener)
+    return () => ipcRenderer.removeListener(IPC.AGENT_PHASE, listener)
   },
   onAgentDelta: (cb: (data: { sessionId: string; messageId: string; delta: string; speakerEmployeeId?: string }) => void) => {
     const listener = (_e: unknown, data: { sessionId: string; messageId: string; delta: string; speakerEmployeeId?: string }) => cb(data)
@@ -318,6 +330,8 @@ const api = {
 
   // --- SSH connections (Agent remote execution) ---
   sshListConnections: () => ipcRenderer.invoke(IPC.SSH_LIST),
+  /** Credential-free connection summaries for the @-mention picker. */
+  sshListMeta: () => ipcRenderer.invoke(IPC.SSH_LIST_META) as Promise<import('../../src/shared/ipc-types').SshConnectionMeta[]>,
   sshSaveConnection: (conn: unknown) => ipcRenderer.invoke(IPC.SSH_SAVE, conn),
   sshDeleteConnection: (id: string) => ipcRenderer.invoke(IPC.SSH_DELETE, id),
   sshTestConnection: (conn: unknown) => ipcRenderer.invoke(IPC.SSH_TEST, conn) as Promise<{ ok: boolean; error?: string }>,
@@ -440,6 +454,7 @@ const api = {
     ipcRenderer.on(IPC.TERMINAL_EXIT, listener)
     return () => ipcRenderer.removeListener(IPC.TERMINAL_EXIT, listener)
   },
+
 
   // --- Scheduled prompts ---
   listScheduledTasks: () => ipcRenderer.invoke(IPC.SCHEDULER_LIST) as Promise<ScheduledTask[]>,
