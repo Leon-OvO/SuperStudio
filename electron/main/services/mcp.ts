@@ -6,6 +6,7 @@ import { randomUUID } from 'crypto'
 import fs from 'fs'
 import path from 'path'
 import type { McpServerConfig } from '../../../src/shared/ipc-types'
+import { userAgent } from './ua'
 import { getMcpServers, getSettings } from './store'
 import { saveGalleryItem } from './gallery'
 import { flattenMcpTools } from '../agent/pure'
@@ -186,7 +187,7 @@ class McpManager {
     } else if (config.transport === 'sse') {
       if (!config.url) throw new Error(`MCP server "${config.name}" 缺少 url`)
       transport = new SSEClientTransport(new URL(config.url), {
-        requestInit: { headers: config.headers ?? {} }
+        requestInit: { headers: { 'User-Agent': userAgent(), ...(config.headers ?? {}) } }
       })
     } else {
       throw new Error(`未支持的 transport: ${config.transport}`)

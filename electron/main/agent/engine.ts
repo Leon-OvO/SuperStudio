@@ -4,13 +4,14 @@ import { BrowserWindow } from 'electron'
 import { IPC, AgentProgressEvent, type AgentPhase, type AgentPhaseEvent, type ContextRef } from '../../../src/shared/ipc-types'
 import { parseJsonLoose } from '../../../src/shared/json-repair'
 import { BRAND } from '../../../src/shared/brand'
-import { createLLMClient, thinkingStreamOpts, effectiveProtocol } from '../services/llm'
+import { createLLMClient, thinkingStreamOpts, effectiveProtocol, type ThinkingMode } from '../services/llm'
 import { getSettings, getProviders, getSshConnections } from '../services/store'
 import { sshExec, resolveSshConnection } from '../services/ssh-service'
 import { confirmSshExec } from '../services/ssh-guard'
 import { runShell } from '../services/shell'
 import { confirmRunScript } from '../services/local-script-guard'
 import { generateImage } from '../services/image'
+import { compressImageToFit, DEFAULT_MAX_IMAGE_BYTES } from '../services/image-compress'
 import { generateVideo } from '../services/video'
 import { readFile, writeFile, writeTextFile, listDir } from '../services/fileops'
 import { searchWeb } from '../services/search'
@@ -60,6 +61,10 @@ interface RunParams {
    *  when the session model is a chat model — uses the configured DEFAULT image
    *  provider/model. Lets a single conversation mix chat turns and image turns. */
   forceImage?: boolean
+  /** Per-turn 思考模式 from the input-box picker (overrides the global setting for
+   *  THIS turn). An explicit choice also wins over the relayCompat force-fast safety
+   *  default — the user is deliberately opting in. Undefined = use global setting. */
+  thinkingMode?: ThinkingMode
   /** @-mentioned SSH connections (ids) pinned for THIS turn — ssh_exec defaults to
    *  the first when the model omits `connection`; all are listed in the prompt. */
   sshDefaultConnIds?: string[]
@@ -137,7 +142,7 @@ export async function runAgent(
   params: RunParams,
   win: BrowserWindow
 ): Promise<void> {
-  const { sessionId, message, attachments = [], overrideProviderId, overrideModel, mountedSpaceIds = [], imageSize, imageQuality, imageCount, scheduledContext = false, computerMode = false, forceImage = false, groupTurn, sshDefaultConnIds = [], contextRefs = [] } = params
+  const { sessionId, message, attachments = [], overrideProviderId, overrideModel, mountedSpaceIds = [], imageSize, imageQuality, imageCount, scheduledContext = false, computerMode = false, forceImage = false, thinkingMode, groupTurn, sshDefaultConnIds = [], contextRefs = [] } = params
   const runStartTime = Date.now()
   // Ephemeral 工作目录 MCP server ids registered for THIS run — reaped in finally.
   const ephemeralMcpIds: string[] = []
@@ -1730,6 +1735,27 @@ export async function runAgent(
             ? `（轮到你「${groupTurn.speakerName}」。${groupTurn.task ? '你的任务：' + groupTurn.task + '。' : ''}请实际动手，按系统提示把你负责的部分写进交付物文件。）`
             : undefined)
       : await buildMessageHistory(sessionId, message, attachments, effectiveModel, turnContext)
+
+    // ── Prompt-caching: relocate per-turn VOLATILE context into the CURRENT turn ──
+    // The volatile block (current date, recalled memory, live working-dir snapshot)
+    // used to ride in the system prompt, which changes the cached prefix EVERY turn —
+    // so non-Anthropic auto-prefix caching never caught the history, and the Anthropic
+    // history breakpoint (added in makeStream below) couldn't hit either. Move it onto
+    // the LAST message instead: now tools+system+history stay byte-identical across
+    // turns and only the new turn differs. (Best practice: inject dynamic context in
+    // messages, not the cached system prefix.) Computer-use uses its own cuSystem and
+    // never carried volatile, so it's unaffected.
+    if (systemPrompt.volatile && history.length) {
+      const i = history.length - 1
+      const last = history[i] as { role: string; content: string | Array<{ type: string; text?: string }> }
+      const block = `\n\n<environment_context note="当前环境与记忆快照，供你参考，非用户输入">\n${systemPrompt.volatile}\n</environment_context>`
+      if (typeof last.content === 'string') {
+        ;(history as unknown as Array<{ role: string; content: unknown }>)[i] = { ...last, content: last.content + block }
+      } else if (Array.isArray(last.content)) {
+        ;(history as unknown as Array<{ role: string; content: unknown }>)[i] = { ...last, content: [...last.content, { type: 'text', text: block }] }
+      }
+    }
+
     // Effective protocol (not raw provider.type) — so an auto-routed Claude model
     // on a SuperCode 'custom' provider still gets Anthropic prompt-caching + thinking.
     const providerConfig = allProviders.find(p => p.id === effectiveProviderId)
@@ -1779,9 +1805,14 @@ export async function runAgent(
     // 扩展思考策略(B)：按设置把 Anthropic 的 thinking providerOptions 注入。auto=不动。
     // 兼容模式：【显式关闭】扩展思考（等同 fast）——只「不传」并不能关掉默认就思考的模型
     // (Fable 5 / Opus)，而这些中转的 reasoning 流常不规范会炸整轮。关掉思考最稳。
-    const thinkOpts = relayCompat
-      ? thinkingStreamOpts(providerType, 'fast', effectiveModel)
-      : thinkingStreamOpts(providerType, settings.chatThinkingMode, effectiveModel)
+    // 但输入框「思考模式」选择器是用户的【显式】每轮选择，必须优先生效——哪怕在
+    // relayCompat 下也尊重它（用户主动开「深度」，接受更慢/中转怪癖）。没显式选时才回退
+    // 到「relayCompat→fast / 否则全局设置」的安全默认。
+    const effThinkMode: ThinkingMode = thinkingMode ?? (relayCompat ? 'fast' : (settings.chatThinkingMode ?? 'auto'))
+    // Native Anthropic extended thinking — the same path Claude Code uses, which works
+    // through Anthropic-native relays. providerType==='anthropic' gates it; relays that
+    // route anthropic-native (anthropicNative / type 'anthropic') get it too.
+    const thinkOpts = thinkingStreamOpts(providerType, effThinkMode, effectiveModel)
 
     const MAX_STEPS = 30
     let stepCount = 0
@@ -1825,18 +1856,35 @@ export async function runAgent(
     // nudge) are appended after history for the Layer 2 one-shot continuation.
     // Anthropic prompt caching: stable system prefix (cached) + volatile suffix
     // (not cached) as two leading system messages; other providers use `system:`.
-    const makeStream = (extra: CoreMessage[], override?: Partial<Parameters<typeof streamText>[0]>) => useAnthropicCache
-      ? streamText({
-          ...baseOpts,
-          ...override,
-          messages: [
-            { role: 'system' as const, content: systemPrompt.stable, providerOptions: { anthropic: { cacheControl: { type: 'ephemeral' as const } } } },
-            ...(systemPrompt.volatile ? [{ role: 'system' as const, content: systemPrompt.volatile }] : []),
-            ...history,
-            ...extra
-          ]
-        } as Parameters<typeof streamText>[0])
-      : streamText({ ...baseOpts, ...override, system: systemPrompt.full, messages: [...history, ...extra] })
+    const makeStream = (extra: CoreMessage[], override?: Partial<Parameters<typeof streamText>[0]>) => {
+      if (useAnthropicCache) {
+        // Breakpoint #1: stable system prefix. Volatile no longer sits here (it was
+        // relocated onto the current turn above), so everything up to and including
+        // history is byte-stable across turns.
+        const msgs: CoreMessage[] = [
+          { role: 'system', content: systemPrompt.stable, providerOptions: { anthropic: { cacheControl: { type: 'ephemeral' } } } },
+          ...history,
+          ...extra
+        ]
+        // Breakpoint #2: cache the tools+system+history prefix by marking the last
+        // PRIOR-turn message (history[len-2], i.e. msgs[len-1] after the leading
+        // system message). The current user turn (history[len-1]) carries this turn's
+        // volatile and stays AFTER the breakpoint, so it never busts the cached
+        // prefix. Anthropic allows up to 4 breakpoints; we use 2. This is where the
+        // multi-turn savings on Claude live (history was re-billed in full before).
+        if (history.length >= 2) {
+          const i = history.length - 1
+          const m = msgs[i] as CoreMessage & { providerOptions?: Record<string, unknown> }
+          msgs[i] = { ...m, providerOptions: { ...(m.providerOptions ?? {}), anthropic: { cacheControl: { type: 'ephemeral' } } } } as CoreMessage
+        }
+        return streamText({ ...baseOpts, ...override, messages: msgs } as Parameters<typeof streamText>[0])
+      }
+      // Non-Anthropic: plain `system:` = STABLE only (volatile rides the current
+      // turn). tools+system+history are now byte-stable → each provider's server-side
+      // automatic prefix caching (OpenAI/DeepSeek/Qwen/Kimi) catches the whole prefix
+      // and only the new turn is full-price.
+      return streamText({ ...baseOpts, ...override, system: systemPrompt.stable, messages: [...history, ...extra] })
+    }
     // Consume ONE stream pass: stream reasoning + answer deltas, accumulate
     // fullText/chunkCount, capture errors. Mutates the shared state above so a
     // continuation pass appends onto the same message.
@@ -1891,6 +1939,24 @@ export async function runAgent(
     // if nothing was produced) instead of a silent stop.
     if (abortedByErrorStreak && !stalled && !streamErr) {
       streamErr = new Error(`连续多次工具调用失败，已自动停止本轮以避免空转。已交付此前获得的部分结果；请调整需求或稍后再试。`)
+    }
+    // Thinking-stream recovery. Extended thinking holds the streaming connection
+    // open through a long「思考」phase with NO bytes flowing; some relays/proxies
+    // reset it (ECONNRESET, consistently ~20s) mid-thought and blow up the whole
+    // turn — exactly the instability the relay force-fast safety guarded against.
+    // If a DEEP turn died that way having delivered nothing, retry ONCE with thinking
+    // OFF so the user still gets an answer instead of a hard failure.
+    const CONN_ERR_RE = /ECONNRESET|ETIMEDOUT|EPIPE|ENOTFOUND|EAI_AGAIN|UND_ERR|fetch failed|terminated|socket hang up|other side closed|network/i
+    if (streamErr && !fullText.trim() && effThinkMode === 'deep' && providerType === 'anthropic' && !retriedEmpty && !isStaleRun()) {
+      const blob = `${(streamErr as Error)?.message ?? ''} ${((streamErr as { cause?: { code?: string } })?.cause?.code) ?? ''}`
+      if (CONN_ERR_RE.test(blob)) {
+        retriedEmpty = true
+        console.warn('[Agent] 深度思考流被中断（连接重置）— 自动改为关闭思考重试一次', { code: (streamErr as { cause?: { code?: string } })?.cause?.code })
+        streamErr = null
+        const resultR = makeStream([], thinkingStreamOpts(providerType, 'fast', effectiveModel))
+        await consumeStream(resultR)
+        result = resultR
+      }
     }
     // Hard failure with nothing produced (401/auth, network, …) → surface it NOW.
     // Awaiting result.usage / finishReason on an errored stream can hang on some
@@ -2045,6 +2111,32 @@ export async function runAgent(
       )
     }
 
+    // Prompt-cache observability: pull hit/write tokens from provider metadata so
+    // caching is VISIBLE (otherwise 改完没法验证是否生效). Anthropic → cacheReadInputTokens
+    // / cacheCreationInputTokens; OpenAI & OpenAI-compatible (incl. DeepSeek when it
+    // maps cached_tokens) → cachedPromptTokens. Best-effort + timeout-guarded; the
+    // metadata is already settled by here, so the await is effectively instant.
+    let cacheRead: number | null = null
+    let cacheWrite: number | null = null
+    try {
+      const r0 = result as { providerMetadata?: unknown; experimental_providerMetadata?: unknown }
+      const pm = await Promise.race([
+        Promise.resolve(r0.providerMetadata ?? r0.experimental_providerMetadata).catch(() => null),
+        new Promise<null>(res => { const t = setTimeout(() => res(null), POST_STREAM_TIMEOUT_MS); (t as { unref?: () => void }).unref?.() })
+      ]) as { anthropic?: Record<string, unknown>; openai?: Record<string, unknown> } | null
+      if (pm) {
+        const a = pm.anthropic ?? {}
+        const o = pm.openai ?? {}
+        const rd = Number(a.cacheReadInputTokens ?? o.cachedPromptTokens ?? 0)
+        const wr = Number(a.cacheCreationInputTokens ?? 0)
+        cacheRead = Number.isFinite(rd) && rd > 0 ? rd : null
+        cacheWrite = Number.isFinite(wr) && wr > 0 ? wr : null
+        if (cacheRead != null || cacheWrite != null) {
+          console.log('[Agent] 🗄 prompt cache', { read: cacheRead, write: cacheWrite, model: effectiveModel })
+        }
+      }
+    } catch { /* best-effort */ }
+
     // Save assistant message with tool call log and metadata (asstMsgId was
     // allocated before the stream so deltas already carry it).
     // Coerce NaN/Infinity to null — some providers resolve `result.usage` with
@@ -2081,6 +2173,8 @@ export async function runAgent(
       inputTokens: inTok ?? undefined,
       outputTokens: outTok ?? undefined,
       costUsd: costUsd ?? undefined,
+      cacheReadTokens: cacheRead ?? undefined,
+      cacheWriteTokens: cacheWrite ?? undefined,
       incomplete: incomplete || undefined,
       debug: debugBundle
     })
@@ -2140,6 +2234,8 @@ export async function runAgent(
       ...(inTok != null ? { inputTokens: inTok } : {}),
       ...(outTok != null ? { outputTokens: outTok } : {}),
       ...(costUsd != null ? { costUsd } : {}),
+      ...(cacheRead != null ? { cacheReadTokens: cacheRead } : {}),
+      ...(cacheWrite != null ? { cacheWriteTokens: cacheWrite } : {}),
       ...(incomplete ? { incomplete: true } : {}),
       ...(() => { const ph = finalizePhases(); return ph.length ? { phases: ph } : {} })(),
       ...(debugBundle ? { debug: debugBundle } : {})
@@ -2405,9 +2501,25 @@ async function buildMessageHistory(
         continue
       }
       try {
-        const data = fs.readFileSync(att.path)
-        parts.push({ type: 'image', image: data, mimeType: mt })
-        console.log(`[Agent] ✓ inlined image attachment "${att.name}" (${(data.length / 1024).toFixed(1)} KB, ${mt})`)
+        let data: Buffer = fs.readFileSync(att.path)
+        let mime = mt
+        if (data.length > DEFAULT_MAX_IMAGE_BYTES) {
+          try {
+            const r = compressImageToFit(data, DEFAULT_MAX_IMAGE_BYTES, att.name)
+            if (r.compressed) {
+              console.log(`[Agent] 🗜 compressed image "${att.name}" ${(data.length / 1024 / 1024).toFixed(1)}MB → ${(r.data.length / 1024 / 1024).toFixed(1)}MB`)
+              data = r.data; mime = r.mime
+            }
+          } catch (ce) {
+            // 真的压缩不动 → 不把整轮对话打挂，跳过该图并告知模型（用户可见于回复）。
+            console.warn(`[Agent] image "${att.name}" too large and uncompressible:`, (ce as Error).message)
+            const first = parts[0]
+            if (first.type === 'text') first.text += `\n\n[警告：${(ce as Error).message}。该图已跳过，未发送给 AI。]`
+            continue
+          }
+        }
+        parts.push({ type: 'image', image: data, mimeType: mime })
+        console.log(`[Agent] ✓ inlined image attachment "${att.name}" (${(data.length / 1024).toFixed(1)} KB, ${mime})`)
       } catch (e) {
         console.error(`[Agent] failed to read image attachment "${att.name}":`, (e as Error).message)
         const first = parts[0]

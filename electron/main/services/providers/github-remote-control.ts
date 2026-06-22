@@ -7,6 +7,7 @@
 
 import type { RemoteControlSource, UpdateInfo, RemoteModelConf } from '../remote-control-source'
 import { parseConf } from '../model-conf'
+import { userAgent } from '../ua'
 
 const GH_OWNER = 'Leon-OvO'
 const GH_REPO = 'SuperStudio'
@@ -51,7 +52,7 @@ export class GitHubRemoteControlSource implements RemoteControlSource {
     for (const url of RAW_URLS) {
       try {
         const res = await fetch(url, {
-          headers: { 'User-Agent': `SuperStudio`, 'Cache-Control': 'no-cache' },
+          headers: { 'User-Agent': userAgent(), 'Cache-Control': 'no-cache' },
         })
         if (res.status === 404) continue // not on this branch — try the next
         if (!res.ok) continue
@@ -76,7 +77,7 @@ export class GitHubRemoteControlSource implements RemoteControlSource {
       const res = await fetch(RELEASES_URL, {
         headers: {
           Accept: 'application/vnd.github+json',
-          'User-Agent': `SuperStudio/${currentVersion}`,
+          'User-Agent': userAgent(),
         },
       })
       if (res.status === 404) return base // no releases yet — "up to date"

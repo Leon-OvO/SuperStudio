@@ -123,6 +123,11 @@ export const IPC = {
   LOG_CLEAR: 'log:clear',
   LOG_APPEND: 'log:append',           // renderer → main: report a renderer-side error
 
+  // API request log (opt-in; records all outbound LLM/image/account requests)
+  API_LOG_LIST: 'api-log:list',
+  API_LOG_CLEAR: 'api-log:clear',
+  API_LOG_OPEN: 'api-log:open',       // reveal the api-requests.jsonl log file
+
   // Whole-app config backup
   CONFIG_EXPORT: 'config:export',
   CONFIG_IMPORT: 'config:import',
@@ -539,6 +544,9 @@ export interface AppSettings {
   autoArchiveDays?: number
   /** 会话整理：自动删除「随手新建却没发过消息、且超过一天」的空「新对话」。默认 true。 */
   autoPruneEmptyChats?: boolean
+  /** 诊断：开启后把每条对外 API 请求（对话/生图/账号）记到本机 api-requests.jsonl，
+   *  供内部排查；只记元数据、不记请求体/密钥，不上传。默认关闭。 */
+  apiRequestLogging?: boolean
   /** Master switch for Computer Use (let the agent control mouse/keyboard/screen). Default off. */
   computerUseEnabled?: boolean
   /** Privacy curtain ("伪锁屏"): during a Computer Use run, cover all screens with a
@@ -738,6 +746,11 @@ export interface VibeMessageInfo {
   createdAt: number
   inputTokens?: number | null
   outputTokens?: number | null
+  /** Prompt-cache hit / write tokens reported by the provider (Anthropic
+   *  cacheRead/cacheCreation; OpenAI-compat cachedPromptTokens). Lets the bubble
+   *  show "缓存 Xk" so caching is verifiable. */
+  cacheReadTokens?: number | null
+  cacheWriteTokens?: number | null
   costUsd?: number | null
   model?: string | null
   /** User-message attachments (images shown inline; files referenced by path). */
@@ -1063,6 +1076,10 @@ export interface MessageMeta {
   autoRoutedIntent?: string
   inputTokens?: number
   outputTokens?: number
+  /** Prompt-cache hit / write tokens (Anthropic cacheRead/cacheCreation;
+   *  OpenAI-compat cachedPromptTokens) — surfaced in the message bubble. */
+  cacheReadTokens?: number
+  cacheWriteTokens?: number
   costUsd?: number
   /** Per-phase wall-clock breakdown of the turn (思考 / 工具 / 输出 …), shown as a
    *  footnote so a slow turn's cost is legible ("思考 1.2s · 工具 3.5s · 输出 2.1s"). */

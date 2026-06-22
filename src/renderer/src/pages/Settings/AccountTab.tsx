@@ -347,7 +347,10 @@ export function AccountTab({ onProvidersRefresh }: Props = {}) {
       </section>
 
       {/* API Keys — per-platform with switcher + create + copy */}
-      <section className="border border-border rounded-lg bg-card overflow-hidden">
+      {/* NOTE: no `overflow-hidden` here — the per-row「切换」dropdown is absolutely
+          positioned (top-full) and would be clipped by it. The section's children
+          carry no corner-reaching backgrounds, so rounding still looks identical. */}
+      <section className="border border-border rounded-lg bg-card">
         <div className="flex items-center justify-between px-4 py-3 border-b border-border">
           <h3 className="text-sm font-medium flex items-center gap-1.5">
             <Key size={13} />

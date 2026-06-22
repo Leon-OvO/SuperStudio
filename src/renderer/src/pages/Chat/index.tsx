@@ -9,6 +9,7 @@ import { SessionListResizer } from './SessionListResizer'
 import { NewGroupDialog } from './NewGroupDialog'
 import { MessageList } from './MessageList'
 import { ChatInput } from './ChatInput'
+import type { ThinkingMode } from '../../components/ThinkingModePicker'
 import { AgentProgress } from './AgentProgress'
 import { ChatHeader, computeImageSize, DEFAULT_IMAGE_PARAMS } from './ChatHeader'
 import type { ImageParams } from './ChatHeader'
@@ -66,6 +67,8 @@ export function ChatPage() {
   // Per-turn "强制本轮生成图片" toggle — lets a chat-model session generate an image
   // this turn. Reset on session switch.
   const [forceImage, setForceImage] = React.useState(false)
+  // Per-conversation 思考模式 override (auto/fast/deep). Absent → 'auto' (follow global).
+  const [sessionThinkingMode, setSessionThinkingMode] = React.useState<Record<string, ThinkingMode>>({})
   const [attachments, setAttachments] = React.useState<Attachment[]>([])
   // Top-level ImageEditor — any image in the chat surface can open it.
   const [editorSrc, setEditorSrc] = React.useState<string | null>(null)
@@ -402,6 +405,9 @@ export function ChatPage() {
         imageCount,
         computerMode: computerMode || undefined,
         forceImage: forceImage || undefined,
+        // Per-turn 思考模式 override. 'auto' = no override (engine falls back to the
+        // global setting / relayCompat-safe default); only fast/deep ride along.
+        ...((sessionThinkingMode[sessionId] && sessionThinkingMode[sessionId] !== 'auto') ? { thinkingMode: sessionThinkingMode[sessionId] } : {}),
         ...(mentions?.sshDefaultConnIds?.length ? { sshDefaultConnIds: mentions.sshDefaultConnIds } : {}),
         ...(mentions?.contextRefs?.length ? { contextRefs: mentions.contextRefs } : {})
       }
@@ -673,6 +679,8 @@ export function ChatPage() {
           providerId={currentOverride?.providerId || ''}
           model={currentOverride?.model || ''}
           onModelChange={(p, m) => activeSessionId && setSessionModel(activeSessionId, p, m)}
+          thinkingMode={(activeSessionId && sessionThinkingMode[activeSessionId]) || 'auto'}
+          onThinkingModeChange={m => activeSessionId && setSessionThinkingMode(prev => ({ ...prev, [activeSessionId]: m }))}
           imageParams={currentImageParams}
           onImageParamsChange={params => activeSessionId && setImageParamsMap(prev => ({ ...prev, [activeSessionId]: params }))}
           onEditImage={setEditorSrc}

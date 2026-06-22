@@ -1,5 +1,6 @@
 import { net } from 'electron'
 import { scrapeEngine, HeadlessEngine } from './search-headless'
+import { userAgent } from './ua'
 
 export interface SearchResult {
   title: string
@@ -33,7 +34,11 @@ export type SearchProvider =
  */
 async function httpFetch(url: string, init?: RequestInit): Promise<Response> {
   try {
-    return await net.fetch(url, init as never)
+    // Stamp the product UA (net.fetch bypasses the global-fetch wrapper); the
+    // guard preserves a caller-set UA, e.g. SearXNG's deliberate Mozilla string.
+    const headers = new Headers(init?.headers ?? {})
+    if (!headers.has('user-agent')) headers.set('user-agent', userAgent())
+    return await net.fetch(url, { ...init, headers } as never)
   } catch (e) {
     throw new Error(explainFetchError(e))
   }

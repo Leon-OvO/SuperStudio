@@ -10,6 +10,7 @@ const MENTION_GALLERY_LIMIT = 40
 import { Send, Square, Paperclip, X, ImagePlus, FileText, ImageOff, Monitor, Folder, FolderOpen, AtSign, Server, MessageSquare, MessagesSquare, ChevronDown, ChevronRight, Trash2 } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { ModelPicker } from './ModelPicker'
+import { ThinkingModePicker, type ThinkingMode } from '../../components/ThinkingModePicker'
 import { Select } from '../../components/ui/Select'
 import { useImageContextMenu } from '../../components/ui/ImageContextMenu'
 import { toast } from '../../components/ui/Toast'
@@ -55,6 +56,10 @@ interface Props {
   providerId: string
   model: string
   onModelChange: (providerId: string, model: string) => void
+  /** Per-turn 思考模式 (auto/fast/deep). The picker self-hides for models that don't
+   *  support extended thinking. 'auto' = follow the global setting. */
+  thinkingMode: ThinkingMode
+  onThinkingModeChange: (mode: ThinkingMode) => void
   /** Image params shown when imageMode is true. */
   imageParams: ImageParams
   onImageParamsChange: (params: ImageParams) => void
@@ -86,6 +91,7 @@ export function ChatInput({
   workingDir, onSetWorkingDir,
   attachments, setAttachments, generatedImages, recentMessages,
   providerId, model, onModelChange,
+  thinkingMode, onThinkingModeChange,
   imageParams, onImageParamsChange,
   onEditImage, mentionEmployees
 }: Props) {
@@ -675,6 +681,7 @@ export function ChatInput({
         <div className="flex items-center gap-2 px-3 pb-2.5 pt-0.5">
           <div className="flex items-center gap-1.5 flex-1 min-w-0">
             <ModelPicker providerId={providerId} model={model} onChange={onModelChange} />
+            <ThinkingModePicker providerId={providerId} model={model} value={thinkingMode} onChange={onThinkingModeChange} />
           </div>
           {isRunning ? (
             <button

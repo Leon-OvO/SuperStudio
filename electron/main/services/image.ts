@@ -1,4 +1,6 @@
 import { getProviders } from './store'
+import { compressImageToFit, DEFAULT_MAX_IMAGE_BYTES } from './image-compress'
+import { logApiRequest, sanitizeUrl } from './request-log'
 import fs from 'fs'
 import path from 'path'
 import { app } from 'electron'
@@ -65,6 +67,20 @@ export function isTransientNetworkError(err: unknown): boolean {
  * some text-to-image providers honor it. The outer `generateImage` is
  * responsible for compensating when fewer images come back than requested.
  */
+/** fetch wrapper that records image-API requests into the opt-in request log. */
+async function traceImageFetch(url: string, init: RequestInit, model?: string): Promise<Response> {
+  const method = ((init?.method || 'POST') as string).toUpperCase()
+  const t0 = Date.now()
+  try {
+    const res = await fetch(url, init)
+    logApiRequest({ kind: 'image', method, url: sanitizeUrl(url), model, status: res.status, ok: res.ok, durationMs: Date.now() - t0 })
+    return res
+  } catch (e) {
+    logApiRequest({ kind: 'image', method, url: sanitizeUrl(url), model, ok: false, durationMs: Date.now() - t0, error: String((e as Error)?.message || e) })
+    throw e
+  }
+}
+
 async function doOneRequest(
   params: GenerateImageParams,
   requestedN: number
@@ -94,6 +110,26 @@ async function doOneRequest(
     // 细节与材质（解决"换图后人脸全变/质感发假"）。仅对 gpt-image 系列尝试；若网关
     // 不认该字段而报错，下面会自动去掉它重试一次，避免丢参考图降级成纯文生图。
     const fidelitySupported = /gpt-image/i.test(modelName)
+    // Read + auto-compress each reference ONCE (shared across the fidelity retry),
+    // so an oversized photo gets scaled down to fit instead of 413-ing the edits
+    // endpoint. 真的压缩不动 → compressImageToFit throws → surfaced as 生图失败.
+    const preparedRefs = referenceImagePaths.map((imgPath, i) => {
+      const ext = imgPath.split('.').pop()?.toLowerCase() || 'png'
+      let mime = ext === 'jpeg' || ext === 'jpg' ? 'image/jpeg'
+               : ext === 'webp' ? 'image/webp'
+               : ext === 'gif' ? 'image/gif'
+               : 'image/png'
+      let data: Buffer = fs.readFileSync(imgPath)
+      let name = `ref-${i + 1}.${ext}`
+      if (data.length > DEFAULT_MAX_IMAGE_BYTES) {
+        const r = compressImageToFit(data, DEFAULT_MAX_IMAGE_BYTES, `参考图 ${i + 1}`)
+        if (r.compressed) {
+          console.log(`[image] 🗜 compressed 参考图 ${i + 1} ${(data.length / 1024 / 1024).toFixed(1)}MB → ${(r.data.length / 1024 / 1024).toFixed(1)}MB`)
+          data = r.data; mime = r.mime; name = `ref-${i + 1}.jpg`
+        }
+      }
+      return { data, mime, name }
+    })
     const buildForm = (withFidelity: boolean) => {
       const fd = new FormData()
       fd.append('model', modelName)
@@ -102,16 +138,8 @@ async function doOneRequest(
       fd.append('n', '1')
       if (quality) fd.append('quality', quality)
       if (withFidelity) fd.append('input_fidelity', 'high')
-      for (let i = 0; i < referenceImagePaths.length; i++) {
-        const imgPath = referenceImagePaths[i]
-        const ext = imgPath.split('.').pop()?.toLowerCase() || 'png'
-        const mime = ext === 'jpeg' || ext === 'jpg' ? 'image/jpeg'
-                 : ext === 'webp' ? 'image/webp'
-                 : ext === 'gif' ? 'image/gif'
-                 : 'image/png'
-        const data = fs.readFileSync(imgPath)
-        const safeName = `ref-${i + 1}.${ext}`
-        fd.append('image[]', new Blob([data], { type: mime }), safeName)
+      for (const ref of preparedRefs) {
+        fd.append('image[]', new Blob([new Uint8Array(ref.data)], { type: ref.mime }), ref.name)
       }
       if (maskPath && fs.existsSync(maskPath)) {
         const maskData = fs.readFileSync(maskPath)
@@ -136,12 +164,12 @@ async function doOneRequest(
           console.log(`[image] edits retry #${attempt - 1}`)
           await new Promise(r => setTimeout(r, 1500))
         }
-        res = await fetch(`${baseUrl}/v1/images/edits`, {
+        res = await traceImageFetch(`${baseUrl}/v1/images/edits`, {
           method: 'POST',
           headers: { Authorization: `Bearer ${provider.apiKey}` },
           body: buildForm(useFidelity),
           signal: reqSignal(abortSignal, IMAGE_GEN_TIMEOUT_MS)
-        })
+        }, modelName)
         if (res.ok) {
           editsOk = true
           break
@@ -176,12 +204,12 @@ async function doOneRequest(
       // and let the UI inform the user via `referencesIgnored`.
       console.warn('[image] edits failed — falling back to text-to-image (legacy chat flow)')
       referencesIgnored = true
-      res = await fetch(`${baseUrl}/v1/images/generations`, {
+      res = await traceImageFetch(`${baseUrl}/v1/images/generations`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${provider.apiKey}` },
         body: JSON.stringify({ model: modelName, prompt, size, n: 1, ...(quality ? { quality } : {}) }),
         signal: reqSignal(abortSignal, IMAGE_GEN_TIMEOUT_MS)
-      })
+      }, modelName)
     }
   } else {
     // Text-to-image: ask the provider for `requestedN` images in one go.
@@ -192,12 +220,12 @@ async function doOneRequest(
     console.log('[image] generate request', `${baseUrl}/v1/images/generations`,
       `prompt=${prompt.slice(0, 60)} size=${size} n=${requestedN}`)
     try {
-      res = await fetch(`${baseUrl}/v1/images/generations`, {
+      res = await traceImageFetch(`${baseUrl}/v1/images/generations`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${provider.apiKey}` },
         body: JSON.stringify(body),
         signal: reqSignal(abortSignal, IMAGE_GEN_TIMEOUT_MS)
-      })
+      }, modelName)
     } catch (e) {
       if ((e as Error)?.name === 'TimeoutError') {
         throw new Error(

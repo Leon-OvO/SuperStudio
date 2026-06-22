@@ -34,25 +34,31 @@ function realNumber(n: number | null | undefined): number | null {
 }
 
 /**
- * "1.2k → 3.4k · $0.0023" — one-line summary for a single LLM exchange.
- * Returns null when there's nothing meaningful to show (the provider didn't
- * report usage, or every value is NaN/0).
+ * "1.2k → 3.4k tok · 缓存 8.1k · $0.0023" — one-line summary for a single LLM
+ * exchange. The "缓存 Xk" segment is the prompt-cache HIT (cacheRead) tokens — it
+ * makes caching visible so you can tell it's actually working. Returns null when
+ * there's nothing meaningful to show (the provider didn't report usage, or every
+ * value is NaN/0).
  */
 export function formatUsageLine(args: {
   inputTokens?: number | null
   outputTokens?: number | null
+  cacheReadTokens?: number | null
   costUsd?: number | null
 }): string | null {
   const inTok = realNumber(args.inputTokens)
   const outTok = realNumber(args.outputTokens)
+  const cacheRead = realNumber(args.cacheReadTokens)
   const cost = realNumber(args.costUsd)
   // Treat all-zero as missing too — providers that don't track usage often
   // return zeros rather than nulls, and "0 → 0 tok · $0" is just noise.
   const hasTokens = (inTok != null && inTok > 0) || (outTok != null && outTok > 0)
+  const hasCache = cacheRead != null && cacheRead > 0
   const hasCost = cost != null && cost > 0
   if (!hasTokens && !hasCost) return null
   const parts: string[] = []
   if (hasTokens) parts.push(`${formatTokens(inTok)} → ${formatTokens(outTok)} tok`)
+  if (hasCache)  parts.push(`缓存 ${formatTokens(cacheRead)}`)
   if (hasCost)   parts.push(formatCostUsd(cost))
   return parts.join(' · ')
 }

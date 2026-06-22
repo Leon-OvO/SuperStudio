@@ -29,7 +29,7 @@ import type {
 } from '../../../src/shared/ipc-types'
 import { getMainWindow } from '../index'
 import { getProviders, getSettings } from '../services/store'
-import { createLLMClient, thinkingStreamOpts, effectiveProtocol } from '../services/llm'
+import { createLLMClient, thinkingStreamOpts, effectiveProtocol, anthropicSystemCacheMessage, type ThinkingMode } from '../services/llm'
 import { recallForProject, captureFromTranscript } from '../services/memory'
 import {
   getVibeProjectsRoot,
@@ -1227,7 +1227,7 @@ export function vibeHandlers(): void {
   ) => ReturnType<typeof buildVibeTools> | ReturnType<typeof buildReadOnlyVibeTools>
 
   function runStreamMode(
-    args: { projectPath: string; prompt: string; requestId?: string; attachments?: Array<{ name: string; path: string; mimeType: string }> },
+    args: { projectPath: string; prompt: string; requestId?: string; attachments?: Array<{ name: string; path: string; mimeType: string }>; thinkingMode?: ThinkingMode },
     opts: {
       kind: 'chat' | 'explore' | 'bugfix'
       label: string                                  // for system event text
@@ -1287,6 +1287,13 @@ export function vibeHandlers(): void {
             : { type: 'system', text: '⚠️ 未能创建改动前快照，本次改动将无法一键回滚（项目可能不是 git 仓库，或本机未安装 git——可在「更改」面板「启用版本快照」后再让 AI 改动）。' })
         }
         const model = createLLMClient(modelInfo.providerId, modelInfo.modelId)
+        // 扩展思考（之前这里漏了：runStreamMode 的 streamText 从不注入 thinkOpts，导致
+        // 工作台 chat/explore/bugfix 完全吃不到「思考模式」）。按有效协议注入，并优先用
+        // 输入框每轮显式选择，未选则回退全局设置。
+        const swProvCfg = getProviders().find(p => p.id === modelInfo.providerId)
+        const swProvType = swProvCfg ? effectiveProtocol(swProvCfg, modelInfo.modelId) : undefined
+        const swThinkMode: ThinkingMode = args.thinkingMode ?? getSettings().chatThinkingMode ?? 'auto'
+        const thinkOpts = thinkingStreamOpts(swProvType, swThinkMode, modelInfo.modelId)
         const toolEmit = (e: Omit<VibeProgressEvent, 'projectPath'>) => {
           emit(e)
           if (e.type === 'tool_use') {
@@ -1353,14 +1360,18 @@ export function vibeHandlers(): void {
           stallTimer = setTimeout(() => { if (!ctl.signal.aborted) { stalled = true; ctl.abort() } }, ms)
         }
         try {
+          const swSystem = opts.systemPrompt + skillsSection
+          // Cache the (large, reused) Vibe system prompt on Anthropic via a marked
+          // leading message; other providers keep `system:` (auto-caches the head).
+          const swSysMsg = anthropicSystemCacheMessage(swSystem, swProvType, swProvCfg?.relayCompat)
           const result = streamText({
             model,
-            system: opts.systemPrompt + skillsSection,
-            messages: history,
+            ...(swSysMsg ? { messages: [swSysMsg, ...history] } : { system: swSystem, messages: history }),
             ...(tools ? { tools } : {}),
             maxSteps: opts.maxSteps ?? (tools ? 20 : 5),
             maxRetries: 2,
             abortSignal: ctl.signal,
+            ...thinkOpts,
             onError: ({ error }) => {
               console.error(`[vibe] ${opts.kind} streamText error:`, error)
               runError = error as Error
@@ -1538,15 +1549,21 @@ export function vibeHandlers(): void {
 
         let captured: z.infer<typeof ProposalSchema> | null = null
         const { section: proposeSkillsSection } = buildVibeSkillsSection(projectPath)
+        const propProvCfg = getProviders().find(p => p.id === modelInfo.providerId)
+        const propProvType = propProvCfg ? effectiveProtocol(propProvCfg, modelInfo.modelId) : undefined
+        const proposeSystem = PROPOSE_SYSTEM + (isPromotion
+            ? '\n\n你正在基于已有的对话上下文做拆解 — 请保留 slug/title 跟之前对话主题一致，并参考前面的讨论内容设计任务。你 MUST 调用 submit_proposal 工具且只调一次。'
+            : '\n\nIMPORTANT: You MUST call the `submit_proposal` tool exactly once with the structured plan. Do not output free-form JSON.') + proposeSkillsSection
+        // Anthropic: cache the static PROPOSE_SYSTEM via a marked leading message;
+        // others keep `system:`. (Forced toolChoice is fine with caching.)
+        const propSysMsg = anthropicSystemCacheMessage(proposeSystem, propProvType, propProvCfg?.relayCompat)
+        const proposeUserMsgs: CoreMessage[] = [
+          ...history,
+          { role: 'user', content: userContent } as CoreMessage
+        ]
         const result = streamText({
           model,
-          system: PROPOSE_SYSTEM + (isPromotion
-            ? '\n\n你正在基于已有的对话上下文做拆解 — 请保留 slug/title 跟之前对话主题一致，并参考前面的讨论内容设计任务。你 MUST 调用 submit_proposal 工具且只调一次。'
-            : '\n\nIMPORTANT: You MUST call the `submit_proposal` tool exactly once with the structured plan. Do not output free-form JSON.') + proposeSkillsSection,
-          messages: [
-            ...history,
-            { role: 'user', content: userContent } as CoreMessage
-          ],
+          ...(propSysMsg ? { messages: [propSysMsg, ...proposeUserMsgs] } : { system: proposeSystem, messages: proposeUserMsgs }),
           tools: {
             submit_proposal: tool({
               description: 'Submit the final structured proposal for the user to review',
@@ -1569,7 +1586,7 @@ export function vibeHandlers(): void {
             try {
               const { toolCalls } = await generateText({
                 model,
-                system: sys,
+                system: sys ?? proposeSystem,
                 messages: [
                   ...m,
                   { role: 'assistant', content: [{ type: 'tool-call', toolCallId: toolCall.toolCallId, toolName: toolCall.toolName, args: toolCall.args }] },
@@ -1720,7 +1737,7 @@ export function vibeHandlers(): void {
   // The user no longer manually picks chat/explore/bugfix/change. Pass
   // forceIntent to override (manual lock). Returns the resolved intent so the
   // renderer can show the right running banner.
-  ipcMain.handle(IPC.VIBE_RUN, async (_e, args: { projectPath: string; prompt: string; requestId?: string; forceIntent?: VibeIntent; attachments?: Array<{ name: string; path: string; mimeType: string }> }) => {
+  ipcMain.handle(IPC.VIBE_RUN, async (_e, args: { projectPath: string; prompt: string; requestId?: string; forceIntent?: VibeIntent; attachments?: Array<{ name: string; path: string; mimeType: string }>; thinkingMode?: ThinkingMode }) => {
     const win = getMainWindow()
     if (!win) return { error: 'No window' }
     const projectPath = path.resolve(args.projectPath)
@@ -1740,7 +1757,7 @@ export function vibeHandlers(): void {
       } catch { intent = 'chat' }
     }
 
-    const passthrough = { projectPath: args.projectPath, prompt: args.prompt, requestId: args.requestId, attachments: args.attachments }
+    const passthrough = { projectPath: args.projectPath, prompt: args.prompt, requestId: args.requestId, attachments: args.attachments, thinkingMode: args.thinkingMode }
     let res: { started?: boolean; requestId?: string; error?: string }
     switch (intent) {
       case 'explore':
@@ -1854,11 +1871,15 @@ export function vibeHandlers(): void {
     }
     try {
       const model = createLLMClient(modelInfo.providerId, modelInfo.modelId)
+      const applySystem = (soulPrompt ? soulPrompt + '\n\n---\n\n' : '') + buildApplySystem(request, task, otherTasks)
+        + (upstreamContext ? '\n\n---\n\n' + upstreamContext : '') + applySkillsSection
+      // Anthropic: cache the (soul + apply) system via a marked leading message.
+      const applySysMsg = anthropicSystemCacheMessage(applySystem, provType, provCfg?.relayCompat)
       const result = streamText({
         model,
-        system: (soulPrompt ? soulPrompt + '\n\n---\n\n' : '') + buildApplySystem(request, task, otherTasks)
-          + (upstreamContext ? '\n\n---\n\n' + upstreamContext : '') + applySkillsSection,
-        messages: [{ role: 'user', content: task.description || task.title }],
+        ...(applySysMsg
+          ? { messages: [applySysMsg, { role: 'user', content: task.description || task.title } as CoreMessage] }
+          : { system: applySystem, messages: [{ role: 'user', content: task.description || task.title }] }),
         tools,
         maxSteps: 25,
         maxRetries: 2,

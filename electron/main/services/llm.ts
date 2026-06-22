@@ -1,9 +1,10 @@
 import { createOpenAI } from '@ai-sdk/openai'
 import { createAnthropic } from '@ai-sdk/anthropic'
 import { createGoogleGenerativeAI } from '@ai-sdk/google'
-import { LanguageModel, streamText, experimental_wrapLanguageModel as wrapLanguageModel, type LanguageModelV1Middleware } from 'ai'
+import { LanguageModel, streamText, type CoreMessage, experimental_wrapLanguageModel as wrapLanguageModel, type LanguageModelV1Middleware } from 'ai'
 import { Agent } from 'undici'
 import { getProviders, getSettings } from './store'
+import { logApiRequest, sanitizeUrl, modelFromBody } from './request-log'
 import type { ProviderConfig } from '../../../src/shared/ipc-types'
 
 // ---------------------------------------------------------------------------
@@ -40,19 +41,79 @@ function isConnError(e: unknown): boolean {
   return CONN_ERR_RE.test(blob)
 }
 
+/** Marker header thinkingStreamOpts uses to smuggle the desired
+ *  `output_config.effort` level through @ai-sdk/anthropic (which has NO native
+ *  effort support — verified: 1.2.12's dist only knows `thinking`/`budgetTokens`)
+ *  to llmFetch, which splices it into the request body and strips the header. */
+const EFFORT_HEADER = 'x-ss-effort'
+
+/** Splice `output_config.effort` into a serialized /v1/messages JSON body.
+ *  `effort` (nested in `output_config`, NOT a top-level field) is the Anthropic
+ *  control Claude Code surfaces as "Effort: xhigh". A prior attempt that put a
+ *  top-level `effortLevel` was rejected by the relay's strict validation
+ *  ("Extra inputs are not permitted") — the correct key is `effort` under
+ *  `output_config`. GA, no beta header; combines with `thinking`. */
+function injectEffort(body: string, effort: string): string {
+  try {
+    const obj = JSON.parse(body)
+    obj.output_config = { ...(obj.output_config ?? {}), effort }
+    return JSON.stringify(obj)
+  } catch {
+    return body
+  }
+}
+
 /** Custom fetch handed to every LLM provider below. */
 export const llmFetch: typeof fetch = async (input, init) => {
   const proxyOn = (getSettings().proxyMode ?? 'off') !== 'off'
+  // --- Force-effort injection. @ai-sdk/anthropic 1.2.12 can't emit
+  // `output_config.effort`, so thinkingStreamOpts smuggles the level via the
+  // `x-ss-effort` marker header; splice it into the /v1/messages body here and
+  // strip the marker before it goes upstream. This — not the `thinking` field —
+  // is what relays (sub2api 等) read to actually drive / display 推理强度.
+  let body = init?.body
+  let headers = init?.headers
+  let effort: string | undefined
+  if (headers != null) {
+    const h = new Headers(headers as HeadersInit)
+    const e = h.get(EFFORT_HEADER)
+    if (e) {
+      effort = e
+      h.delete(EFFORT_HEADER)
+      headers = h
+      if (typeof body === 'string') body = injectEffort(body, e)
+    }
+  }
+  const init2 = (init ? { ...init, body, headers } : init) as RequestInit | undefined
   // Inject the tuned dispatcher only when NOT proxied; proxied requests fall
   // through to the global ProxyAgent (no `dispatcher` key).
-  const opts = (proxyOn ? init : { ...init, dispatcher: getDirectAgent() }) as RequestInit
+  const opts = (proxyOn ? init2 : { ...init2, dispatcher: getDirectAgent() }) as RequestInit
+  // Opt-in API request log (gated inside logApiRequest; cheap no-op when off).
+  const url = typeof input === 'string' ? input : input instanceof URL ? input.href : (input as Request).url
+  const method = ((init?.method || (input as Request)?.method || 'POST') as string).toUpperCase()
+  const model = modelFromBody(body)
+  const reqBytes = typeof body === 'string' ? Buffer.byteLength(body) : undefined
+  // Diagnostic: does the OUTGOING body actually carry Anthropic extended thinking
+  // / effort? Surfaced in the API request log so "深度选了但中转没推理" can be pinned
+  // to either "未发送"(本端问题) or "发了但中转没认"(中转问题).
+  let think: string | undefined
+  if (typeof body === 'string') {
+    const m = body.match(/"thinking"\s*:\s*\{\s*"type"\s*:\s*"(\w+)"(?:[^}]*?"budget_tokens"\s*:\s*(\d+))?/)
+    if (m) think = m[1] === 'enabled' ? `enabled:${m[2] ?? '?'}` : m[1]
+  }
+  if (effort) think = think ? `${think}+effort:${effort}` : `effort:${effort}`
+  const t0 = Date.now()
   let lastErr: unknown
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      return await fetch(input, opts)
+      const res = await fetch(input, opts)
+      logApiRequest({ kind: 'llm', method, url: sanitizeUrl(url), model, status: res.status, ok: res.ok, durationMs: Date.now() - t0, reqBytes, think })
+      return res
     } catch (e) {
       lastErr = e
-      if (!isConnError(e) || attempt === 2) throw e
+      const willRetry = isConnError(e) && attempt < 2
+      logApiRequest({ kind: 'llm', method, url: sanitizeUrl(url), model, ok: false, durationMs: Date.now() - t0, reqBytes, think, error: `${(e as Error)?.message || e}${willRetry ? ` (将重试 ${attempt + 1}/2)` : ''}` })
+      if (!willRetry) throw e
       await new Promise(r => setTimeout(r, 600 * 2 ** attempt))  // 600ms, 1.2s
     }
   }
@@ -70,9 +131,10 @@ export function createLLMClient(providerId: string, modelId: string): LanguageMo
 // Zero-config protocol auto-detection
 // ---------------------------------------------------------------------------
 
-/** A model that speaks the Anthropic Messages API (the Claude family). */
+/** A model that speaks the Anthropic Messages API (the Claude family, incl. Fable
+ *  whose id may be `claude-fable-5` or just `fable-5`). */
 export function isClaudeModel(modelId: string): boolean {
-  return /claude/i.test(modelId)
+  return /claude|fable/i.test(modelId)
 }
 
 /** Whether this provider's endpoint is known to ALSO speak Anthropic-native
@@ -246,7 +308,29 @@ export type ThinkingMode = 'auto' | 'fast' | 'deep'
  * 仅对原生 anthropic provider 生效；其它 provider 一律返回空对象（无副作用）。经
  * openai-compat 中转的 Claude 思考问题应靠 provider.anthropicNative 走 /v1/messages 解决。
  */
-type ThinkStreamOpts = Pick<Parameters<typeof streamText>[0], 'providerOptions' | 'maxTokens'>
+type ThinkStreamOpts = Pick<Parameters<typeof streamText>[0], 'providerOptions' | 'maxTokens' | 'headers'>
+
+// Beta header Claude Code sends to turn on extended thinking. The @ai-sdk/anthropic
+// provider only emits `anthropic-beta` for computer-use tools, NOT for thinking — so
+// without this, some relays (which gate reasoning on this exact header, the way
+// Claude Code requests it) never actually enable Claude's thinking even though the
+// `thinking` body field is present. Harmless on the real Anthropic API.
+const THINKING_BETA = 'interleaved-thinking-2025-05-14'
+
+/** The `effort` level to FORCE for deep mode, by model family. `effort`
+ *  (output_config.effort) is the Anthropic control Claude Code surfaces as
+ *  "Effort: xhigh"; relays read IT — not `thinking` — to drive and display
+ *  推理强度. xhigh: Opus 4.7/4.8 + Fable. high: Opus 4.5/4.6 + Sonnet 4.6.
+ *  Models that REJECT effort (Haiku / Sonnet 4.5 / 3.x) → undefined (never send).
+ *  Bare relay aliases (e.g. dh-claude) → high (safe everywhere effort is honored). */
+function effortForDeep(model?: string): string | undefined {
+  const m = (model || '').toLowerCase()
+  if (/opus-4-(7|8)|fable/.test(m)) return 'xhigh'
+  if (/opus-4-(5|6)|sonnet-4-6/.test(m)) return 'high'
+  if (/haiku|sonnet-4-5|sonnet-4-0|sonnet-3|opus-3|claude-3/.test(m)) return undefined
+  if (/claude/.test(m)) return 'high'
+  return undefined
+}
 
 export function thinkingStreamOpts(
   providerType: string | undefined,
@@ -268,15 +352,50 @@ export function thinkingStreamOpts(
   // models (proven-safe, well under their real cap) — big lift over the ~4k default
   // without risking rejection. Anthropic-scoped; other providers' truncation is
   // surfaced via the finishReason='length' marker instead.
-  const big = /(?:opus|sonnet)-4/i.test(model || '')
+  // Fable 5 is a current top-tier Claude-family model and accepts the large cap;
+  // including it here also stops its long answers truncating at the ~4k provider
+  // default in fast/auto (cap was previously undefined for it).
+  const big = /(?:opus|sonnet)-4|fable/i.test(model || '')
   const cap = big ? 24000 : undefined
   if (mode === 'fast') {
     return { providerOptions: { anthropic: { thinking: { type: 'disabled' } } }, ...(cap ? { maxTokens: cap } : {}) }
   }
   if (mode === 'deep') {
-    // maxTokens MUST exceed budgetTokens or Anthropic errors; keep the old 24000
-    // floor for legacy models, 32000 for capable ones so thinking never eats the answer.
-    return { providerOptions: { anthropic: { thinking: { type: 'enabled', budgetTokens: 8000 } } }, maxTokens: cap ?? 24000 }
+    // 自适应：对任何 anthropic 协议模型都开启扩展思考，不写死「哪些模型」。预算与
+    // maxTokens 随模型档位自适应——Anthropic 要求 maxTokens > budgetTokens：
+    //   - 大模型(Opus-4/Sonnet-4/Fable，cap 24000)：12000 预算 / 24000 上限（更强推理）。
+    //   - 其它(cap 未知，按保守值)：4000 预算 / 8000 上限，既塞得下小模型(3.x/Haiku ~8k)
+    //     又仍有意义的思考预算，避免 budget≥max 报错。
+    // ★ Force `output_config.effort` (the real driver — see effortForDeep). Sent
+    // via the x-ss-effort marker header; llmFetch splices it into the body since
+    // @ai-sdk/anthropic can't. Combines with the native `thinking` field below.
+    const effort = effortForDeep(model)
+    const headers: Record<string, string> = effort
+      ? { 'anthropic-beta': THINKING_BETA, [EFFORT_HEADER]: effort }
+      : { 'anthropic-beta': THINKING_BETA }
+    if (big) {
+      return { providerOptions: { anthropic: { thinking: { type: 'enabled', budgetTokens: 12000 } } }, maxTokens: 24000, headers }
+    }
+    return { providerOptions: { anthropic: { thinking: { type: 'enabled', budgetTokens: 4000 } } }, maxTokens: 8000, headers }
   }
   return cap ? { maxTokens: cap } : {} // auto
+}
+
+/** A leading `system` MESSAGE carrying an Anthropic ephemeral cache breakpoint —
+ *  or null when caching isn't applicable (non-Anthropic protocol, empty system,
+ *  or a relayCompat gateway). Anthropic can't cache a plain `system:` string, so
+ *  large/reused system prompts (Vibe propose/apply/chat) must be sent as a marked
+ *  message to be cacheable; non-Anthropic providers keep the plain `system:`
+ *  string (their server-side auto prefix-caching covers the stable head). Mirrors
+ *  the chat engine's breakpoint-on-system. Usage:
+ *    const sysMsg = anthropicSystemCacheMessage(sysText, provType, relayCompat)
+ *    streamText({ model, ...(sysMsg ? { messages: [sysMsg, ...msgs] }
+ *                                    : { system: sysText, messages: msgs }), ... }) */
+export function anthropicSystemCacheMessage(
+  systemText: string,
+  providerType: string | undefined,
+  relayCompat?: boolean
+): CoreMessage | null {
+  if (providerType !== 'anthropic' || !systemText || relayCompat) return null
+  return { role: 'system', content: systemText, providerOptions: { anthropic: { cacheControl: { type: 'ephemeral' } } } }
 }

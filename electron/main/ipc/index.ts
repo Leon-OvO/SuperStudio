@@ -1,5 +1,8 @@
-import { ipcMain, dialog, app } from 'electron'
+import { ipcMain, dialog, app, shell } from 'electron'
+import fs from 'fs'
+import path from 'path'
 import { IPC } from '../../../src/shared/ipc-types'
+import { listApiRequestLog, clearApiRequestLog, getApiRequestLogPath } from '../services/request-log'
 import { settingsHandlers } from './settings'
 import { sessionHandlers } from './sessions'
 import { agentHandlers } from './agent'
@@ -76,6 +79,16 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(IPC.LOG_CLEAR, () => { clearEntries(); return { ok: true } })
   ipcMain.handle(IPC.LOG_APPEND, (_e, entry: { level: 'error' | 'warn' | 'info'; message: string; stack?: string; context?: Record<string, unknown> }) => {
     logEntry({ source: 'renderer', ...entry })
+    return { ok: true }
+  })
+
+  // API request log (opt-in diagnostics)
+  ipcMain.handle(IPC.API_LOG_LIST, () => listApiRequestLog(500))
+  ipcMain.handle(IPC.API_LOG_CLEAR, () => { clearApiRequestLog(); return { ok: true } })
+  ipcMain.handle(IPC.API_LOG_OPEN, async () => {
+    const file = getApiRequestLogPath()
+    if (fs.existsSync(file)) { shell.showItemInFolder(file); return { ok: true } }
+    await shell.openPath(path.dirname(file)) // 还没写过日志 → 打开 logs 目录
     return { ok: true }
   })
 

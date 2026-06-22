@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
-import { Loader2, RefreshCw, Zap, ExternalLink, Database, Download, Upload, FileWarning, Trash2, Copy, RotateCcw, FlaskConical, Award } from 'lucide-react'
+import { Loader2, RefreshCw, Zap, ExternalLink, Database, Download, Upload, FileWarning, Trash2, Copy, RotateCcw, FlaskConical, Award, Activity, FolderOpen } from 'lucide-react'
 import { useT } from '../../lib/i18n'
 import { useConfirmDialog } from '../../components/ui/ConfirmDialog'
+import { Switch } from '../../components/ui/Switch'
 import { toast } from '../../components/ui/Toast'
 import { BRAND_LINKS } from '../../../../shared/brand-links'
 
@@ -167,6 +168,8 @@ export function About({
           </li>
         </ul>
       </section>
+
+      <RequestLogSection />
 
       <ErrorLogSection />
 
@@ -346,6 +349,158 @@ interface LogEntry {
   message: string
   stack?: string
   context?: Record<string, unknown>
+}
+
+interface ApiReqLog {
+  ts: number
+  kind: string
+  method: string
+  url: string
+  model?: string
+  status?: number
+  ok: boolean
+  durationMs: number
+  reqBytes?: number
+  think?: string
+  error?: string
+}
+
+/** Opt-in API request log — toggle + inline viewer. Records every outbound
+ *  LLM / image / account request to a local file for internal diagnosis. */
+function RequestLogSection() {
+  const [enabled, setEnabled] = useState(false)
+  const [pending, setPending] = useState(false)
+  const [entries, setEntries] = useState<ApiReqLog[]>([])
+  const [open, setOpen] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const dlg = useConfirmDialog()
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const s = await window.api.getSettings?.() as { apiRequestLogging?: boolean } | undefined
+        setEnabled(!!s?.apiRequestLogging)
+      } catch { /* ignore */ }
+    })()
+  }, [])
+
+  async function toggle(next: boolean) {
+    setPending(true)
+    try {
+      await window.api.setSettings?.({ apiRequestLogging: next })
+      setEnabled(next)
+      toast.success(next ? '已开启 — 之后的 API 请求都会记录' : '已关闭 API 请求日志')
+      if (next && open) refresh()
+    } catch (e) {
+      toast.error('保存失败：' + (e as Error).message)
+    } finally {
+      setPending(false)
+    }
+  }
+
+  async function refresh() {
+    setLoading(true)
+    try {
+      const data = await window.api.listApiRequestLog?.() as ApiReqLog[]
+      setEntries(data ?? [])
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => { if (open) refresh() }, [open])
+
+  async function clearAll() {
+    if (!(await dlg.confirm({
+      message: '确定清空 API 请求日志？已写入磁盘的旧记录也会被删除。',
+      tone: 'danger',
+      confirmLabel: '清空'
+    }))) return
+    await window.api.clearApiRequestLog?.()
+    setEntries([])
+  }
+
+  async function copyAll() {
+    const text = entries.map(e =>
+      `[${new Date(e.ts).toISOString()}] ${e.kind} ${e.method} ${e.url}` +
+      (e.model ? ` model=${e.model}` : '') +
+      ` ${e.ok ? 'OK' : 'FAIL'}${e.status != null ? ' ' + e.status : ''} ${e.durationMs}ms` +
+      (e.error ? ` ERR=${e.error}` : '')
+    ).join('\n')
+    try { await navigator.clipboard.writeText(text || '(空)') }
+    catch (e) { console.error('clipboard write failed', e) }
+  }
+
+  const failCount = entries.filter(e => !e.ok || (e.status != null && e.status >= 400)).length
+
+  return (
+    <section className="space-y-3 border-t border-border pt-5">
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm font-medium flex items-center gap-1.5"><Activity size={13} /> API 请求日志</h3>
+        <Switch checked={enabled} onChange={toggle} disabled={pending} />
+      </div>
+      <p className="text-xs text-muted-foreground/80 leading-relaxed">
+        开启后，所有对外 API 请求（对话 / 生图 / 账号）都会记录到本机
+        <code className="mx-1 px-1 rounded bg-muted/60 font-mono text-[11px]">userData/logs/api-requests.jsonl</code>，
+        含接口、模型、状态码、耗时与报错，便于内部排查。只记录元数据，不含请求内容与密钥，不会上传。
+      </p>
+      <div className="flex items-center gap-2 text-xs">
+        <button onClick={() => setOpen(o => !o)} className="btn-secondary">
+          {open ? '收起' : '查看记录'}
+        </button>
+        <button onClick={() => window.api.openApiRequestLog?.()} className="btn-secondary">
+          <FolderOpen size={12} /> 打开日志文件
+        </button>
+      </div>
+      {open && (
+        <div className="space-y-2">
+          <div className="flex items-center gap-3 text-xs">
+            <span className="text-muted-foreground">
+              共 <strong className="text-foreground">{entries.length}</strong> 条
+              {failCount > 0 && <> · <span className="text-destructive">{failCount} 失败</span></>}
+            </span>
+            <button onClick={refresh} disabled={loading} className="ml-auto btn-secondary">
+              {loading ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
+              刷新
+            </button>
+            <button onClick={copyAll} disabled={entries.length === 0} className="btn-secondary">
+              <Copy size={12} /> 复制
+            </button>
+            <button onClick={clearAll} disabled={entries.length === 0} className="btn-secondary">
+              <Trash2 size={12} /> 清空
+            </button>
+          </div>
+          <div className="max-h-64 overflow-y-auto rounded-md border border-border bg-muted/20 text-[11px] font-mono divide-y divide-border/60">
+            {entries.length === 0 ? (
+              <div className="px-3 py-4 text-muted-foreground/60 text-center">
+                {loading ? '加载中…' : enabled ? '暂无记录（发起一次请求后刷新）' : '日志未开启'}
+              </div>
+            ) : entries.slice().reverse().map((e, i) => {
+              const bad = !e.ok || (e.status != null && e.status >= 400)
+              return (
+                <details key={i} className="px-3 py-1.5 group" open={bad && i < 3}>
+                  <summary className={'cursor-pointer truncate ' + (bad ? 'text-destructive' : 'text-foreground/80')}>
+                    <span className="text-muted-foreground/60 mr-2">{new Date(e.ts).toLocaleTimeString('zh-CN')}</span>
+                    <span className="text-[10px] uppercase mr-1.5">[{e.kind}]</span>
+                    <span className="mr-1.5">{e.ok ? (e.status ?? 'OK') : 'FAIL'}</span>
+                    <span className="text-muted-foreground/70 mr-1.5">{e.durationMs}ms</span>
+                    {e.url}
+                  </summary>
+                  <div className="mt-1 text-[10px] text-muted-foreground/80 leading-snug space-y-0.5">
+                    {e.model && <div>模型：{e.model}</div>}
+                    {e.think && <div className="text-primary">thinking：{e.think}</div>}
+                    <div>{e.method} {e.url}{e.reqBytes != null ? ` · ${(e.reqBytes / 1024).toFixed(1)}KB` : ''}</div>
+                    {e.error && <div className="text-destructive/90 whitespace-pre-wrap">{e.error}</div>}
+                  </div>
+                </details>
+              )
+            })}
+          </div>
+        </div>
+      )}
+      {dlg.element}
+    </section>
+  )
 }
 
 function ErrorLogSection() {

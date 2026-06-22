@@ -234,6 +234,19 @@ function GenPromptBar({ busy, placeholder, value, onChange, expanding, onExpand,
   const [quality, setQuality] = useState('standard')
   const [scene, setScene] = useState('none')
   const taRef = useRef<HTMLTextAreaElement>(null)
+  // Local mirror of the text. The prompt is CONTROLLED from node data, and every
+  // keystroke round-trips through setNodes → a full React Flow node re-render. If
+  // that round-trip drives the textarea's `value`, the controlled value can lag a
+  // frame behind the IME composition buffer and reset it — which is exactly why
+  // some 输入法 (拼音/五笔等) couldn't type into this box. Driving the DOM from a
+  // local mirror decouples it from the round-trip; we only adopt an EXTERNAL value
+  // change (e.g. the 扩写 result), never our own echo.
+  const [local, setLocal] = useState(value)
+  const lastSentRef = useRef(value)
+  useEffect(() => {
+    if (value !== lastSentRef.current) { setLocal(value); lastSentRef.current = value }
+  }, [value])
+  const emit = (text: string) => { setLocal(text); lastSentRef.current = text; onChange(text) }
   // Auto-grow the textarea with its content (esp. after 扩写 produces long text),
   // capped at ~7 lines then it scrolls — long prompts stay readable.
   useEffect(() => {
@@ -241,14 +254,14 @@ function GenPromptBar({ busy, placeholder, value, onChange, expanding, onExpand,
     if (!el) return
     el.style.height = 'auto'
     el.style.height = Math.min(el.scrollHeight, 168) + 'px'
-  }, [value])
-  const submit = () => { if (!value.trim() || busy) return; onSubmit(value.trim(), count, size, quality, scene) }
+  }, [local])
+  const submit = () => { const v = local.trim(); if (!v || busy) return; onSubmit(v, count, size, quality, scene) }
   return (
     <div className="nowheel nopan nodrag w-[472px] rounded-[20px] bg-card/95 backdrop-blur-md border border-border shadow-[0_8px_30px_rgba(0,0,0,0.12)] px-3.5 pt-3 pb-2.5" onPointerDown={e => e.stopPropagation()}>
       <textarea
         ref={taRef}
-        value={value}
-        onChange={e => onChange(e.target.value)}
+        value={local}
+        onChange={e => emit(e.target.value)}
         onKeyDown={e => {
           // Keep Backspace/Delete from bubbling to React Flow (which would
           // delete the selected node while the user is editing the prompt).
@@ -264,12 +277,12 @@ function GenPromptBar({ busy, placeholder, value, onChange, expanding, onExpand,
         <CountDropdown value={count} onChange={setCount} />
         <SizeDropdown value={size} onChange={setSize} />
         <QualityDropdown value={quality} onChange={setQuality} />
-        <button onClick={onExpand} disabled={!value.trim() || expanding} title="提示词扩写（AI 补充画面细节）"
+        <button onClick={onExpand} disabled={!local.trim() || expanding} title="提示词扩写（AI 补充画面细节）"
           className="flex items-center gap-1 text-[11px] rounded-full border border-border px-2 py-1 text-muted-foreground hover:bg-accent/40 hover:text-foreground disabled:opacity-40 shrink-0">
           {expanding ? <Loader2 size={12} className="animate-spin" /> : <Wand2 size={12} />} 扩写
         </button>
         <div className="flex-1" />
-        <button onClick={submit} disabled={!value.trim() || busy} title="生成（Enter）"
+        <button onClick={submit} disabled={!local.trim() || busy} title="生成（Enter）"
           className="w-9 h-9 shrink-0 rounded-full grid place-items-center bg-primary text-primary-foreground shadow-sm hover:opacity-90 active:scale-95 transition-all disabled:opacity-35 disabled:cursor-not-allowed">
           {busy ? <Loader2 size={15} className="animate-spin" /> : <ArrowUp size={16} strokeWidth={2.5} />}
         </button>

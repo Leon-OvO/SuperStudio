@@ -45,6 +45,7 @@ const defaults: StoreSchema = {
     memoryAutoCapture: true,
     autoArchiveDays: 30,
     autoPruneEmptyChats: true,
+    apiRequestLogging: false,
     computerUseEnabled: false,
     computerUsePrivacyCurtain: false,
     dataDirectory: '',

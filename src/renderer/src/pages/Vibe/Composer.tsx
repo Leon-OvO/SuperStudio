@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Send, Square, Paperclip, ImagePlus, X, FileText, ImageOff, MessageSquare, Search, Bug, Wrench, Wand2 } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { Select } from '../../components/ui/Select'
+import { ThinkingModePicker, type ThinkingMode } from '../../components/ThinkingModePicker'
 import { toast } from '../../components/ui/Toast'
 import { type ComposerAttachment, getMimeType, toLocalFileUrl, blobToBase64, isImageMime } from '../../lib/attachments'
 import type { VibeIntent } from '../../../../shared/ipc-types'
@@ -28,6 +29,12 @@ interface Props {
   onChange: (v: string) => void
   mode: VibeMode
   onModeChange: (m: VibeMode) => void
+  /** Per-turn 思考模式 (auto/fast/deep). Self-hides for non-thinking models. */
+  thinkingMode?: ThinkingMode
+  onThinkingModeChange?: (m: ThinkingMode) => void
+  /** This project's model (gates the 思考模式 picker); '' → global default. */
+  providerId?: string
+  model?: string
   running: VibeRunning
   onSubmit: () => void
   /** Shown as a 停止 button while running; omit to show a disabled send instead. */
@@ -50,7 +57,8 @@ interface Props {
  * 粘贴图片 / 拖拽，与「对话」页一致（精简了 @素材库引用，那是图片生成专属）。
  */
 export function VibeComposer({
-  value, onChange, mode, onModeChange, running, onSubmit, onStop,
+  value, onChange, mode, onModeChange, thinkingMode = 'auto', onThinkingModeChange,
+  providerId = '', model = '', running, onSubmit, onStop,
   autoFocus, minHeight = 56, maxHeight = 240, autoPlaceholder,
   attachments, setAttachments
 }: Props) {
@@ -261,6 +269,9 @@ export function VibeComposer({
                 { value: 'change', label: `${INTENT_META.change.label}（拆成任务）` }
               ]}
             />
+            {onThinkingModeChange && (
+              <ThinkingModePicker providerId={providerId} model={model} value={thinkingMode} onChange={onThinkingModeChange} />
+            )}
             <span className="text-[11px] text-muted-foreground truncate">
               {mode === 'auto' ? 'AI 自动判断你的意图' : `已锁定：${INTENT_META[mode].label}`}
             </span>

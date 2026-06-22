@@ -4,6 +4,7 @@ import { IPC } from '../../../src/shared/ipc-types'
 import { listGallery, searchGalleryImages, deleteGalleryItem, batchDeleteGallery, saveGalleryItem } from '../services/gallery'
 import { generateText } from 'ai'
 import { generateImage } from '../services/image'
+import { compressImageToFit, DEFAULT_MAX_IMAGE_BYTES } from '../services/image-compress'
 import { createLLMClient } from '../services/llm'
 import { getSettings } from '../services/store'
 import { dbAll } from '../db/sqlite'
@@ -119,13 +120,21 @@ export function galleryHandlers(): void {
     const input = String(params?.prompt || '').trim()
     if (!input) return { ok: false, error: '提示词不能为空' }
 
-    // Read up to 6 reference images (skip missing / oversized) for the vision pass.
+    // Read up to 6 reference images for the vision pass. Oversized photos are
+    // auto-compressed to fit; only those that truly can't be compressed are skipped.
     const imageParts: Array<{ type: 'image'; image: Buffer; mimeType: string }> = []
     for (const p of (params?.referenceImagePaths || []).slice(0, 6)) {
       try {
         if (!p || !fs.existsSync(p)) continue
-        if (fs.statSync(p).size > 12 * 1024 * 1024) continue
-        imageParts.push({ type: 'image', image: fs.readFileSync(p), mimeType: mimeForImage(p) })
+        let data: Buffer = fs.readFileSync(p)
+        let mime = mimeForImage(p)
+        if (data.length > DEFAULT_MAX_IMAGE_BYTES) {
+          try {
+            const r = compressImageToFit(data, DEFAULT_MAX_IMAGE_BYTES, '参考图')
+            if (r.compressed) { data = r.data; mime = r.mime }
+          } catch { continue } // 真的压缩不动 → 跳过这张参考图
+        }
+        imageParts.push({ type: 'image', image: data, mimeType: mime })
       } catch { /* skip unreadable */ }
     }
     const hasImages = imageParts.length > 0

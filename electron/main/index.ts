@@ -1,11 +1,11 @@
 import { app, BrowserWindow, shell, protocol, ipcMain } from 'electron'
 import path from 'path'
 import fs from 'fs'
-import os from 'os'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { initDb } from './db/sqlite'
 import { registerIpcHandlers } from './ipc'
 import { installFetchLogger } from './debug-fetch'
+import { installUserAgent } from './services/ua'
 import { IPC } from '../../src/shared/ipc-types'
 import { FLAVOR } from '../../src/shared/flavor'
 import { BRAND } from '../../src/shared/brand'
@@ -45,6 +45,7 @@ try {
 } catch (e) { console.warn('[brand-isolation] failed:', (e as Error).message) }
 
 installFetchLogger()
+installUserAgent()
 
 // Force Chromium to use the OS's high-quality font subpixel rendering on Windows
 // (ClearType). Without these flags Electron defaults to grayscale antialiasing
@@ -145,9 +146,13 @@ function vibrancyWindowOptions(): Record<string, unknown> {
   if (process.platform === 'darwin') {
     return { vibrancy: 'under-window', visualEffectState: 'active', backgroundColor: '#00000000' }
   }
-  if (process.platform === 'win32' && parseInt(os.release().split('.')[2] || '0', 10) >= 22000) {
-    return { backgroundMaterial: 'acrylic', backgroundColor: '#00000000' }
-  }
+  // Windows: NO acrylic/mica backdrop. `backgroundMaterial:'acrylic'` on a
+  // frameless window freezes input hit-testing after the window is dragged
+  // across monitors with different DPI on Win11 (画面还在但点不动，必须最小化再
+  // 恢复才好) — a known Electron/Chromium bug. We use a plain opaque window
+  // instead. MUST stay in sync with preload `vibrancyActive()` (now darwin-only),
+  // which gates `.platform-vibrancy`; an opaque window with a translucent
+  // renderer would show the bare desktop.
   return {}
 }
 

@@ -5,6 +5,7 @@
 
 import { BrowserWindow } from 'electron'
 import { IPC } from '../../src/shared/ipc-types'
+import { logApiRequest, sanitizeUrl } from './services/request-log'
 
 const BASE = 'https://www.supercode.help'
 const MODELS_BASE = 'https://api.supercode.help'
@@ -94,7 +95,17 @@ async function rawFetch(url: string, init?: RequestInit): Promise<Response> {
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
     ...(init?.headers as Record<string, string> ?? {})
   }
-  return fetch(url, { ...init, headers })
+  const method = ((init?.method || 'GET') as string).toUpperCase()
+  const reqBytes = typeof init?.body === 'string' ? Buffer.byteLength(init.body) : undefined
+  const t0 = Date.now()
+  try {
+    const res = await fetch(url, { ...init, headers })
+    logApiRequest({ kind: 'account', method, url: sanitizeUrl(url), status: res.status, ok: res.ok, durationMs: Date.now() - t0, reqBytes })
+    return res
+  } catch (e) {
+    logApiRequest({ kind: 'account', method, url: sanitizeUrl(url), ok: false, durationMs: Date.now() - t0, reqBytes, error: String((e as Error)?.message || e) })
+    throw e
+  }
 }
 
 /**
@@ -288,7 +299,15 @@ export async function apiGetSubscriptionStatus(): Promise<SubscriptionStatus | n
     const body = await res.text().catch(() => '')
     throw new Error(`获取套餐状态失败 (${res.status}) ${body.slice(0, 200)}`)
   }
-  const o = await res.json() as Record<string, unknown>
+  // The endpoint may answer 200 with a literal `null` (or empty/unparseable)
+  // body when the user has no active plan — treat that exactly like 404/401:
+  // "no plan", not a crash. Reading `.breakdown_by_model` off a null `o` was the
+  // source of `Cannot read properties of null (reading 'breakdown_by_model')`.
+  const o = await res.json().catch(() => null) as Record<string, unknown> | null
+  if (!o || typeof o !== 'object') {
+    console.log('[supercode-api] subscription/me returned null/empty body → no plan')
+    return null
+  }
   console.log('[supercode-api] subscription/me raw:', JSON.stringify(o).slice(0, 800))
 
   const parseTs = (v: unknown): number | null => {

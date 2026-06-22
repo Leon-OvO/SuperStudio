@@ -4,6 +4,7 @@ import { cn } from '../../../lib/utils'
 import { MonacoFileEditor } from './MonacoFileEditor'
 import { MonacoDiffEditor } from './MonacoDiffEditor'
 import { RequestTabContent } from '../Workflow/RequestTabContent'
+import { type ThinkingMode } from '../../../components/ThinkingModePicker'
 import { EmptyStateHero } from './EmptyStateHero'
 import { TabContextMenu } from './TabContextMenu'
 import type { OpenTab } from '../store'
@@ -38,7 +39,10 @@ interface Props {
   messages: VibeMessageInfo[]
   streamingTaskId: string | null
   running: 'propose' | 'apply' | 'explore' | 'chat' | 'bugfix' | null
-  onRun: (prompt: string, requestId?: string, forceIntent?: 'chat' | 'explore' | 'bugfix' | 'change', attachments?: Array<{ name: string; path: string; mimeType: string }>) => void
+  onRun: (prompt: string, requestId?: string, forceIntent?: 'chat' | 'explore' | 'bugfix' | 'change', attachments?: Array<{ name: string; path: string; mimeType: string }>, thinkingMode?: ThinkingMode) => void
+  /** Project model — forwarded to RequestTabContent to gate the 思考模式 picker. */
+  providerId?: string
+  model?: string
   onApply: () => void
   onStop: () => void
   onToggleTaskStatus: (taskId: string, status: 'pending' | 'done' | 'skipped') => void
@@ -57,7 +61,7 @@ export function EditorTabs({
   onSwitchTab, onCloseTab, onChangeContent, onSave,
   onCloseOthers, onCloseToRight, onCloseAll, onSaveAll, onReorder, onRevealInSidebar, projectPath,
   requests, tasks, messages, streamingTaskId, running,
-  onRun, onApply, onStop, onToggleTaskStatus, onReassignTask, onRevertTask,
+  onRun, providerId = '', model = '', onApply, onStop, onToggleTaskStatus, onReassignTask, onRevertTask,
   hasProject, gitRefreshToken, onGitMutate
 }: Props) {
   const active = tabs.find(t => t.key === activeTabKey)
@@ -329,6 +333,8 @@ export function EditorTabs({
             streamingTaskId={streamingTaskId}
             running={running}
             onRun={onRun}
+            providerId={providerId}
+            model={model}
             onApply={onApply}
             onStop={onStop}
             onToggleTaskStatus={onToggleTaskStatus}

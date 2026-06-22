@@ -1,6 +1,7 @@
 import { net } from 'electron'
 import { createHmac } from 'crypto'
 import type { WebhookBot, ScheduledRunStatus } from '../../../src/shared/ipc-types'
+import { userAgent } from './ua'
 
 /**
  * Pushes scheduled-task results to a group-chat bot (DingTalk / Feishu /
@@ -63,7 +64,7 @@ async function postJson(url: string, body: unknown): Promise<void> {
   try {
     res = await net.fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'User-Agent': userAgent() },
       body: JSON.stringify(body)
     } as never)
   } catch (e) {

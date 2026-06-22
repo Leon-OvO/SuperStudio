@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Loader2, Sparkles, FolderOpen } from 'lucide-react'
 import { VibeComposer, type VibeMode } from '../Composer'
+import { type ThinkingMode } from '../../../components/ThinkingModePicker'
 import type { ComposerAttachment } from '../../../lib/attachments'
 import type { VibeIntent } from '../../../../../shared/ipc-types'
 
@@ -8,7 +9,7 @@ interface Props {
   hasProject: boolean
   running: 'propose' | 'apply' | 'explore' | 'chat' | 'bugfix' | null
   /** Unified send: auto-detect intent unless forceIntent given (manual lock). */
-  onRun: (prompt: string, requestId?: string, forceIntent?: VibeIntent, attachments?: ComposerAttachment[]) => void
+  onRun: (prompt: string, requestId?: string, forceIntent?: VibeIntent, attachments?: ComposerAttachment[], thinkingMode?: ThinkingMode) => void
   onStop?: () => void
 }
 
@@ -36,12 +37,13 @@ const EXAMPLES: Record<VibeIntent, string[]> = {
 export function EmptyStateHero({ hasProject, running, onRun, onStop }: Props) {
   const [input, setInput] = useState('')
   const [mode, setMode] = useState<VibeMode>('auto')
+  const [thinkingMode, setThinkingMode] = useState<ThinkingMode>('auto')
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([])
 
   function submit() {
     const t = input.trim()
     if ((!t && attachments.length === 0) || running) return
-    onRun(t, undefined, mode === 'auto' ? undefined : mode, attachments.length ? attachments : undefined)
+    onRun(t, undefined, mode === 'auto' ? undefined : mode, attachments.length ? attachments : undefined, thinkingMode === 'auto' ? undefined : thinkingMode)
     setInput('')
     setAttachments([])
   }
@@ -83,6 +85,8 @@ export function EmptyStateHero({ hasProject, running, onRun, onStop }: Props) {
         onChange={setInput}
         mode={mode}
         onModeChange={setMode}
+        thinkingMode={thinkingMode}
+        onThinkingModeChange={setThinkingMode}
         running={running}
         onSubmit={submit}
         onStop={onStop}

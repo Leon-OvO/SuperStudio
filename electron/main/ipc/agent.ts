@@ -21,6 +21,7 @@ export function agentHandlers(): void {
       imageCount: overrides?.imageCount,
       computerMode: overrides?.computerMode,
       forceImage: overrides?.forceImage,
+      thinkingMode: overrides?.thinkingMode,
       sshDefaultConnIds: overrides?.sshDefaultConnIds,
       contextRefs: overrides?.contextRefs
     }, win).catch(err => {

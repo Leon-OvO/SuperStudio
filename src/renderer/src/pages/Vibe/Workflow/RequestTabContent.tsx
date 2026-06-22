@@ -8,6 +8,7 @@ import { Select } from '../../../components/ui/Select'
 import { ThinkingConsole } from '../../../components/ui/ThinkingConsole'
 import { formatCostUsd, formatTokens } from '../../../lib/format-cost'
 import { VibeComposer, INTENT_META, type VibeMode } from '../Composer'
+import { type ThinkingMode } from '../../../components/ThinkingModePicker'
 import type { ComposerAttachment } from '../../../lib/attachments'
 import type { VibeRequestInfo, VibeTaskInfo, VibeMessageInfo, VibeIntent } from '../../../../../shared/ipc-types'
 import { useEmployeesStore } from '../../../stores/employees'
@@ -19,7 +20,10 @@ interface Props {
   streamingTaskId: string | null
   running: 'propose' | 'apply' | 'explore' | 'chat' | 'bugfix' | null
   /** Unified send: auto-detect intent unless forceIntent is given (manual lock). */
-  onRun: (prompt: string, requestId?: string, forceIntent?: VibeIntent, attachments?: ComposerAttachment[]) => void
+  onRun: (prompt: string, requestId?: string, forceIntent?: VibeIntent, attachments?: ComposerAttachment[], thinkingMode?: ThinkingMode) => void
+  /** Project model (gates the 思考模式 picker); '' → global default. */
+  providerId?: string
+  model?: string
   onApply: () => void
   onStop: () => void
   onToggleTaskStatus: (taskId: string, status: 'pending' | 'done' | 'skipped') => void
@@ -31,12 +35,13 @@ interface Props {
 
 export function RequestTabContent({
   request, tasks, messages, streamingTaskId, running,
-  onRun, onApply, onStop, onToggleTaskStatus, onReassignTask, onRevertTask
+  onRun, providerId = '', model = '', onApply, onStop, onToggleTaskStatus, onReassignTask, onRevertTask
 }: Props) {
   const [input, setInput] = useState('')
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([])
   // Mode: 'auto' = let the backend classify; a VibeIntent = manual lock.
   const [mode, setMode] = useState<VibeMode>('auto')
+  const [thinkingMode, setThinkingMode] = useState<ThinkingMode>('auto')
   // Run start — drives the ThinkingConsole "已用时" clock; reset whenever the
   // run (re)starts (e.g. propose → apply) or the user switches request tabs.
   const [runStartedAt, setRunStartedAt] = useState<number | undefined>(undefined)
@@ -75,9 +80,10 @@ export function RequestTabContent({
   // when the user scrolls up; flips back to true when they scroll near bottom.
   const stickRef = useRef(true)
 
-  // When switching requests, reset mode to auto + snap to bottom
+  // When switching requests, reset mode + 思考模式 to auto + snap to bottom
   useEffect(() => {
     setMode('auto')
+    setThinkingMode('auto')
     stickRef.current = true
     const el = messagesRef.current
     if (el) el.scrollTop = el.scrollHeight
@@ -129,7 +135,7 @@ export function RequestTabContent({
     const t = input.trim()
     // Allow attachment-only sends (e.g. "看看这张图" pasted with no text).
     if ((!t && attachments.length === 0) || running || !request) return
-    onRun(t, request.id, mode === 'auto' ? undefined : mode, attachments.length ? attachments : undefined)
+    onRun(t, request.id, mode === 'auto' ? undefined : mode, attachments.length ? attachments : undefined, thinkingMode === 'auto' ? undefined : thinkingMode)
     setInput('')
     setAttachments([])
     // User just sent a message — always pin them to the bottom.
@@ -361,6 +367,10 @@ export function RequestTabContent({
           onChange={setInput}
           mode={mode}
           onModeChange={setMode}
+          thinkingMode={thinkingMode}
+          onThinkingModeChange={setThinkingMode}
+          providerId={providerId}
+          model={model}
           running={running}
           onSubmit={submit}
           onStop={onStop}

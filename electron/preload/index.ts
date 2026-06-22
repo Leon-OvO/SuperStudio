@@ -1,5 +1,4 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
-import os from 'os'
 import { IPC, type ScheduledTask, type ScheduledTaskRun, type ScheduledTaskInput, type ScheduledRunCompletedEvent, type VideoGenerateRequest, type VideoGenerateResult, type VideoProgressEvent } from '../../src/shared/ipc-types'
 
 // Whether the OS will composite a vibrancy/acrylic backdrop behind the window —
@@ -8,7 +7,10 @@ import { IPC, type ScheduledTask, type ScheduledTaskRun, type ScheduledTaskInput
 // based on this flag and a transparent window with no OS effect = bare desktop.
 function vibrancyActive(): boolean {
   if (process.platform === 'darwin') return true
-  if (process.platform === 'win32') return parseInt(os.release().split('.')[2] || '0', 10) >= 22000
+  // Windows acrylic is disabled: backgroundMaterial on a frameless window froze
+  // input after dragging across monitors with different DPI on Win11 (a known
+  // Electron/Chromium bug). The renderer therefore stays fully opaque on Windows.
+  // MUST mirror main/index.ts vibrancyWindowOptions() (now darwin-only).
   return false
 }
 
@@ -62,7 +64,7 @@ const api = {
     ipcRenderer.invoke(IPC.VIBE_BUGFIX, args),
   vibePropose: (args: { projectPath: string; prompt: string; requestId?: string }) =>
     ipcRenderer.invoke(IPC.VIBE_PROPOSE, args),
-  vibeRun: (args: { projectPath: string; prompt: string; requestId?: string; forceIntent?: 'chat' | 'explore' | 'bugfix' | 'change'; attachments?: Array<{ name: string; path: string; mimeType: string }> }) =>
+  vibeRun: (args: { projectPath: string; prompt: string; requestId?: string; forceIntent?: 'chat' | 'explore' | 'bugfix' | 'change'; attachments?: Array<{ name: string; path: string; mimeType: string }>; thinkingMode?: 'auto' | 'fast' | 'deep' }) =>
     ipcRenderer.invoke(IPC.VIBE_RUN, args),
   vibeApply: (args: { requestId: string }) => ipcRenderer.invoke(IPC.VIBE_APPLY, args),
   vibeStop: (args: { projectPath: string }) => ipcRenderer.invoke(IPC.VIBE_STOP, args),
@@ -152,7 +154,7 @@ const api = {
     sessionId: string,
     message: string,
     attachments?: unknown[],
-    overrides?: { providerId?: string; model?: string; mountedSpaceIds?: string[]; imageSize?: string; imageQuality?: string; imageCount?: number; computerMode?: boolean; forceImage?: boolean; sshDefaultConnIds?: string[]; contextRefs?: import('../../src/shared/ipc-types').ContextRef[] }
+    overrides?: { providerId?: string; model?: string; mountedSpaceIds?: string[]; imageSize?: string; imageQuality?: string; imageCount?: number; computerMode?: boolean; forceImage?: boolean; thinkingMode?: 'auto' | 'fast' | 'deep'; sshDefaultConnIds?: string[]; contextRefs?: import('../../src/shared/ipc-types').ContextRef[] }
   ) => ipcRenderer.invoke(IPC.AGENT_RUN, sessionId, message, attachments, overrides),
   stopAgent: (sessionId: string) => ipcRenderer.invoke(IPC.AGENT_STOP, sessionId),
   // --- Group chat (multi-agent) ---
@@ -392,6 +394,11 @@ const api = {
   clearErrorLog: () => ipcRenderer.invoke(IPC.LOG_CLEAR),
   reportError: (entry: { level: 'error' | 'warn' | 'info'; message: string; stack?: string; context?: Record<string, unknown> }) =>
     ipcRenderer.invoke(IPC.LOG_APPEND, entry),
+
+  // --- API request log (opt-in diagnostics) ---
+  listApiRequestLog: () => ipcRenderer.invoke(IPC.API_LOG_LIST),
+  clearApiRequestLog: () => ipcRenderer.invoke(IPC.API_LOG_CLEAR),
+  openApiRequestLog: () => ipcRenderer.invoke(IPC.API_LOG_OPEN),
 
   // --- Workflow ---
   listWorkflows: (opts?: { kind?: string }) => ipcRenderer.invoke(IPC.WORKFLOWS_LIST, opts),

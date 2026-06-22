@@ -784,6 +784,7 @@ function MessageBubble({
               const usage = formatUsageLine({
                 inputTokens: meta.inputTokens,
                 outputTokens: meta.outputTokens,
+                cacheReadTokens: meta.cacheReadTokens,
                 costUsd: meta.costUsd
               })
               const inTok = Number.isFinite(meta.inputTokens) ? meta.inputTokens : null

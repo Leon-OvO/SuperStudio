@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { type ThinkingMode } from '../../components/ThinkingModePicker'
 import { useVibeStore, fileTabKey, requestTabKey } from './store'
 import { useUIStore } from '../../stores/ui'
 import { MenuBar } from './MenuBar'
@@ -404,7 +405,7 @@ export function VibeWorkbench() {
   // Unified send: backend auto-classifies (or honors forceIntent) and dispatches.
   // We optimistically show a generic running state, then refine it from the
   // returned intent so the banner reads correctly.
-  function handleRun(prompt: string, requestId?: string, forceIntent?: 'chat' | 'explore' | 'bugfix' | 'change', attachments?: Array<{ name: string; path: string; mimeType: string }>) {
+  function handleRun(prompt: string, requestId?: string, forceIntent?: 'chat' | 'explore' | 'bugfix' | 'change', attachments?: Array<{ name: string; path: string; mimeType: string }>, thinkingMode?: ThinkingMode) {
     if (!s.projectPath) return
     s.setErrorBanner(null)
     if (!requestId) {
@@ -414,7 +415,7 @@ export function VibeWorkbench() {
     }
     // Optimistic: assume the lightest mode until the classifier returns.
     s.setRunning(forceIntent === 'change' ? 'propose' : (forceIntent ?? 'chat'))
-    window.api.vibeRun?.({ projectPath: s.projectPath, prompt, requestId, forceIntent, attachments })
+    window.api.vibeRun?.({ projectPath: s.projectPath, prompt, requestId, forceIntent, attachments, ...(thinkingMode && thinkingMode !== 'auto' ? { thinkingMode } : {}) })
       .then((res: { intent?: 'chat' | 'explore' | 'bugfix' | 'change'; error?: string }) => {
         if (res?.error) { s.setRunning(null); s.setErrorBanner(res.error); return }
         // change → propose running label (apply may follow); others map 1:1.
@@ -710,6 +711,8 @@ export function VibeWorkbench() {
               streamingTaskId={s.streamingTaskId}
               running={s.running}
               onRun={handleRun}
+              providerId={s.projectInfo?.providerId ?? ''}
+              model={s.projectInfo?.modelId ?? ''}
               onApply={handleApply}
               onStop={handleStop}
               onToggleTaskStatus={handleToggleTaskStatus}
