@@ -177,6 +177,7 @@ function scrubText(text) {
         .replace(/(api\.)?super\s*code\.help/gi, 'the gateway')
         .replace(/super\s*code/gi, 'account')
         .replace(/词元引力|TokenG|xizim/g, 'the vendor')
+        .replace(/sub2api/gi, 'the gateway') // relay proper-noun → generic (forbidden brand token in core)
     })
     .join('\n')
   out = out
