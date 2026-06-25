@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { GitBranch, MessageSquare, Pencil, Check, X, Download, ChevronDown, Brain, Loader2, Wand2 } from 'lucide-react'
+import { GitBranch, MessageSquare, Pencil, Check, X, Download, Brain, Loader2, Wand2, MoreHorizontal } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { useT } from '../../lib/i18n'
 import { toast } from '../../components/ui/Toast'
@@ -206,81 +206,69 @@ export function ChatHeader({ sessionId, sessionTitle, onSaveAsWorkflow, onLearnS
               onRemove={onRemoveGroupMember}
             />
           )}
-          <button
-            onClick={rememberConversation}
-            disabled={remembering}
-            title="从这次对话提炼长期记忆（让助手越用越懂你）"
-            className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors disabled:opacity-50"
-          >
-            {remembering ? <Loader2 size={12} className="animate-spin" /> : <Brain size={12} />}
-            记住对话
-          </button>
-          {onExport && (
-            <div ref={exportWrapRef} className="relative">
+          {/* Secondary actions collapse into one overflow menu so the title keeps room. */}
+          {(busy => (
+            <div ref={exportWrapRef} className="relative shrink-0">
               <button
                 onClick={() => setExportOpen(o => !o)}
-                title={t('chatHeader.exportTitle')}
+                title="更多操作"
                 className={cn(
-                  'flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors',
+                  'flex items-center justify-center w-8 h-7 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors',
                   exportOpen && 'bg-muted/60 text-foreground'
                 )}
               >
-                <Download size={12} />
-                {t('chatHeader.export')}
-                <ChevronDown size={10} className={cn('transition-transform', exportOpen && 'rotate-180')} />
+                {busy ? <Loader2 size={14} className="animate-spin" /> : <MoreHorizontal size={16} />}
               </button>
               {exportOpen && (
-                <div className="absolute right-0 top-full mt-1 z-50 min-w-[160px] bg-popover border border-border rounded-lg shadow-xl py-1">
-                  <button
-                    onClick={() => { onExport('markdown'); setExportOpen(false) }}
-                    className="w-full text-left px-3 py-1.5 text-xs hover:bg-accent transition-colors"
-                  >
-                    Markdown (.md)
-                    <span className="block text-[10px] text-muted-foreground/70">用于阅读 / 分享</span>
-                  </button>
-                  <button
-                    onClick={() => { onExport('json'); setExportOpen(false) }}
-                    className="w-full text-left px-3 py-1.5 text-xs hover:bg-accent transition-colors"
-                  >
-                    JSON (.json)
-                    <span className="block text-[10px] text-muted-foreground/70">完整结构，可再导入</span>
-                  </button>
-                  {onExportImage && (
-                    <button
-                      onClick={() => { onExportImage(); setExportOpen(false) }}
-                      className="w-full text-left px-3 py-1.5 text-xs hover:bg-accent transition-colors border-t border-border/60"
-                    >
-                      长截图 (.png)
-                      <span className="block text-[10px] text-muted-foreground/70">整段或勾选部分，拼成一张图分享</span>
-                    </button>
+                <div className="absolute right-0 top-full mt-1 z-50 min-w-[184px] bg-popover border border-border rounded-lg shadow-xl py-1">
+                  <MenuRow icon={Brain} label="记住对话" hint="提炼长期记忆，越用越懂你" busy={remembering}
+                    onClick={() => { setExportOpen(false); rememberConversation() }} />
+                  {onLearnSkill && (
+                    <MenuRow icon={Wand2} label="学成技能" hint="把可复用做法沉淀成技能" busy={learning}
+                      onClick={async () => { setExportOpen(false); setLearning(true); try { await onLearnSkill() } finally { setLearning(false) } }} />
+                  )}
+                  {onSaveAsWorkflow && (
+                    <MenuRow icon={GitBranch} label={t('chatHeader.saveAsWorkflow')} hint="转成可视化工作流"
+                      onClick={() => { setExportOpen(false); onSaveAsWorkflow() }} />
+                  )}
+                  {onExport && (
+                    <>
+                      <div className="my-1 border-t border-border/60" />
+                      <MenuRow icon={Download} label="导出 Markdown" hint=".md · 阅读 / 分享"
+                        onClick={() => { setExportOpen(false); onExport('markdown') }} />
+                      <MenuRow icon={Download} label="导出 JSON" hint=".json · 完整结构，可再导入"
+                        onClick={() => { setExportOpen(false); onExport('json') }} />
+                      {onExportImage && (
+                        <MenuRow icon={Download} label="长截图" hint=".png · 拼成一张图分享"
+                          onClick={() => { setExportOpen(false); onExportImage() }} />
+                      )}
+                    </>
                   )}
                 </div>
               )}
             </div>
-          )}
-          {onSaveAsWorkflow && (
-            <button
-              onClick={onSaveAsWorkflow}
-              title={t('chatHeader.saveAsWorkflowTitle')}
-              className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors"
-            >
-              <GitBranch size={12} />
-              {t('chatHeader.saveAsWorkflow')}
-            </button>
-          )}
-          {onLearnSkill && (
-            <button
-              onClick={async () => { setLearning(true); try { await onLearnSkill() } finally { setLearning(false) } }}
-              disabled={learning}
-              title="把这次对话里可复用的做法提炼成一个技能（之后可在「技能 → 自动学习」里管理）"
-              className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors disabled:opacity-50"
-            >
-              {learning ? <Loader2 size={12} className="animate-spin" /> : <Wand2 size={12} />}
-              学成技能
-            </button>
-          )}
+          ))(remembering || learning)}
         </>
       )}
     </div>
+  )
+}
+
+/** One row in the chat-header overflow menu. */
+function MenuRow({ icon: Icon, label, hint, onClick, busy }: {
+  icon: typeof Brain; label: string; hint?: string; onClick: () => void; busy?: boolean
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={busy}
+      className="w-full text-left px-3 py-1.5 text-xs hover:bg-accent transition-colors flex items-center gap-2 disabled:opacity-50"
+    >
+      {busy ? <Loader2 size={13} className="animate-spin shrink-0 text-muted-foreground" /> : <Icon size={13} className="shrink-0 text-muted-foreground" />}
+      <span className="flex-1 min-w-0">
+        {label}
+        {hint && <span className="block text-[10px] text-muted-foreground/70 truncate">{hint}</span>}
+      </span>
+    </button>
   )
 }

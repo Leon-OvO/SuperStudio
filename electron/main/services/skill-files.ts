@@ -201,6 +201,17 @@ export function importLocalSkillBundle(sourcePath: string): ImportedBundle {
   // The user may have picked the bundle's PARENT folder — if SKILL.md isn't at
   // the top level, re-root to wherever the nearest SKILL.md actually lives.
   if (!skillMdRel) {
+    // Multi-skill collection (the combined .zip from buildSkillsExportZip): ≥2
+    // immediate subfolders each holding their own SKILL.md. Importing one would
+    // silently drop the rest, so refuse with a clear instruction instead.
+    const subBundles = new Set<string>()
+    for (const f of rel) {
+      const parts = f.split('/')
+      if (parts.length === 2 && /^skill\.md$/i.test(parts[1])) subBundles.add(parts[0])
+    }
+    if (subBundles.size >= 2) {
+      throw new Error('这是多技能合集包（含多个技能子目录）。请先解压，再到「导入本地技能」里多选其中的技能文件夹分别导入。')
+    }
     const deep = findSkillMdDeep(rel)
     if (deep) {
       srcDir = path.dirname(safeJoin(srcDir, deep))
@@ -274,26 +285,61 @@ function importZipSkillBundle(zipPath: string): ImportedBundle {
  * skill gets a synthesized SKILL.md from its manifest. The returned buffer is
  * written to a user-chosen path by the SKILLS_EXPORT IPC handler.
  */
-export function buildSkillExportZip(skill: {
+export interface ExportableSkill {
   id: string; name: string; description: string; version: string; author: string
   runtime: boolean; installPath: string | null; skillBody?: string; systemPrompt?: string
-}): Buffer {
+}
+
+/** Synthesize a SKILL.md (frontmatter + body) for a prompt-only skill that has
+ *  no on-disk bundle to zip wholesale. */
+function synthSkillMd(skill: ExportableSkill): string {
+  return [
+    '---',
+    `name: ${skill.name || skill.id}`,
+    `description: ${(skill.description || '').replace(/\n/g, ' ')}`,
+    `version: ${skill.version || '0.0.0'}`,
+    `author: ${skill.author || ''}`,
+    '---',
+    '',
+    skill.skillBody || skill.systemPrompt || ''
+  ].join('\n')
+}
+
+/** Add one skill's content into a zip, optionally nested under `subdir`.
+ *  Runtime skills (with an on-disk bundle) are copied wholesale; prompt-only
+ *  skills get a synthesized SKILL.md. */
+function addSkillToZip(zip: { addLocalFolder: (p: string, target?: string) => void; addFile: (n: string, b: Buffer) => void }, skill: ExportableSkill, subdir = ''): void {
+  if (skill.runtime && skill.installPath && fs.existsSync(skill.installPath)) {
+    zip.addLocalFolder(skill.installPath, subdir)
+  } else {
+    const name = subdir ? `${subdir}/SKILL.md` : 'SKILL.md'
+    zip.addFile(name, Buffer.from(synthSkillMd(skill), 'utf8'))
+  }
+}
+
+export function buildSkillExportZip(skill: ExportableSkill): Buffer {
   const AdmZip = require('adm-zip')
   const zip = new AdmZip()
-  if (skill.runtime && skill.installPath && fs.existsSync(skill.installPath)) {
-    zip.addLocalFolder(skill.installPath)
-  } else {
-    const fm = [
-      '---',
-      `name: ${skill.name || skill.id}`,
-      `description: ${(skill.description || '').replace(/\n/g, ' ')}`,
-      `version: ${skill.version || '0.0.0'}`,
-      `author: ${skill.author || ''}`,
-      '---',
-      '',
-      skill.skillBody || skill.systemPrompt || ''
-    ].join('\n')
-    zip.addFile('SKILL.md', Buffer.from(fm, 'utf8'))
+  addSkillToZip(zip, skill)
+  return zip.toBuffer()
+}
+
+/**
+ * Build ONE combined .zip holding many skills, each in its own subfolder
+ * (named after the skill, de-duplicated). For backup / migrating / sharing a
+ * whole set at once. Each subfolder contains a complete, individually
+ * re-importable bundle (SKILL.md + resources).
+ */
+export function buildSkillsExportZip(skills: ExportableSkill[]): Buffer {
+  const AdmZip = require('adm-zip')
+  const zip = new AdmZip()
+  const used = new Set<string>()
+  for (const skill of skills) {
+    const base = (skill.name || skill.id).replace(/[\\/:*?"<>|]/g, '_').trim().slice(0, 50) || 'skill'
+    let sub = base, i = 2
+    while (used.has(sub.toLowerCase())) sub = `${base}-${i++}`
+    used.add(sub.toLowerCase())
+    addSkillToZip(zip, skill, sub)
   }
   return zip.toBuffer()
 }

@@ -7,10 +7,10 @@ import {
   addSkillSource, deleteSkillSource, setSkillSourceEnabled, ensureBuiltinSource,
   setSkillStatus, type SkillScenario, type SkillLifecycleStatus
 } from '../services/skills-db'
-import { induceFromSession } from '../services/skill-induction'
+import { induceFromSessionManual } from '../services/skill-induction'
 import { startSkillOps } from '../services/skill-evolution'
 import { fetchRegistry, fetchManifest, ensureBundledInstalled, type RegistryEntry, type FetchedRegistry, type BrowseParams } from '../services/skills-registry'
-import { downloadSkillBundle, importLocalSkillBundle, parseSkillMd, readSkillResource, buildSkillExportZip } from '../services/skill-files'
+import { downloadSkillBundle, importLocalSkillBundle, parseSkillMd, readSkillResource, buildSkillExportZip, buildSkillsExportZip } from '../services/skill-files'
 import { discoverLocalSkills } from '../services/skill-discover'
 
 export function skillsHandlers(): void {
@@ -25,11 +25,9 @@ export function skillsHandlers(): void {
   // --- Installed skills ---
   ipcMain.handle(IPC.SKILLS_LIST, () => listInstalledSkills())
 
-  // 对话自动学习：手动「把这次对话变成技能」。Returns the induced skill or null.
-  ipcMain.handle(IPC.SKILLS_INDUCE_SESSION, async (_e, sessionId: string) => {
-    const skill = await induceFromSession(sessionId, { manual: true })
-    return skill ? { ok: true, skill } : { ok: false, error: '这段对话里没有提炼出可复用的技能' }
-  })
+  // 对话自动学习：手动「把这次对话变成技能」。Returns {ok, skill?, error?} with a
+  // precise reason on failure (model-not-configured / 闲聊 / 已存在 …).
+  ipcMain.handle(IPC.SKILLS_INDUCE_SESSION, (_e, sessionId: string) => induceFromSessionManual(sessionId))
 
   // 审核：采纳(active) / 待审(pending) / 停用(deprecated)。
   ipcMain.handle(IPC.SKILLS_SET_STATUS, (_e, args: { id: string; status: SkillLifecycleStatus }) => {
@@ -107,6 +105,25 @@ export function skillsHandlers(): void {
     try {
       fs.writeFileSync(dlg.filePath, buildSkillExportZip(skill))
       return { canceled: false, filePath: dlg.filePath }
+    } catch (err) {
+      return { canceled: true, error: (err as Error).message }
+    }
+  })
+
+  // Export many skills at once into ONE combined .zip (per-skill subfolders) —
+  // for backing up / migrating / sharing a whole set (e.g. all auto-learned
+  // skills). One save dialog instead of N. Skips any missing ids.
+  ipcMain.handle(IPC.SKILLS_EXPORT_BATCH, async (e, ids: string[]) => {
+    const skills = (ids ?? []).map(getInstalledSkill).filter((s): s is NonNullable<typeof s> => !!s)
+    if (!skills.length) return { canceled: true, error: '没有可导出的技能' }
+    const win = BrowserWindow.fromWebContents(e.sender)
+    const stamp = new Date().toISOString().slice(0, 10)
+    const opts = { defaultPath: `skills-${skills.length}-${stamp}.zip`, filters: [{ name: 'Zip', extensions: ['zip'] }] }
+    const dlg = win ? await dialog.showSaveDialog(win, opts) : await dialog.showSaveDialog(opts)
+    if (dlg.canceled || !dlg.filePath) return { canceled: true }
+    try {
+      fs.writeFileSync(dlg.filePath, buildSkillsExportZip(skills))
+      return { canceled: false, filePath: dlg.filePath, count: skills.length }
     } catch (err) {
       return { canceled: true, error: (err as Error).message }
     }

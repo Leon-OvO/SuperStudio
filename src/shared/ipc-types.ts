@@ -244,6 +244,7 @@ export const IPC = {
   SKILLS_IMPORT_LOCAL: 'skills:import-local',
   SKILLS_DISCOVER_LOCAL: 'skills:discover-local',   // scan ~/.claude/skills etc. for importable bundles
   SKILLS_EXPORT: 'skills:export',                    // export an installed skill as a re-importable .zip
+  SKILLS_EXPORT_BATCH: 'skills:export-batch',        // export many skills into one combined .zip (per-skill subfolders)
   // 对话自动学习（auto-induced skills）
   SKILLS_INDUCE_SESSION: 'skills:induce-session',    // 「把这次对话变成技能」手动诱导
   SKILLS_SET_STATUS: 'skills:set-status',            // 审核：active(采纳) | pending | deprecated(停用)

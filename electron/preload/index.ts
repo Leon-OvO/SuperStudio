@@ -432,6 +432,8 @@ const api = {
   importLocalSkill: (sourcePath: string) => ipcRenderer.invoke(IPC.SKILLS_IMPORT_LOCAL, sourcePath),
   exportSkill: (id: string) =>
     ipcRenderer.invoke(IPC.SKILLS_EXPORT, id) as Promise<{ canceled: boolean; filePath?: string; error?: string }>,
+  exportSkills: (ids: string[]) =>
+    ipcRenderer.invoke(IPC.SKILLS_EXPORT_BATCH, ids) as Promise<{ canceled: boolean; filePath?: string; error?: string; count?: number }>,
   discoverLocalSkills: (projectPath?: string) => ipcRenderer.invoke(IPC.SKILLS_DISCOVER_LOCAL, { projectPath }),
   uninstallSkill: (id: string) => ipcRenderer.invoke(IPC.SKILLS_UNINSTALL, id),
   setSkillEnabled: (args: { id: string; enabled: boolean }) => ipcRenderer.invoke(IPC.SKILLS_SET_ENABLED, args),

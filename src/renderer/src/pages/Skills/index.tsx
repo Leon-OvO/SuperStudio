@@ -3,11 +3,12 @@ import {
   Sparkles, Download, Trash2, ToggleLeft, ToggleRight, RefreshCw, Plus, Link2,
   MessageSquare, Code2, Video, Loader2, ExternalLink, X, AlertCircle, Globe, Package,
   Search, ChevronLeft, ChevronRight, ChevronDown, Shield, FileText, FolderOpen,
-  Wand2, CheckCircle2, Ban, RotateCcw, TrendingUp
+  Wand2, CheckCircle2, Ban, RotateCcw, TrendingUp, CheckSquare, Square, ArrowDownUp
 } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { useT } from '../../lib/i18n'
 import { toast } from '../../components/ui/Toast'
+import { Select } from '../../components/ui/Select'
 import { useConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { useInputDialog } from '../../components/ui/InputDialog'
 import type {
@@ -173,6 +174,24 @@ export function SkillsPage() {
   async function setSkillStatus(s: InstalledSkillInfo, status: 'active' | 'pending' | 'deprecated') {
     await window.api.setSkillStatus({ id: s.id, status })
     refreshInstalled()
+  }
+  // Batch lifecycle ops for the 自动学习 list (one refresh after the whole batch).
+  async function batchSkillStatus(ids: string[], status: 'active' | 'pending' | 'deprecated') {
+    for (const id of ids) await window.api.setSkillStatus({ id, status })
+    await refreshInstalled()
+  }
+  async function batchUninstallSkills(ids: string[]): Promise<boolean> {
+    if (!ids.length) return false
+    const ok = await dlg.confirm({
+      message: `删除选中的 ${ids.length} 个自动学习技能？\n此操作不可撤销（可先导出备份）。`,
+      tone: 'danger',
+      confirmLabel: '删除'
+    })
+    if (!ok) return false
+    for (const id of ids) await window.api.uninstallSkill(id)
+    toast.success(`已删除 ${ids.length} 个技能`)
+    await refreshInstalled()
+    return true
   }
 
   const autoSkills = useMemo(() => installed.filter(s => s.origin === 'auto'), [installed])
@@ -431,6 +450,8 @@ export function SkillsPage() {
             onToggleInduction={toggleInduction}
             onSetStatus={setSkillStatus}
             onUninstall={uninstall}
+            onBatchStatus={batchSkillStatus}
+            onBatchUninstall={batchUninstallSkills}
           />
         )}
         {tab === 'installed' && (
@@ -1355,21 +1376,123 @@ const AUTO_STATUS_META: Record<'pending' | 'active' | 'deprecated', { label: str
   deprecated: { label: '已停用', cls: 'bg-muted text-muted-foreground' },
 }
 
+const AUTO_PAGE_SIZE = 10
+type AutoStatusFilter = 'all' | 'pending' | 'active' | 'deprecated'
+type AutoSort = 'recent' | 'loaded' | 'maturity'
+
+const AUTO_FILTERS: { key: AutoStatusFilter; label: string }[] = [
+  { key: 'all', label: '全部' },
+  { key: 'pending', label: '待审核' },
+  { key: 'active', label: '已采纳' },
+  { key: 'deprecated', label: '已停用' },
+]
+
 function AutoLearnTab({
-  list, induction, onToggleInduction, onSetStatus, onUninstall
+  list, induction, onToggleInduction, onSetStatus, onUninstall, onBatchStatus, onBatchUninstall
 }: {
   list: InstalledSkillInfo[]
   induction: { enabled: boolean; autoEnable: boolean }
   onToggleInduction: (patch: { skillInductionEnabled?: boolean; skillAutoEnable?: boolean }) => void
   onSetStatus: (s: InstalledSkillInfo, status: 'active' | 'pending' | 'deprecated') => void
   onUninstall: (s: InstalledSkillInfo) => void
+  onBatchStatus: (ids: string[], status: 'active' | 'pending' | 'deprecated') => Promise<void> | void
+  onBatchUninstall: (ids: string[]) => Promise<boolean>
 }) {
-  // Order: pending(待审) → active(已采纳) → deprecated(已停用); within, newest first.
-  const rank: Record<string, number> = { pending: 0, active: 1, deprecated: 2 }
-  const sorted = useMemo(
-    () => [...list].sort((a, b) => (rank[a.status] - rank[b.status]) || (b.installedAt - a.installedAt)),
-    [list]
+  const [statusFilter, setStatusFilter] = useState<AutoStatusFilter>('all')
+  const [keyword, setKeyword] = useState('')
+  const [applied, setApplied] = useState('')
+  const [sort, setSort] = useState<AutoSort>('recent')
+  const [page, setPage] = useState(1)
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [exporting, setExporting] = useState(false)
+
+  // Debounce search; reset to page 1 once it settles.
+  useEffect(() => {
+    const t = setTimeout(() => { setApplied(keyword.trim().toLowerCase()); setPage(1) }, 200)
+    return () => clearTimeout(t)
+  }, [keyword])
+  useEffect(() => { setPage(1) }, [statusFilter, sort])
+
+  // Per-status counts for the filter chips.
+  const counts = useMemo(() => {
+    const c: Record<AutoStatusFilter, number> = { all: list.length, pending: 0, active: 0, deprecated: 0 }
+    for (const s of list) {
+      if (s.status === 'pending' || s.status === 'active' || s.status === 'deprecated') c[s.status]++
+    }
+    return c
+  }, [list])
+
+  const filtered = useMemo(() => {
+    let r = list
+    if (statusFilter !== 'all') r = r.filter(s => s.status === statusFilter)
+    if (applied) r = r.filter(s =>
+      s.name.toLowerCase().includes(applied) ||
+      s.description.toLowerCase().includes(applied) ||
+      (s.skillBody ?? '').toLowerCase().includes(applied))
+    return [...r].sort((a, b) => {
+      if (sort === 'loaded') return (b.timesLoaded - a.timesLoaded) || (b.installedAt - a.installedAt)
+      if (sort === 'maturity') return ((b.confidence ?? 0) - (a.confidence ?? 0)) || (b.installedAt - a.installedAt)
+      return b.installedAt - a.installedAt
+    })
+  }, [list, statusFilter, applied, sort])
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / AUTO_PAGE_SIZE))
+  const safePage = Math.min(page, totalPages)
+  const pageItems = useMemo(
+    () => filtered.slice((safePage - 1) * AUTO_PAGE_SIZE, safePage * AUTO_PAGE_SIZE),
+    [filtered, safePage]
   )
+
+  // Selection spans the whole filtered set (not just the current page), but is
+  // always reconciled against skills that still exist.
+  const filteredIds = useMemo(() => filtered.map(s => s.id), [filtered])
+  const selectedExisting = useMemo(
+    () => [...selected].filter(id => list.some(s => s.id === id)),
+    [selected, list]
+  )
+  const allFilteredSelected = filteredIds.length > 0 && filteredIds.every(id => selected.has(id))
+
+  function toggleSelect(id: string) {
+    setSelected(prev => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n })
+  }
+  function toggleSelectAll() {
+    setSelected(prev => {
+      const n = new Set(prev)
+      if (allFilteredSelected) filteredIds.forEach(id => n.delete(id))
+      else filteredIds.forEach(id => n.add(id))
+      return n
+    })
+  }
+  const clearSelection = () => setSelected(new Set())
+
+  async function doExport(ids: string[]) {
+    if (!ids.length || exporting) return
+    setExporting(true)
+    try {
+      if (ids.length === 1) {
+        const r = await window.api.exportSkill(ids[0])
+        if (r?.canceled) { if (r.error) toast.error('导出失败：' + r.error); return }
+        toast.success('已导出技能到 ' + r.filePath)
+      } else {
+        const r = await window.api.exportSkills(ids)
+        if (r?.canceled) { if (r.error) toast.error('导出失败：' + r.error); return }
+        toast.success(`已导出 ${r.count ?? ids.length} 个技能到 ${r.filePath}`)
+      }
+    } catch (e) {
+      toast.error('导出失败：' + (e as Error).message)
+    } finally {
+      setExporting(false)
+    }
+  }
+
+  async function batchDeprecate() {
+    if (!selectedExisting.length) return
+    await onBatchStatus(selectedExisting, 'deprecated')
+    clearSelection()
+  }
+  async function batchDelete() {
+    if (await onBatchUninstall(selectedExisting)) clearSelection()
+  }
 
   return (
     <div className="max-w-4xl mx-auto px-6 py-6 space-y-4">
@@ -1403,23 +1526,132 @@ function AutoLearnTab({
         </div>
       </div>
 
-      {sorted.length === 0 ? (
+      {list.length === 0 ? (
         <EmptyState
           icon={Wand2}
           title="还没有自动学到的技能"
           message="多用对话；当出现可复用的多步做法时，系统会在这里沉淀成技能。也可以在任意对话里点「把这次对话变成技能」。"
         />
       ) : (
-        <div className="space-y-3">
-          {sorted.map(s => (
-            <AutoSkillCard
-              key={s.id}
-              skill={s}
-              onSetStatus={(status) => onSetStatus(s, status)}
-              onUninstall={() => onUninstall(s)}
+        <>
+          {/* Toolbar: status chips · search · sort · export */}
+          <div className="space-y-2">
+            <div className="flex items-center gap-1.5 flex-wrap">
+              {AUTO_FILTERS.map(({ key, label }) => (
+                <button
+                  key={key}
+                  onClick={() => setStatusFilter(key)}
+                  className={cn(
+                    'h-7 px-2.5 rounded-md text-xs border transition-colors',
+                    statusFilter === key
+                      ? 'bg-primary text-primary-foreground border-primary font-medium'
+                      : 'bg-card border-border text-muted-foreground hover:text-foreground hover:bg-accent'
+                  )}
+                >
+                  {label} <span className={cn('tabular-nums', statusFilter === key ? 'opacity-90' : 'opacity-60')}>{counts[key]}</span>
+                </button>
+              ))}
+              <div className="flex-1" />
+              <div className="relative">
+                <Search size={11} className="absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground/60 pointer-events-none" />
+                <input
+                  value={keyword}
+                  onChange={(e) => setKeyword(e.target.value)}
+                  placeholder="搜索技能名 / 描述 / 内容"
+                  className="h-7 pl-6 pr-7 w-52 text-xs rounded-md border border-border bg-card focus:outline-none focus:ring-1 focus:ring-primary/40"
+                />
+                {keyword && (
+                  <button
+                    onClick={() => setKeyword('')}
+                    className="absolute right-1 top-1/2 -translate-y-1/2 p-0.5 rounded text-muted-foreground/70 hover:text-foreground hover:bg-accent"
+                    title="清除"
+                  >
+                    <X size={11} />
+                  </button>
+                )}
+              </div>
+              <Select
+                size="sm"
+                value={sort}
+                onChange={(v) => setSort(v as AutoSort)}
+                title="排序"
+                options={[
+                  { value: 'recent', label: '最近学到', icon: <ArrowDownUp size={12} /> },
+                  { value: 'loaded', label: '最常加载', icon: <TrendingUp size={12} /> },
+                  { value: 'maturity', label: '成熟度', icon: <CheckCircle2 size={12} /> },
+                ]}
+              />
+              <button
+                onClick={() => doExport(filteredIds)}
+                disabled={exporting || filteredIds.length === 0}
+                title="把当前筛选出的全部技能打包成一个合集 .zip（每个技能一个子目录，用于备份/分享；解压后可逐个导入）"
+                className="flex items-center gap-1 h-7 px-2.5 text-xs rounded-md border border-border bg-card hover:bg-accent text-foreground transition-colors disabled:opacity-50 shrink-0"
+              >
+                {exporting ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />}
+                导出{statusFilter === 'all' && !applied ? '全部' : '筛选'}
+              </button>
+            </div>
+            <div className="flex items-center gap-3 text-[11px] text-muted-foreground/70">
+              <button onClick={toggleSelectAll} className="inline-flex items-center gap-1 hover:text-foreground transition-colors">
+                {allFilteredSelected ? <CheckSquare size={13} className="text-primary" /> : <Square size={13} />}
+                全选当前结果
+              </button>
+              <span>
+                共 {filtered.length} 个{filtered.length !== list.length && ` · 全部 ${list.length}`}
+              </span>
+            </div>
+          </div>
+
+          {/* Batch action bar — appears when ≥1 selected */}
+          {selectedExisting.length > 0 && (
+            <div className="sticky top-0 z-10 flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/[0.08] backdrop-blur-sm px-3 py-2 text-xs">
+              <span className="font-medium text-primary">已选 {selectedExisting.length} 个</span>
+              <div className="flex-1" />
+              <button
+                onClick={() => doExport(selectedExisting)}
+                disabled={exporting}
+                className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50 font-medium"
+              >
+                {exporting ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />} 导出所选
+              </button>
+              <button onClick={batchDeprecate} className="inline-flex items-center gap-1 px-2 py-1 rounded-md hover:bg-accent text-muted-foreground hover:text-foreground transition-colors">
+                <Ban size={12} /> 停用
+              </button>
+              <button onClick={batchDelete} className="inline-flex items-center gap-1 px-2 py-1 rounded-md hover:bg-destructive/10 text-destructive/80 hover:text-destructive transition-colors">
+                <Trash2 size={12} /> 删除
+              </button>
+              <button onClick={clearSelection} className="inline-flex items-center gap-1 px-2 py-1 rounded-md hover:bg-accent text-muted-foreground transition-colors">
+                取消
+              </button>
+            </div>
+          )}
+
+          {pageItems.length === 0 ? (
+            <EmptyState
+              icon={Search}
+              title="没有匹配的技能"
+              message="换个关键词或筛选条件试试。"
             />
-          ))}
-        </div>
+          ) : (
+            <div className="space-y-3">
+              {pageItems.map(s => (
+                <AutoSkillCard
+                  key={s.id}
+                  skill={s}
+                  selected={selected.has(s.id)}
+                  onToggleSelect={() => toggleSelect(s.id)}
+                  onExport={() => doExport([s.id])}
+                  onSetStatus={(status) => onSetStatus(s, status)}
+                  onUninstall={() => onUninstall(s)}
+                />
+              ))}
+            </div>
+          )}
+
+          {totalPages > 1 && (
+            <Pagination page={safePage} totalPages={totalPages} disabled={false} onChange={setPage} />
+          )}
+        </>
       )}
     </div>
   )
@@ -1441,8 +1673,11 @@ function ToggleRow({ on, onClick, title, desc, disabled }: {
   )
 }
 
-function AutoSkillCard({ skill, onSetStatus, onUninstall }: {
+function AutoSkillCard({ skill, selected, onToggleSelect, onExport, onSetStatus, onUninstall }: {
   skill: InstalledSkillInfo
+  selected: boolean
+  onToggleSelect: () => void
+  onExport: () => void
   onSetStatus: (status: 'active' | 'pending' | 'deprecated') => void
   onUninstall: () => void
 }) {
@@ -1451,8 +1686,19 @@ function AutoSkillCard({ skill, onSetStatus, onUninstall }: {
   const total = skill.timesSucceeded + skill.timesFailed
   const conf = skill.confidence != null ? Math.round(skill.confidence * 100) : null
   return (
-    <div className={cn('rounded-xl border bg-card p-4 transition-all', skill.status === 'deprecated' && 'opacity-60')}>
+    <div className={cn(
+      'rounded-xl border bg-card p-4 transition-all',
+      skill.status === 'deprecated' && 'opacity-60',
+      selected && 'border-primary/50 bg-primary/[0.03] ring-1 ring-primary/20'
+    )}>
       <div className="flex items-start gap-3">
+        <button
+          onClick={onToggleSelect}
+          className="mt-0.5 p-0.5 rounded shrink-0 text-muted-foreground/70 hover:text-primary transition-colors"
+          title={selected ? '取消选择' : '选择'}
+        >
+          {selected ? <CheckSquare size={16} className="text-primary" /> : <Square size={16} />}
+        </button>
         <div className="w-9 h-9 rounded-lg bg-primary/10 flex items-center justify-center shrink-0 text-lg">✨</div>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
@@ -1491,6 +1737,9 @@ function AutoSkillCard({ skill, onSetStatus, onUninstall }: {
             <RotateCcw size={11} /> 恢复启用
           </button>
         )}
+        <button onClick={onExport} className="inline-flex items-center gap-1 text-muted-foreground hover:text-foreground transition-colors" title="导出为 .zip 技能包（可再导入）">
+          <Download size={11} /> 导出
+        </button>
         <button onClick={onUninstall} className="inline-flex items-center gap-1 text-destructive/80 hover:text-destructive transition-colors">
           <Trash2 size={11} /> 删除
         </button>
