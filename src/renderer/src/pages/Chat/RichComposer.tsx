@@ -1,4 +1,5 @@
 import { forwardRef, useImperativeHandle, useRef, useState, useCallback, useEffect } from 'react'
+import { createPortal } from 'react-dom'
 import { Server, MessageSquare, MessagesSquare, FileText } from 'lucide-react'
 import type { SshConnectionMeta, ContextRef } from '../../../../shared/ipc-types'
 
@@ -30,6 +31,9 @@ export interface RichComposerHandle {
   insertRef(ref: InlineRef): void
   /** Replace the active @query (or insert at caret) with plain text (group @员工). */
   insertText(text: string): void
+  /** Replace the WHOLE editor content with plain text (drops chips). Used by the
+   *  canvas composer's 扩写 to write back an expanded prompt. */
+  setText(text: string): void
   /** Insert a bare `@` at the caret and open the mention picker (toolbar button). */
   triggerMention(): void
   /** Delete the active @query text without inserting anything (used when an @-pick
@@ -135,7 +139,11 @@ export const RichComposer = forwardRef<RichComposerHandle, Props>(function RichC
     if (at === -1) { onMention(null); mentionRange.current = null; return }
     const between = before.slice(at + 1)
     if (/[\s ]/.test(between)) { onMention(null); mentionRange.current = null; return }
-    const prev = at === 0 ? '' : before[at - 1]
+    // '@' triggers at a boundary: start / whitespace / any NON-latin-word char — so it
+    // fires right after CJK text (which has no word spaces). Only a latin word char
+    // before '@' counts as mid-identifier (email "a@b") and is suppressed below.
+    const prevRaw = at === 0 ? '' : before[at - 1]
+    const prev = prevRaw && /[A-Za-z0-9_]/.test(prevRaw) ? prevRaw : ''
     if (prev && !/[\s ]/.test(prev)) { onMention(null); mentionRange.current = null; return }
     mentionRange.current = { node: tn, at, end: offset }
     onMention(between)
@@ -302,6 +310,20 @@ export const RichComposer = forwardRef<RichComposerHandle, Props>(function RichC
     serialize,
     insertRef,
     insertText,
+    setText: (text: string) => {
+      const el = editorRef.current
+      if (!el) return
+      el.innerHTML = ''
+      refMap.current.clear()
+      if (text) el.appendChild(document.createTextNode(text))
+      const sel = window.getSelection()
+      const r = document.createRange()
+      r.selectNodeContents(el); r.collapse(false)
+      sel?.removeAllRanges(); sel?.addRange(r)
+      mentionRange.current = null
+      onMention(null)
+      syncEmpty()
+    },
     triggerMention,
     removeQuery
   }), [empty, serialize, insertRef, insertText, triggerMention, removeQuery, onMention, syncEmpty])
@@ -430,9 +452,14 @@ export const RichComposer = forwardRef<RichComposerHandle, Props>(function RichC
       {hover && (() => {
         const data = refMap.current.get(hover.key)
         if (!data) return null
-        return <ChipPreview data={data} top={hover.top} left={hover.left}
-          onEnter={() => { if (hoverTimer.current) clearTimeout(hoverTimer.current) }}
-          onLeave={() => setHover(null)} />
+        // Portal to body: a position:fixed card is trapped by transform'd ancestors
+        // (e.g. the canvas ReactFlow viewport); in body it anchors to the viewport.
+        return createPortal(
+          <ChipPreview data={data} top={hover.top} left={hover.left}
+            onEnter={() => { if (hoverTimer.current) clearTimeout(hoverTimer.current) }}
+            onLeave={() => setHover(null)} />,
+          document.body
+        )
       })()}
     </div>
   )

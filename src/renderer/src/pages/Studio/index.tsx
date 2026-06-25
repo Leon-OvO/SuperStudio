@@ -4,6 +4,7 @@ import { cn } from '../../lib/utils'
 import { useUIStore } from '../../stores/ui'
 import { useConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { Segmented } from '../../components/ui/Segmented'
+import { WorkspaceTabs } from './WorkspaceTabs'
 import { CanvasPage } from '../Canvas'
 import { WorkflowPage } from '../Workflow'
 import { VideoPage } from '../Video'
@@ -26,6 +27,8 @@ export function StudioPage() {
   const [workflowOpen, setWorkflowOpen] = useState<{ id: string | null; nonce: number }>({ id: null, nonce: 0 })
   const [canvasDocs, setCanvasDocs] = useState<DocMeta[]>([])
   const [workflowDocs, setWorkflowDocs] = useState<DocMeta[]>([])
+  // Open canvases shown as the top tab strip (bookmarks over the single editor).
+  const [openTabs, setOpenTabs] = useState<DocMeta[]>([])
   const [archiveOpen, setArchiveOpen] = useState(false)
   const { pendingWorkflowId, setPendingWorkflowId } = useUIStore()
   const dlg = useConfirmDialog()
@@ -58,13 +61,42 @@ export function StudioPage() {
     setWorkflowOpen(o => ({ id, nonce: o.nonce + 1 }))
   }, [pendingWorkflowId, setPendingWorkflowId])
 
-  const openCanvas = (id: string | null) => { setMode('canvas'); setCanvasOpen(o => ({ id, nonce: o.nonce + 1 })); setArchiveOpen(false) }
+  const upsertTab = useCallback((id: string, name: string) => {
+    setOpenTabs(tabs => tabs.some(t => t.id === id) ? tabs.map(t => t.id === id ? { ...t, name } : t) : [...tabs, { id, name }])
+  }, [])
+  const openCanvas = (id: string | null, name?: string) => {
+    setMode('canvas'); setCanvasOpen(o => ({ id, nonce: o.nonce + 1 })); setArchiveOpen(false)
+    if (id) upsertTab(id, name ?? canvasDocs.find(d => d.id === id)?.name ?? '画布')
+  }
   const openWorkflow = (id: string | null) => { setMode('workflow'); setWorkflowOpen(o => ({ id, nonce: o.nonce + 1 })); setArchiveOpen(false) }
+  // Close a canvas tab; if it was active, fall back to the last remaining tab or a blank canvas.
+  const closeTab = (id: string) => {
+    setOpenTabs(tabs => {
+      const next = tabs.filter(t => t.id !== id)
+      if (canvasOpen.id === id) {
+        const fb = next[next.length - 1]
+        setCanvasOpen(o => ({ id: fb ? fb.id : null, nonce: o.nonce + 1 }))
+      }
+      return next
+    })
+  }
+  // Reconcile tab names against the latest doc list (renamed/just-saved canvases).
+  // Name-only — never drop here (a just-autosaved id may not be in canvasDocs yet);
+  // deletion removes the tab explicitly in deleteDoc.
+  useEffect(() => {
+    setOpenTabs(tabs => tabs.map(t => {
+      const d = canvasDocs.find(d => d.id === t.id)
+      return d ? { ...t, name: d.name } : t
+    }))
+  }, [canvasDocs])
 
   const deleteDoc = useCallback(async (kind: DocKind, id: string) => {
     if (!(await dlg.confirm({ message: kind === 'canvas' ? '确定删除这个画布？' : '确定删除该工作流？', tone: 'danger', confirmLabel: '删除' }))) return
     await window.api.deleteWorkflow(id)
-    if (kind === 'canvas' && canvasOpen.id === id) setCanvasOpen(o => ({ id: null, nonce: o.nonce + 1 }))
+    if (kind === 'canvas') {
+      setOpenTabs(tabs => tabs.filter(t => t.id !== id))
+      if (canvasOpen.id === id) setCanvasOpen(o => ({ id: null, nonce: o.nonce + 1 }))
+    }
     if (kind === 'workflow' && workflowOpen.id === id) setWorkflowOpen(o => ({ id: null, nonce: o.nonce + 1 }))
     void refreshDocs()
   }, [dlg, canvasOpen.id, workflowOpen.id, refreshDocs])
@@ -97,7 +129,7 @@ export function StudioPage() {
               {canvasDocs.length === 0 && <p className="px-3 py-1 text-xs text-muted-foreground/60">还没有画布</p>}
               {canvasDocs.map(d => (
                 <DocRow key={d.id} name={d.name} icon={<FileImage size={12} />} active={mode === 'canvas' && canvasOpen.id === d.id}
-                  onOpen={() => openCanvas(d.id)} onDelete={() => deleteDoc('canvas', d.id)} />
+                  onOpen={() => openCanvas(d.id, d.name)} onDelete={() => deleteDoc('canvas', d.id)} />
               ))}
               <div className="my-1.5 border-t border-border/60" />
               <div className="px-3 py-1 text-[11px] font-medium text-muted-foreground flex items-center gap-1.5"><WorkflowIcon size={11} /> 工作流</div>
@@ -113,11 +145,23 @@ export function StudioPage() {
         )}
       </div>
 
+      {/* Canvas-only: browser-style workspace tab strip of open canvases. */}
+      {mode === 'canvas' && (
+        <WorkspaceTabs
+          tabs={openTabs}
+          activeId={canvasOpen.id}
+          unsavedActive={canvasOpen.id === null}
+          onSelect={(id) => openCanvas(id)}
+          onClose={closeTab}
+          onNew={() => openCanvas(null)}
+        />
+      )}
+
       {/* All editors stay mounted; hidden toggle preserves viewport / in-flight work. */}
       <div className="flex-1 min-h-0 relative">
         <div className={mode === 'canvas' ? 'absolute inset-0' : 'hidden'}>
           <CanvasPage embedded openDocId={canvasOpen.id} openNonce={canvasOpen.nonce} onDocsChanged={scheduleRefresh}
-            onDocOpened={id => setCanvasOpen(o => ({ ...o, id }))} />
+            onDocOpened={id => { setCanvasOpen(o => ({ ...o, id })); if (id) upsertTab(id, canvasDocs.find(d => d.id === id)?.name ?? '未命名画布') }} />
         </div>
         <div className={mode === 'workflow' ? 'absolute inset-0' : 'hidden'}>
           <WorkflowPage embedded openDocId={workflowOpen.id} openNonce={workflowOpen.nonce} onDocsChanged={scheduleRefresh}

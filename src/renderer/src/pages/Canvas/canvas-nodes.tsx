@@ -1,8 +1,12 @@
-import { createContext, useContext, useState, useRef, useEffect } from 'react'
+import { createContext, useContext, useState, useRef } from 'react'
 import { Handle, Position, NodeToolbar, NodeResizer, type NodeProps } from '@xyflow/react'
 import { Loader2, Trash2, Maximize2, Download, ArrowUp, ImageOff, Sparkles, Play, Plus, FolderOpen, Layers, X, Wand2, ChevronDown, Pencil, RotateCw } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { toLocalFileUrl } from '../../lib/attachments'
+import { useCanvasBridge } from './CanvasBridge'
+import { useCanvasMentionPicker } from './canvas-mention'
+import { RichComposer, type RichComposerHandle } from '../Chat/RichComposer'
+import { toast } from '../../components/ui/Toast'
 
 /** Free-canvas image card. `status:'generating'` is a placeholder that fills in
  *  when its generation resolves; otherwise it shows the image at `path`. */
@@ -35,7 +39,7 @@ export interface RefStackData {
 /** Page-level handlers the cards call (generate / delete / save / zoom). Passed via
  *  context so custom nodes can reach them without serialising callbacks into data. */
 export interface CanvasHandlers {
-  onGenerate: (sourceNodeId: string, prompt: string, count: number, size: string, quality: string, scene: string) => void
+  onGenerate: (sourceNodeId: string, prompt: string, count: number, size: string, quality: string, scene: string, extraRefs?: string[]) => void
   onDelete: (nodeId: string) => void
   onDownload: (path: string) => void
   onLightbox: (path: string) => void
@@ -46,7 +50,7 @@ export interface CanvasHandlers {
   onExpand: (nodeId: string) => void
   expanding: Set<string>
   /** Reference-stack actions. */
-  onGenerateFromStack: (stackId: string, prompt: string, count: number, size: string, quality: string, scene: string) => void
+  onGenerateFromStack: (stackId: string, prompt: string, count: number, size: string, quality: string, scene: string, extraRefs?: string[]) => void
   onStackAddLocal: (stackId: string) => void
   onStackAddGallery: (stackId: string) => void
   onStackRemoveRef: (stackId: string, index: number) => void
@@ -216,73 +220,85 @@ function SceneDropdown({ value, onChange }: { value: string; onChange: (v: strin
   )
 }
 
-/** Shared floating prompt bar (image card + reference stack). The prompt text is
- *  CONTROLLED from the node's data (value/onChange) so it's recorded on the canvas
- *  and survives the node being deselected mid-扩写; expansion runs page-side (onExpand)
- *  for the same reason. Count/size/quality stay local (transient settings). */
-function GenPromptBar({ busy, placeholder, value, onChange, expanding, onExpand, onSubmit }: {
+/** Shared floating prompt bar (image card + reference stack + central composer).
+ *  Built on the chat RichComposer so @-introduced references render as INLINE chips
+ *  that flow with the typed text (same as 对话). Uncontrolled — the DOM owns content;
+ *  read on submit via serialize(). 扩写 rewrites the text (drops chips). Count/size/
+ *  quality/scene stay local. onSubmit gets the prompt text + the inline ref paths. */
+export function GenPromptBar({ busy, placeholder, onSubmit }: {
   busy: boolean
   placeholder: string
-  value: string
-  onChange: (text: string) => void
-  expanding: boolean
-  onExpand: () => void
-  onSubmit: (prompt: string, count: number, size: string, quality: string, scene: string) => void
+  /** refs = paths of @-introduced inline reference images (canvas / stack / 素材库 / local). */
+  onSubmit: (prompt: string, count: number, size: string, quality: string, scene: string, refs: string[]) => void
 }) {
   const [count, setCount] = useState(1)
   const [size, setSize] = useState('1024x1024')
   const [quality, setQuality] = useState('standard')
   const [scene, setScene] = useState('none')
-  const taRef = useRef<HTMLTextAreaElement>(null)
-  // Local mirror of the text. The prompt is CONTROLLED from node data, and every
-  // keystroke round-trips through setNodes → a full React Flow node re-render. If
-  // that round-trip drives the textarea's `value`, the controlled value can lag a
-  // frame behind the IME composition buffer and reset it — which is exactly why
-  // some 输入法 (拼音/五笔等) couldn't type into this box. Driving the DOM from a
-  // local mirror decouples it from the round-trip; we only adopt an EXTERNAL value
-  // change (e.g. the 扩写 result), never our own echo.
-  const [local, setLocal] = useState(value)
-  const lastSentRef = useRef(value)
-  useEffect(() => {
-    if (value !== lastSentRef.current) { setLocal(value); lastSentRef.current = value }
-  }, [value])
-  const emit = (text: string) => { setLocal(text); lastSentRef.current = text; onChange(text) }
-  // Auto-grow the textarea with its content (esp. after 扩写 produces long text),
-  // capped at ~7 lines then it scrolls — long prompts stay readable.
-  useEffect(() => {
-    const el = taRef.current
-    if (!el) return
-    el.style.height = 'auto'
-    el.style.height = Math.min(el.scrollHeight, 168) + 'px'
-  }, [local])
-  const submit = () => { const v = local.trim(); if (!v || busy) return; onSubmit(v, count, size, quality, scene) }
+  const [expanding, setExpanding] = useState(false)
+  const [empty, setEmpty] = useState(true)
+  const [mentionQuery, setMentionQuery] = useState<string | null>(null)
+  const bridge = useCanvasBridge()
+  const composerRef = useRef<RichComposerHandle>(null)
+
+  // @ picker — surfaces reference images; picking inserts inline chips.
+  const picker = useCanvasMentionPicker({
+    query: mentionQuery,
+    nodes: bridge.nodes,
+    onInsert: (refs) => refs.forEach(r => composerRef.current?.insertRef(r)),
+  })
+
+  const submit = () => {
+    const s = composerRef.current?.serialize()
+    const prompt = (s?.text ?? '').trim()
+    if (!prompt || busy) return
+    const refs = (s?.inlineAttachments ?? []).map(a => a.path)
+    onSubmit(prompt, count, size, quality, scene, refs)
+    // Keep the prompt + @ refs after generating so the user can tweak / regenerate.
+  }
+
+  const expand = async () => {
+    const s = composerRef.current?.serialize()
+    const text = (s?.text ?? '').trim()
+    if (!text || expanding) return
+    const refs = (s?.inlineAttachments ?? []).map(a => a.path)
+    setExpanding(true)
+    try {
+      const r = await window.api.canvasExpandPrompt({ prompt: text, referenceImagePaths: refs.length ? refs : undefined }) as { ok?: boolean; text?: string; error?: string }
+      if (r?.ok && r.text) composerRef.current?.setText(r.text)
+      else toast.error(r?.error || '扩写失败')
+    } catch (e) { toast.error((e as Error).message) } finally { setExpanding(false) }
+  }
+
   return (
-    <div className="nowheel nopan nodrag w-[472px] rounded-[20px] bg-card/95 backdrop-blur-md border border-border shadow-[0_8px_30px_rgba(0,0,0,0.12)] px-3.5 pt-3 pb-2.5" onPointerDown={e => e.stopPropagation()}>
-      <textarea
-        ref={taRef}
-        value={local}
-        onChange={e => emit(e.target.value)}
-        onKeyDown={e => {
-          // Keep Backspace/Delete from bubbling to React Flow (which would
-          // delete the selected node while the user is editing the prompt).
-          if (e.key === 'Backspace' || e.key === 'Delete') e.stopPropagation()
-          if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); submit() }
-        }}
-        rows={2}
+    <div className="nowheel nopan nodrag relative w-[472px] rounded-[20px] bg-card/95 backdrop-blur-md border border-border shadow-[0_8px_30px_rgba(0,0,0,0.12)] px-0 pt-1 pb-2.5" onPointerDown={e => e.stopPropagation()}>
+      {picker.menu}
+      <RichComposer
+        ref={composerRef}
         placeholder={placeholder}
-        className="w-full min-h-[42px] max-h-[168px] overflow-y-auto bg-transparent text-[13.5px] leading-relaxed outline-none resize-none placeholder:text-muted-foreground/55"
+        disabled={busy}
+        onMention={setMentionQuery}
+        onEnter={submit}
+        onEmptyChange={setEmpty}
+        onPasteFiles={() => { /* canvas composer ignores pasted files for now */ }}
+        onMentionKeyDown={(e) => {
+          // Esc closes the @ menu; stop it bubbling so it doesn't also collapse the
+          // central composer / deselect the node.
+          if (e.key === 'Escape' && mentionQuery !== null) { e.stopPropagation(); setMentionQuery(null); return true }
+          return picker.handleKeyDown(e)
+        }}
       />
-      <div className="flex items-center gap-1.5 mt-1">
+      <div className="flex items-center gap-1.5 mt-1 px-4">
         <SceneDropdown value={scene} onChange={setScene} />
         <CountDropdown value={count} onChange={setCount} />
         <SizeDropdown value={size} onChange={setSize} />
         <QualityDropdown value={quality} onChange={setQuality} />
-        <button onClick={onExpand} disabled={!local.trim() || expanding} title="提示词扩写（AI 补充画面细节）"
+        <button onClick={expand} disabled={empty || expanding} title="提示词扩写（AI 补充画面细节）"
           className="flex items-center gap-1 text-[11px] rounded-full border border-border px-2 py-1 text-muted-foreground hover:bg-accent/40 hover:text-foreground disabled:opacity-40 shrink-0">
           {expanding ? <Loader2 size={12} className="animate-spin" /> : <Wand2 size={12} />} 扩写
         </button>
         <div className="flex-1" />
-        <button onClick={submit} disabled={!local.trim() || busy} title="生成（Enter）"
+        <button onClick={submit} disabled={empty || busy} title="生成（Enter）"
           className="w-9 h-9 shrink-0 rounded-full grid place-items-center bg-primary text-primary-foreground shadow-sm hover:opacity-90 active:scale-95 transition-all disabled:opacity-35 disabled:cursor-not-allowed">
           {busy ? <Loader2 size={15} className="animate-spin" /> : <ArrowUp size={16} strokeWidth={2.5} />}
         </button>
@@ -319,12 +335,8 @@ function ImageCardNode({ id, data, selected }: NodeProps) {
 
       {/* Floating prompt bar below the card — type → fan out N images. Image cards only. */}
       <NodeToolbar isVisible={!!selected && !generating && !!d.path && !isVideo} position={Position.Bottom} offset={12}>
-        <GenPromptBar busy={busy} placeholder="请输入你想要把这张图改成什么…"
-          value={typeof d.draftPrompt === 'string' ? d.draftPrompt : ''}
-          onChange={t => ctx?.onDraftChange(id, t)}
-          expanding={ctx?.expanding.has(id) ?? false}
-          onExpand={() => ctx?.onExpand(id)}
-          onSubmit={(p, c, s, q, sc) => ctx?.onGenerate(id, p, c, s, q, sc)} />
+        <GenPromptBar busy={busy} placeholder="请输入你想要把这张图改成什么…（「@」引入参考图）"
+          onSubmit={(p, c, s, q, sc, refs) => ctx?.onGenerate(id, p, c, s, q, sc, refs)} />
       </NodeToolbar>
 
       {/* The card body. Double-click opens the lightbox (查看大图). */}
@@ -405,12 +417,8 @@ function ReferenceStackNode({ id, data, selected }: NodeProps) {
       {/* Joint-reference prompt bar. */}
       <NodeToolbar isVisible={!!selected && refs.length >= 1} position={Position.Bottom} offset={12}>
         <GenPromptBar busy={busy}
-          placeholder={`描述要生成的画面（这 ${refs.length} 张一起作为参考）…`}
-          value={typeof d.draftPrompt === 'string' ? d.draftPrompt : ''}
-          onChange={t => ctx?.onDraftChange(id, t)}
-          expanding={ctx?.expanding.has(id) ?? false}
-          onExpand={() => ctx?.onExpand(id)}
-          onSubmit={(p, c, s, q, sc) => ctx?.onGenerateFromStack(id, p, c, s, q, sc)} />
+          placeholder={`描述要生成的画面（这 ${refs.length} 张一起作为参考，「@」可再加）…`}
+          onSubmit={(p, c, s, q, sc, refs) => ctx?.onGenerateFromStack(id, p, c, s, q, sc, refs)} />
       </NodeToolbar>
 
       {/* Body: a fanned pile when idle; a non-overlapping管理网格 when selected. */}

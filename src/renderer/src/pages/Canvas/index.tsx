@@ -9,6 +9,10 @@ import { ImagePlus, FolderOpen, Maximize, Save, Plus, Minus, ChevronDown, FileIm
 import { cn } from '../../lib/utils'
 import { CANVAS_NODE_TYPES, CanvasContext, applyScene, type CanvasHandlers, type ImageCardData, type RefStackData } from './canvas-nodes'
 import { GalleryPickerDialog } from './CanvasInspector'
+import { CanvasBridgeContext, type CanvasBridge } from './CanvasBridge'
+import { ShotTreePanel } from './panes/ShotTreePanel'
+import { CentralComposer } from './CentralComposer'
+import { VideoToolbar } from './VideoToolbar'
 import { blobToBase64, toLocalFileUrl } from '../../lib/attachments'
 import { useConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { toast } from '../../components/ui/Toast'
@@ -70,6 +74,8 @@ function CanvasEditor({ embedded = false, openDocId = null, openNonce = 0, onDoc
   const [galleryTarget, setGalleryTarget] = useState<null | 'card' | { stackId: string }>(null)
   const [showList, setShowList] = useState(false)
   const [dragOver, setDragOver] = useState(false)
+  // Left 素材/分镜树 collapse state.
+  const [leftCollapsed, setLeftCollapsed] = useState(false)
   const [imageModelName, setImageModelName] = useState('')
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [expanding, setExpanding] = useState<Set<string>>(new Set())
@@ -163,7 +169,7 @@ function CanvasEditor({ embedded = false, openDocId = null, openNonce = 0, onDoc
       type: 'image_card',
       position: pos,
       style: { width: size, height: size },
-      data: { path, status: 'done' } as ImageCardData
+      data: { path, status: 'done', kind: isVideoPath(path) ? 'video' : 'image' } as ImageCardData
     }
     window.api.approvePath?.(path)
     setNodes(ns => [...ns, node])
@@ -184,6 +190,14 @@ function CanvasEditor({ embedded = false, openDocId = null, openNonce = 0, onDoc
 
   const onDrop = useCallback(async (e: React.DragEvent) => {
     e.preventDefault(); setDragOver(false)
+    // In-app drag from the left 素材/分镜树 → add that asset at the drop point.
+    const asset = e.dataTransfer.getData('application/x-superstudio-asset')
+    if (asset) {
+      const at = rf.screenToFlowPosition({ x: e.clientX, y: e.clientY })
+      window.api.approvePath?.(asset)
+      addImageNode(asset, at)
+      return
+    }
     const files = Array.from(e.dataTransfer.files).filter(f => f.type.startsWith('image/'))
     if (!files.length) return
     const at = rf.screenToFlowPosition({ x: e.clientX, y: e.clientY })
@@ -258,12 +272,61 @@ function CanvasEditor({ embedded = false, openDocId = null, openNonce = 0, onDoc
     }
   }, [nodes, setNodes, setEdges])
 
-  const onGenerate = useCallback((sourceId: string, prompt: string, count: number, size: string, quality: string, scene: string) => {
+  const onGenerate = useCallback((sourceId: string, prompt: string, count: number, size: string, quality: string, scene: string, extraRefs: string[] = []) => {
     const src = nodes.find(n => n.id === sourceId)
     const srcPath = (src?.data as ImageCardData | undefined)?.path
     if (!src || !srcPath) return
-    runImageGen([srcPath], applyScene(scene, prompt), count, [sourceId], size, quality)
+    const refs = [...new Set([srcPath, ...extraRefs])]
+    // Wire @'d images that exist as canvas nodes to the result too, so the reference
+    // relationship is visible (an edge), not just sent to the model.
+    const refNodeIds = extraRefs
+      .map(p => nodes.find(n => (n.data as ImageCardData | undefined)?.path === p)?.id)
+      .filter((id): id is string => !!id)
+    const sourceIds = [...new Set([sourceId, ...refNodeIds])]
+    runImageGen(refs, applyScene(scene, prompt), count, sourceIds, size, quality)
   }, [nodes, runImageGen])
+
+  // ── Source-less generate: fan N results at the viewport center, no edges. ──
+  // Used by the central「/」composer and the right AI 任务面板 when there's no
+  // selected node to attach to (incl. pure text-to-image with empty refPaths).
+  const runImageGenStandalone = useCallback((refPaths: string[], prompt: string, count: number, size: string, quality: string) => {
+    if (!refPaths.length && !prompt.trim()) return
+    hasGenerated.current = true
+    if (!currentIdRef.current && nameRef.current.trim() === '未命名画布' && prompt.trim()) setName(prompt.trim().slice(0, 24))
+    const stamp = Date.now()
+    const variantGroupId = `canvas:ai:${stamp}`
+    const [sw, sh] = size.split('x').map(Number)
+    const ar = sw && sh ? sw / sh : 1
+    const cardW = Math.round(ar >= 1 ? 160 : 160 * ar)
+    const cardH = Math.round(ar >= 1 ? 160 / ar : 160)
+    const spacing = cardH + 18
+    const el = wrapRef.current
+    const center = el
+      ? rf.screenToFlowPosition({ x: el.getBoundingClientRect().left + el.clientWidth / 2, y: el.getBoundingClientRect().top + el.clientHeight / 2 })
+      : { x: 200, y: 200 }
+    const baseX = center.x - cardW / 2
+    const startY = center.y - ((count - 1) / 2) * spacing
+    const placeholders: Node[] = Array.from({ length: count }, (_, i) => {
+      idc.current += 1
+      return {
+        id: `img_${stamp}_${idc.current}`,
+        type: 'image_card',
+        position: { x: baseX, y: startY + i * spacing },
+        style: { width: cardW, height: cardH },
+        data: { status: 'generating', prompt, genRefs: refPaths, genSize: size, genQuality: quality } as ImageCardData
+      }
+    })
+    setNodes(ns => [...ns, ...placeholders])
+    for (const p of placeholders) {
+      window.api.canvasGenerateOne({ prompt, n: 1, size, quality, referenceImagePaths: refPaths, sceneLabel: prompt.slice(0, 30), variantGroupId })
+        .then(r => {
+          const path = r?.paths?.[0]
+          if (path) window.api.approvePath?.(path)
+          setNodes(ns => ns.map(n => n.id === p.id ? { ...n, data: { ...(n.data as ImageCardData), status: path ? 'done' : 'error', path } } : n))
+        })
+        .catch(() => setNodes(ns => ns.map(n => n.id === p.id ? { ...n, data: { ...(n.data as ImageCardData), status: 'error' } } : n)))
+    }
+  }, [rf, setNodes])
 
   // Prompt draft lives on the node's data (recorded + survives deselect).
   const onDraftChange = useCallback((nodeId: string, text: string) => {
@@ -389,10 +452,11 @@ function CanvasEditor({ embedded = false, openDocId = null, openNonce = 0, onDoc
     setEdges(es => es.filter(e => e.source !== stackId && e.target !== stackId))
   }, [nodes, setNodes, setEdges])
 
-  const onGenerateFromStack = useCallback((stackId: string, prompt: string, count: number, size: string, quality: string, scene: string) => {
+  const onGenerateFromStack = useCallback((stackId: string, prompt: string, count: number, size: string, quality: string, scene: string, extraRefs: string[] = []) => {
     const stack = nodes.find(n => n.id === stackId)
-    const refs = (stack?.data as RefStackData | undefined)?.refs || []
-    if (!stack || refs.length === 0) return
+    const stackRefs = (stack?.data as RefStackData | undefined)?.refs || []
+    if (!stack || stackRefs.length === 0) return
+    const refs = [...new Set([...stackRefs, ...extraRefs])]
     runImageGen(refs, applyScene(scene, prompt), count, [stackId], size, quality)
   }, [nodes, runImageGen])
 
@@ -499,6 +563,23 @@ function CanvasEditor({ embedded = false, openDocId = null, openNonce = 0, onDoc
     busy, imageModelName
   }), [onGenerate, onDelete, onRegenerate, onDraftChange, onExpand, expanding, onGenerateFromStack, onStackAddLocal, onStackRemoveRef, onStackUngroup, onStackExtract, busy, imageModelName])
 
+  // Handle onto the canvas's ops, consumed by the sibling panes (left 分镜树,
+  // right AI 任务面板, center「/」composer) — see CanvasBridge.
+  const bridge: CanvasBridge = useMemo(() => ({
+    addAtCenter,
+    addImageAt: (path, pos) => { addImageNode(path, pos) },
+    runImageGen,
+    runImageGenStandalone,
+    createStackAtCenter,
+    openGalleryPicker: (target) => setGalleryTarget(target),
+    importLocal,
+    fitView: () => rf.fitView({ padding: 0.2, maxZoom: 1 }),
+    nodes,
+    selectedIds,
+    selImageNodes,
+    currentId,
+  }), [addAtCenter, addImageNode, runImageGen, runImageGenStandalone, createStackAtCenter, importLocal, rf, nodes, selectedIds, selImageNodes, currentId])
+
   const onConnect = useCallback((c: Connection) => setEdges(es => addEdge({ ...c, ...DEFAULT_EDGE_OPTS }, es)), [setEdges])
 
   // ── Persist (shared by autosave + manual save). Auto-creates on first save. ──
@@ -575,8 +656,15 @@ function CanvasEditor({ embedded = false, openDocId = null, openNonce = 0, onDoc
 
   return (
     <CanvasContext.Provider value={handlers}>
-      <div ref={wrapRef} className="relative h-full"
-        onDragOver={(e) => { if (Array.from(e.dataTransfer.types).includes('Files')) { e.preventDefault(); setDragOver(true) } }}
+     <CanvasBridgeContext.Provider value={bridge}>
+      <div className="flex h-full">
+       <ShotTreePanel collapsed={leftCollapsed} onToggleCollapse={() => setLeftCollapsed(c => !c)} />
+       <div ref={wrapRef} className="relative flex-1 min-w-0 h-full"
+        onDragOver={(e) => {
+          const types = Array.from(e.dataTransfer.types)
+          if (types.includes('Files')) { e.preventDefault(); setDragOver(true) }
+          else if (types.includes('application/x-superstudio-asset')) e.preventDefault() // in-app asset drag
+        }}
         onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as globalThis.Node | null)) setDragOver(false) }}
         onDrop={onDrop}
       >
@@ -676,6 +764,12 @@ function CanvasEditor({ embedded = false, openDocId = null, openNonce = 0, onDoc
           </Panel>
         </ReactFlow>
 
+        {/* Top-center video toolbar (UI placeholders; only 适应视图 wired). */}
+        <VideoToolbar />
+
+        {/* Central「/」composer — floating canvas-wide generation island. */}
+        <CentralComposer />
+
         {/* Drag-over hint */}
         {dragOver && (
           <div className="absolute inset-0 z-40 grid place-items-center bg-primary/[0.05] border-2 border-dashed border-primary/40 pointer-events-none">
@@ -694,6 +788,7 @@ function CanvasEditor({ embedded = false, openDocId = null, openNonce = 0, onDoc
             </div>
           </div>
         )}
+       </div>
       </div>
 
       {galleryTarget && (
@@ -737,6 +832,7 @@ function CanvasEditor({ embedded = false, openDocId = null, openNonce = 0, onDoc
       )}
 
       {dlg.element}
+     </CanvasBridgeContext.Provider>
     </CanvasContext.Provider>
   )
 }
