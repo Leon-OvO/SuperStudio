@@ -1,5 +1,6 @@
 import { dbAll, dbGet, dbRun } from '../db/sqlite'
 import { removeSkillDir } from './skill-files'
+import { getSettings } from './store'
 
 // ============================================================================
 // Types — mirrors src/shared/ipc-types Skill* types but kept main-side too
@@ -46,7 +47,32 @@ export interface InstalledSkill extends SkillManifest {
   resourceFiles: string[]
   /** Whether this skill is allowed to run its bundled scripts. */
   allowScripts: boolean
+  // --- Lifecycle (v23: auto-induced skills + evolution loop) ---------------
+  /** 'active' = loads into runs; 'pending' = awaiting review; 'deprecated' = archived. */
+  status: SkillLifecycleStatus
+  /** 'manual'(user import) | 'remote'(SkillHub) | 'auto'(induced from conversations). */
+  origin: SkillOrigin
+  /** When promoted from a kind='skill' memory, the source memory id (supersede link). */
+  sourceMemoryId: string | null
+  /** Bumped each time the body is refined-on-failure; old SKILL.v<N>.md kept for rollback. */
+  inducedVersion: number
+  /** Hash of the body — merge-by-hash dedup in the evolution sweep. */
+  bodyHash: string | null
+  /** Why it was induced (e.g. 'tool-sequence', 'memory-promote', 'manual'). */
+  triggerReason: string | null
+  /** Session/source the procedure was mined from. */
+  inducedFrom: string | null
+  /** Usage/trust counters — drive recall ranking, maturity, and SkillOps. */
+  timesLoaded: number
+  timesSucceeded: number
+  timesFailed: number
+  lastUsedAt: number | null
+  /** Maturity/confidence 0–1 (plasticity↔stability gate). null = no signal yet. */
+  confidence: number | null
 }
+
+export type SkillLifecycleStatus = 'active' | 'pending' | 'deprecated'
+export type SkillOrigin = 'manual' | 'remote' | 'auto'
 
 export interface SkillSource {
   url: string
@@ -82,6 +108,18 @@ interface SkillRow {
   skill_body: string | null
   resource_files: string | null
   allow_scripts: number
+  status: string | null
+  origin: string | null
+  source_memory_id: string | null
+  induced_version: number | null
+  body_hash: string | null
+  trigger_reason: string | null
+  induced_from: string | null
+  times_loaded: number | null
+  times_succeeded: number | null
+  times_failed: number | null
+  last_used_at: number | null
+  confidence: number | null
 }
 
 function rowToSkill(r: SkillRow): InstalledSkill {
@@ -121,7 +159,19 @@ function rowToSkill(r: SkillRow): InstalledSkill {
     installPath: r.install_path,
     skillBody: r.skill_body ?? '',
     resourceFiles,
-    allowScripts: r.allow_scripts == null ? true : !!r.allow_scripts
+    allowScripts: r.allow_scripts == null ? true : !!r.allow_scripts,
+    status: (r.status as SkillLifecycleStatus) || 'active',
+    origin: (r.origin as SkillOrigin) || 'manual',
+    sourceMemoryId: r.source_memory_id ?? null,
+    inducedVersion: r.induced_version ?? 1,
+    bodyHash: r.body_hash ?? null,
+    triggerReason: r.trigger_reason ?? null,
+    inducedFrom: r.induced_from ?? null,
+    timesLoaded: r.times_loaded ?? 0,
+    timesSucceeded: r.times_succeeded ?? 0,
+    timesFailed: r.times_failed ?? 0,
+    lastUsedAt: r.last_used_at ?? null,
+    confidence: r.confidence ?? null
   }
 }
 
@@ -270,8 +320,102 @@ export function setSkillAllowScripts(id: string, allow: boolean): void {
  * Resolve which skills should be applied for a given scenario. Used by
  * agent code at request time to gather prompt fragments + tool whitelists.
  */
+/** Default cap on how many AUTO-induced skills load into a single run. Fights the
+ *  documented "skill shadowing" degradation as the auto-library grows. */
+const DEFAULT_AUTO_SKILL_CAP = 12
+
 export function getActiveSkillsForScenario(scenario: SkillScenario): InstalledSkill[] {
-  return listInstalledSkills().filter(s => s.enabled && s.enabledScenarios.includes(scenario))
+  const all = listInstalledSkills().filter(s => s.enabled && s.enabledScenarios.includes(scenario))
+  // Auto-induced skills must be 'active' to enter a run; 'pending'(待审) and
+  // 'deprecated'(停用) stay listed in the UI but never load — manual/remote skills
+  // are unaffected (their status defaults to 'active').
+  const eligible = all.filter(s => s.origin !== 'auto' || s.status === 'active')
+  const auto = eligible.filter(s => s.origin === 'auto')
+  const cap = Math.max(0, getSettings().skillMaxAutoActive ?? DEFAULT_AUTO_SKILL_CAP)
+  if (auto.length <= cap) return eligible
+  // Keep only the top-k auto skills by trust (confidence + net success).
+  const trust = (s: InstalledSkill) => (s.confidence ?? 0.5) * 10 + s.timesSucceeded - s.timesFailed
+  const keep = new Set(
+    auto.slice().sort((a, b) => trust(b) - trust(a)).slice(0, cap).map(s => s.id)
+  )
+  return eligible.filter(s => s.origin !== 'auto' || keep.has(s.id))
+}
+
+// ============================================================================
+// Lifecycle + usage signals (v23) — auto-induced skill evolution loop
+// ============================================================================
+
+/** Stamp induced-skill lifecycle fields after installRuntimeSkill writes the row. */
+export function markInducedSkill(id: string, f: {
+  origin?: SkillOrigin
+  status?: SkillLifecycleStatus
+  sourceMemoryId?: string | null
+  bodyHash?: string | null
+  triggerReason?: string | null
+  inducedFrom?: string | null
+  confidence?: number | null
+}): void {
+  dbRun(
+    `UPDATE skills SET
+       origin = COALESCE(?, origin),
+       status = COALESCE(?, status),
+       source_memory_id = COALESCE(?, source_memory_id),
+       body_hash = COALESCE(?, body_hash),
+       trigger_reason = COALESCE(?, trigger_reason),
+       induced_from = COALESCE(?, induced_from),
+       confidence = COALESCE(?, confidence)
+     WHERE id = ?`,
+    [f.origin ?? null, f.status ?? null, f.sourceMemoryId ?? null, f.bodyHash ?? null,
+     f.triggerReason ?? null, f.inducedFrom ?? null, f.confidence ?? null, id]
+  )
+}
+
+export function setSkillStatus(id: string, status: SkillLifecycleStatus): void {
+  dbRun(`UPDATE skills SET status = ? WHERE id = ?`, [status, id])
+}
+
+/** Record that a skill was consulted (load_skill) this run — A1/A2 signal trail. */
+export function recordSkillLoad(id: string, sessionId: string | null): void {
+  const now = Date.now()
+  dbRun(`UPDATE skills SET times_loaded = times_loaded + 1, last_used_at = ? WHERE id = ?`, [now, id])
+  dbRun(`INSERT INTO skill_events (skill_id, session_id, ts, kind, artifacts) VALUES (?, ?, ?, 'load', 0)`,
+    [id, sessionId, now])
+}
+
+/** Record the run outcome for a consulted skill + recompute smoothed confidence. */
+export function recordSkillOutcome(id: string, success: boolean, artifacts: number, sessionId: string | null): void {
+  const now = Date.now()
+  if (success) dbRun(`UPDATE skills SET times_succeeded = times_succeeded + 1 WHERE id = ?`, [id])
+  else dbRun(`UPDATE skills SET times_failed = times_failed + 1 WHERE id = ?`, [id])
+  dbRun(`INSERT INTO skill_events (skill_id, session_id, ts, kind, artifacts) VALUES (?, ?, ?, ?, ?)`,
+    [id, sessionId, now, success ? 'success' : 'fail', artifacts])
+  const row = dbGet<{ s: number; f: number }>(
+    `SELECT times_succeeded AS s, times_failed AS f FROM skills WHERE id = ?`, [id]
+  )
+  if (row) {
+    // Laplace-smoothed success rate as the maturity/confidence score.
+    const conf = (row.s + 1) / (row.s + row.f + 2)
+    dbRun(`UPDATE skills SET confidence = ? WHERE id = ?`, [conf, id])
+  }
+}
+
+export function listAutoSkills(): InstalledSkill[] {
+  return listInstalledSkills().filter(s => s.origin === 'auto')
+}
+
+export function getSkillByBodyHash(hash: string): InstalledSkill | null {
+  const row = dbGet<SkillRow>(`SELECT * FROM skills WHERE body_hash = ? LIMIT 1`, [hash])
+  return row ? rowToSkill(row) : null
+}
+
+/** Refine-on-failure: replace the body, bump the version, refresh the hash, and
+ *  reset the failure counter (we just addressed those failures) so the evolution
+ *  sweep won't re-refine from the same stale trace until NEW failures accrue. */
+export function updateInducedBody(id: string, newBody: string, bodyHash: string): void {
+  dbRun(
+    `UPDATE skills SET skill_body = ?, body_hash = ?, induced_version = induced_version + 1, times_failed = 0 WHERE id = ?`,
+    [newBody, bodyHash, id]
+  )
 }
 
 // ============================================================================

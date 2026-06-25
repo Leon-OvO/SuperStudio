@@ -4,6 +4,7 @@ import { useUIStore } from '../../stores/ui'
 import { useEmployeesStore } from '../../stores/employees'
 import { resolveModel } from '../../lib/auto-router'
 import { Users } from 'lucide-react'
+import { Switch } from '../../components/ui/Switch'
 import { SessionList } from './SessionList'
 import { SessionListResizer } from './SessionListResizer'
 import { NewGroupDialog } from './NewGroupDialog'
@@ -33,7 +34,7 @@ export function ChatPage() {
     setSessions, setActiveSession, addSession, removeSession, updateSessionTitle,
     setMessages, addMessage, upsertMessage, appendStreamDelta, removeMessage, removeMessagesFrom, updateMessageContent,
     startRun, stopRun, updateStep, setPhase,
-    setSessionModel, setComputerMode, setSessionWorkingDir, setSessionAssignee, setSessionGroupEmployees, setSessionPinned
+    setSessionModel, setComputerMode, setSessionWorkingDir, setSessionAssignee, setSessionGroupEmployees, setSessionPinned, setSessionHostMode
   } = useChatStore()
 
   // Hired employees — for the ChatHeader "与员工单独对话" picker + session badges.
@@ -387,6 +388,11 @@ export function ChatPage() {
     await window.api.setSessionPinned(id, pinned)
   }
 
+  async function handleSetHostMode(id: string, on: boolean) {
+    setSessionHostMode(id, on) // optimistic local update
+    await window.api.setSessionHostMode(id, on)
+  }
+
   async function doSend(sessionId: string, text: string, attachments?: Array<{ name: string; path: string; mimeType: string }>, mentions?: MentionPayload) {
     startRun(sessionId)
     const override = sessionModel[sessionId]
@@ -617,6 +623,11 @@ export function ChatPage() {
           sessionId={activeSessionId}
           sessionTitle={activeSession?.title || ''}
           onSaveAsWorkflow={handleSaveAsWorkflow}
+          onLearnSkill={activeSessionId ? async () => {
+            const r = await window.api.induceSkillFromSession(activeSessionId)
+            if (r?.ok) toast.success(`已学成技能：${(r.skill as { name?: string })?.name ?? ''}`)
+            else toast.info(r?.error || '这段对话里没有提炼出可复用的技能')
+          } : undefined}
           onExport={activeSessionId ? handleExportSession : undefined}
           onExportImage={activeSessionId ? () => setImageExportOpen(true) : undefined}
           onRename={activeSessionId ? async (newTitle) => {
@@ -645,15 +656,22 @@ export function ChatPage() {
           isRunning={isRunning}
           onChoose={(value) => handleSend(value)}
         />
-        {/* 群聊：让员工再聊一轮（无需新输入） */}
-        {activeIsGroup && !isRunning && currentMessages.length > 0 && (
-          <div className="px-4 pb-1 shrink-0">
-            <button
-              onClick={handleGroupContinue}
-              className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded-lg border border-dashed border-border text-xs text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
-            >
-              <Users size={12} /> 让大家继续讨论一轮
-            </button>
+        {/* 群聊：主持人持续推进开关 + 让员工再聊一轮（无需新输入） */}
+        {activeIsGroup && (
+          <div className="px-4 pb-1 shrink-0 space-y-1.5">
+            <label className="flex items-center gap-2 text-xs cursor-pointer select-none">
+              <Switch size="sm" checked={!!activeSession?.hostMode} onChange={v => activeSessionId && handleSetHostMode(activeSessionId, v)} />
+              <span className="font-medium text-foreground/80">主持人持续推进</span>
+              <span className="text-muted-foreground/70 truncate">开启后主持人会自动一轮轮推进，直到需求完成或达上限</span>
+            </label>
+            {!isRunning && currentMessages.length > 0 && (
+              <button
+                onClick={handleGroupContinue}
+                className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded-lg border border-dashed border-border text-xs text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
+              >
+                <Users size={12} /> 让大家继续讨论一轮
+              </button>
+            )}
           </div>
         )}
         <AgentProgress />
@@ -722,6 +740,13 @@ function isTransientError(text: string): boolean {
     lower.includes('rate limit') ||
     lower.includes('429') ||
     lower.includes('too many requests') ||
+    lower.includes('upstream request failed') ||
+    lower.includes('upstream error') ||
+    lower.includes('bad gateway') ||
+    lower.includes('502') ||
+    lower.includes('504') ||
+    lower.includes('529') ||
+    lower.includes('overloaded') ||
     lower.includes('timeout') ||
     lower.includes('timed out') ||
     lower.includes('network') ||

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
-import { Minus, Square, X, Maximize2, Palette, Languages, Zap } from 'lucide-react'
+import { Minus, Square, X, Maximize2, Palette, Languages, Zap, BarChart3 } from 'lucide-react'
 import { TopBarUser } from './TopBarUser'
+import { UsageStatsPanel } from '../UsageStatsPanel'
 import { useUIStore } from '../../stores/ui'
 import { useT, setLanguage, useLanguage } from '../../lib/i18n'
 import { Select } from '../ui/Select'
@@ -16,6 +17,7 @@ export function TitleBar() {
   const skin = useUIStore(u => u.skin)
   const setSkin = useUIStore(u => u.setSkin)
   const currentSkin = VISIBLE_SKINS.find(s => s.id === skin)
+  const [usageOpen, setUsageOpen] = useState(false)
 
   useEffect(() => {
     if (!isWin) return
@@ -85,6 +87,9 @@ export function TitleBar() {
             </span>
           )}
         />
+        <TopToggle onClick={() => setUsageOpen(true)} title="用量统计">
+          <BarChart3 size={14} />
+        </TopToggle>
         {ACCOUNT_MODE === 'hosted' && <TopBarUser />}
         {isWin && (
           <div className="flex items-stretch h-full ml-1">
@@ -100,6 +105,7 @@ export function TitleBar() {
           </div>
         )}
       </div>
+      <UsageStatsPanel open={usageOpen} onClose={() => setUsageOpen(false)} />
     </div>
   )
 }

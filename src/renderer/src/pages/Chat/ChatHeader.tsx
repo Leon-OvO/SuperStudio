@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { GitBranch, MessageSquare, Pencil, Check, X, Download, ChevronDown, Brain, Loader2 } from 'lucide-react'
+import { GitBranch, MessageSquare, Pencil, Check, X, Download, ChevronDown, Brain, Loader2, Wand2 } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { useT } from '../../lib/i18n'
 import { toast } from '../../components/ui/Toast'
@@ -39,6 +39,8 @@ interface Props {
   sessionId: string | null
   sessionTitle: string
   onSaveAsWorkflow?: () => void
+  /** 「把这次对话变成技能」—— manually induce a SKILL.md from this conversation. */
+  onLearnSkill?: () => Promise<void> | void
   /** Persist the renamed title. Called with the trimmed new title. */
   onRename?: (newTitle: string) => void
   /** Export the active session. Format chosen via dropdown. */
@@ -62,12 +64,13 @@ interface Props {
  * Slim chat header — shows the current session title prominently and a few
  * top-right actions. Click the title (or the pencil) to rename inline.
  */
-export function ChatHeader({ sessionId, sessionTitle, onSaveAsWorkflow, onRename, onExport, onExportImage, employees, boundEmployeeId, onBindEmployee, groupEmployeeIds, onAddGroupMember, onRemoveGroupMember }: Props) {
+export function ChatHeader({ sessionId, sessionTitle, onSaveAsWorkflow, onLearnSkill, onRename, onExport, onExportImage, employees, boundEmployeeId, onBindEmployee, groupEmployeeIds, onAddGroupMember, onRemoveGroupMember }: Props) {
   const t = useT()
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(sessionTitle)
   const [exportOpen, setExportOpen] = useState(false)
   const [remembering, setRemembering] = useState(false)
+  const [learning, setLearning] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
 
   async function rememberConversation() {
@@ -263,6 +266,17 @@ export function ChatHeader({ sessionId, sessionTitle, onSaveAsWorkflow, onRename
             >
               <GitBranch size={12} />
               {t('chatHeader.saveAsWorkflow')}
+            </button>
+          )}
+          {onLearnSkill && (
+            <button
+              onClick={async () => { setLearning(true); try { await onLearnSkill() } finally { setLearning(false) } }}
+              disabled={learning}
+              title="把这次对话里可复用的做法提炼成一个技能（之后可在「技能 → 自动学习」里管理）"
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors disabled:opacity-50"
+            >
+              {learning ? <Loader2 size={12} className="animate-spin" /> : <Wand2 size={12} />}
+              学成技能
             </button>
           )}
         </>

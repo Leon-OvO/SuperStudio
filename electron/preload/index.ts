@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
-import { IPC, type ScheduledTask, type ScheduledTaskRun, type ScheduledTaskInput, type ScheduledRunCompletedEvent, type VideoGenerateRequest, type VideoGenerateResult, type VideoProgressEvent } from '../../src/shared/ipc-types'
+import { IPC, type ScheduledTask, type ScheduledTaskRun, type ScheduledTaskInput, type ScheduledRunCompletedEvent, type VideoGenerateRequest, type VideoGenerateResult, type VideoProgressEvent, type UsageRange, type UsageCustomRange, type UsageStats } from '../../src/shared/ipc-types'
 
 // Whether the OS will composite a vibrancy/acrylic backdrop behind the window —
 // macOS always, Windows only on 11+ (build ≥ 22000). MUST mirror the gating in
@@ -44,6 +44,10 @@ const api = {
   getDashboardTrend: (params: unknown) => ipcRenderer.invoke(IPC.DASHBOARD_TREND, params),
   getDashboardModels: (params: unknown) => ipcRenderer.invoke(IPC.DASHBOARD_MODELS, params),
   getDashboardKeysUsage: (params: unknown) => ipcRenderer.invoke(IPC.DASHBOARD_KEYS_USAGE, params),
+
+  // --- Local usage stats (on-device 真实消耗) ---
+  getUsageStats: (range: UsageRange = 'today', custom?: UsageCustomRange) =>
+    ipcRenderer.invoke(IPC.USAGE_STATS, range, custom) as Promise<UsageStats>,
 
   // --- Vibe / Build page ---
   vibeListTree: (projectPath: string) => ipcRenderer.invoke(IPC.VIBE_LIST_TREE, projectPath),
@@ -129,6 +133,8 @@ const api = {
     ipcRenderer.invoke(IPC.SESSIONS_SET_ASSIGNEE, id, employeeId) as Promise<{ ok: boolean }>,
   setSessionPinned: (id: string, pinned: boolean) =>
     ipcRenderer.invoke(IPC.SESSIONS_SET_PINNED, id, pinned) as Promise<{ ok: boolean }>,
+  setSessionHostMode: (id: string, on: boolean) =>
+    ipcRenderer.invoke(IPC.SESSIONS_SET_HOST_MODE, id, on) as Promise<{ ok: boolean }>,
   onSessionsChanged: (cb: () => void) => {
     const listener = () => cb()
     ipcRenderer.on(IPC.SESSIONS_CHANGED, listener)
@@ -442,6 +448,16 @@ const api = {
     ipcRenderer.invoke(IPC.SKILLS_SOURCES_SET_ENABLED, args),
   browseSkillRegistry: (args?: { page?: number; pageSize?: number; keyword?: string }) =>
     ipcRenderer.invoke(IPC.SKILLS_BROWSE, args),
+  // 对话自动学习
+  induceSkillFromSession: (sessionId: string) =>
+    ipcRenderer.invoke(IPC.SKILLS_INDUCE_SESSION, sessionId) as Promise<{ ok: boolean; skill?: unknown; error?: string }>,
+  setSkillStatus: (args: { id: string; status: 'active' | 'pending' | 'deprecated' }) =>
+    ipcRenderer.invoke(IPC.SKILLS_SET_STATUS, args),
+  onSkillInduced: (cb: (data: { id: string; name: string; status: string }) => void) => {
+    const listener = (_e: unknown, data: { id: string; name: string; status: string }) => cb(data)
+    ipcRenderer.on(IPC.SKILL_INDUCED, listener)
+    return () => ipcRenderer.removeListener(IPC.SKILL_INDUCED, listener)
+  },
 
   // --- Terminal (PTY-backed shell in Vibe page) ---
   terminalCreate: (args: { cwd: string; cols: number; rows: number }) =>

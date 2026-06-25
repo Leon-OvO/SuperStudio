@@ -17,7 +17,7 @@ import { ipcMain, app, BrowserWindow } from 'electron'
 import fs from 'fs'
 import path from 'path'
 import { generateText } from 'ai'
-import { IPC } from '../../../src/shared/ipc-types'
+import { IPC, GROUP_HOST_ID } from '../../../src/shared/ipc-types'
 import { getMainWindow } from '../index'
 import { dbRun, dbGet, dbAll } from '../db/sqlite'
 import { runAgent, stopAgent } from '../agent/engine'
@@ -34,7 +34,17 @@ import type { EmployeeInfo } from '../../../src/shared/ipc-types'
 const activeGroupRuns = new Map<string, { aborted: boolean }>()
 
 interface GroupStep { employeeId: string; task: string }
-interface GroupPlan { kind: 'discuss' | 'collaborate'; deliverable?: string; steps: GroupStep[] }
+interface GroupPlan {
+  kind: 'discuss' | 'collaborate'
+  deliverable?: string
+  steps: GroupStep[]
+  /** Host mode only: the moderator judged the requirement complete → end the loop. */
+  done?: boolean
+  /** Host mode: the moderator's closing summary (shown when done). */
+  closure?: string
+  /** Host mode: a one-line note on what this round is doing (shown before the round). */
+  note?: string
+}
 
 /** A round suspended on an ask_user choice card. The next user message (their
  *  answer / card click) resumes it: the asking speaker (resumeIndex) re-runs with
@@ -118,16 +128,23 @@ function wantsDeliverable(text: string): boolean {
  * task assignment. Uses the global default chat model (falls back to the first
  * member's model). Returns a validated plan; any failure → discussion fallback.
  */
-async function planRound(sessionId: string, userText: string, candidates: EmployeeInfo[], explicit: boolean): Promise<GroupPlan> {
+async function planRound(
+  sessionId: string,
+  userText: string,
+  candidates: EmployeeInfo[],
+  explicit: boolean,
+  /** When set, plan in 主持人 mode: first judge whether `goal` is done; if not,
+   *  plan the next push. `round` is the 1-based round number (shown to the LLM). */
+  host?: { goal: string; round: number }
+): Promise<GroupPlan> {
   const settings = getSettings()
   let providerId = settings.defaultChatProviderId, modelId = settings.defaultChatModel
   if (!providerId || !modelId) { providerId = candidates[0]?.providerId; modelId = candidates[0]?.modelId }
   if (!providerId || !modelId || candidates.length === 0) return discussFallback(candidates)
 
-  // 快路径：只 @点名了一个成员且不像要交付物（"@小王 帮我看下"这类最常见）→ 协调器
-  // 在选人/排序上零自由度，直接走单人讨论，省掉一次协调器 LLM 往返与 15s 超时窗口。
-  // 带交付物意图（要报告/文档…）仍走协调器，以免丢掉 collaborate 的共享目录与定稿步骤。
-  if (explicit && candidates.length === 1 && !wantsDeliverable(userText)) return discussFallback(candidates)
+  // 快路径（仅非主持人模式）：只 @点名了一个成员且不像要交付物（"@小王 帮我看下"这类最
+  // 常见）→ 协调器在选人/排序上零自由度，直接走单人讨论，省掉一次 LLM 往返与 15s 超时窗口。
+  if (!host && explicit && candidates.length === 1 && !wantsDeliverable(userText)) return discussFallback(candidates)
 
   const roster = candidates.map(m => {
     const desc = (getSoul(m.soulId)?.description || '').slice(0, 60)
@@ -138,22 +155,39 @@ async function planRound(sessionId: string, userText: string, candidates: Employ
   // 选人规则：用户 @点名的成员是明确指定，必须都安排；否则只让相关的人发言、其余沉默。
   const selectionRule = explicit
     ? `- 【用户已点名以下全部成员】steps 必须覆盖他们每一个人（按合适的顺序与分工），不要遗漏，也不要额外加别人。\n`
-    : `- 【只让相关的人发言，其余沉默 —— 最重要】只挑选与当前话题真正相关、能给出有价值贡献的成员；与话题无关或不擅长的成员【不要排进 steps】，让他们这轮保持沉默。哪怕最终只有 1 个人发言也完全可以，绝不要为了让每个人都出场而硬凑人头。\n`
+    : `- 【只让相关的人发言，其余沉默 —— 最重要】只挑选与当前任务真正相关、能给出有价值贡献的成员；与任务无关或不擅长的成员【不要排进 steps】。哪怕这轮只有 1 个人发言也完全可以，绝不要为了让每个人都出场而硬凑人头。\n`
 
-  const system =
-    `你是一个 AI 团队的协调者，负责把用户的需求安排给【最合适】的成员，并让不相关的人保持沉默。团队成员：\n${roster}\n\n` +
-    (tail ? `最近对话：\n${tail}\n\n` : '') +
-    `判断用户这条消息该走「讨论」还是「协作产出一份交付物」，并规划分工。只输出 JSON：\n` +
-    `{"kind":"discuss"|"collaborate","deliverable":"<若产出，给个文件名如 报告.md>","steps":[{"employeeId":"<上面的id>","task":"<这名成员这步具体做什么>"}]}\n\n` +
-    `规则：\n` +
-    selectionRule +
-    `- 用户想要一份可交付的东西（报告/文档/方案/计划书/分析/网页/代码文件等）→ kind="collaborate"：拆成有序步骤，每步指派最擅长该部分的成员，前面的人起草各自部分，【最后一步指派一人汇总审校定稿】；deliverable 给一个合理文件名。\n` +
-    `- 只是想听意见/头脑风暴/答疑/闲聊 → kind="discuss"：steps 只列与话题相关的成员依次发言（task 可空或一句话提示）。\n` +
-    `- steps 的 employeeId 必须来自上面列出的 id，只用这些成员；不要空数组（至少 1 人）。\n` +
-    `只输出 JSON，不要解释。`
+  const kindRule =
+    `- 要产出可交付的东西（报告/文档/方案/计划书/分析/网页/代码文件等）→ kind="collaborate"：拆成有序步骤，每步指派最擅长该部分的成员，前面的人起草各自部分，【最后一步指派一人汇总审校定稿】；deliverable 给一个合理文件名。\n` +
+    `- 只是讨论/头脑风暴/答疑 → kind="discuss"：steps 只列与话题相关的成员依次发言（task 可空或一句话提示）。\n` +
+    `- steps 的 employeeId 必须来自上面列出的 id，只用这些成员。\n`
 
-  // 选人是个轻量结构化任务，别让带思考的默认大模型空耗——对 anthropic 协议模型关掉
-  // 扩展思考（planRound 走 generateText，拿不到 engine 里 relayCompat 的关思考兜底）。
+  const system = host
+    ? // 主持人模式：先判完成，否则规划下一步推进。
+      `你是这个 AI 团队的【主持人】，职责是把用户的最终目标一轮一轮推进到【真正完成】。\n` +
+      `【用户的最终目标】：${host.goal}\n\n` +
+      `团队成员：\n${roster}\n\n` +
+      (tail ? `目前进展（最近对话，AI 发言前的【名字】是发言者）：\n${tail}\n\n` : '') +
+      `现在是第 ${host.round} 轮。请先依据进展判断目标是否【已经达成】或【已无法再有效推进】，再决定本轮怎么做。只输出 JSON：\n` +
+      `- 已完成 → {"done":true,"closure":"<给用户的简短收尾：完成了什么、产出在哪>"}\n` +
+      `- 未完成 → {"done":false,"note":"<这一轮安排的一句话，面向用户，如：本轮请张三补充数据、李四画图>","kind":"discuss"|"collaborate","deliverable":"<若产出给文件名如 报告.md>","steps":[{"employeeId":"<上面的id>","task":"<这名成员这步具体做什么>"}]}\n\n` +
+      `规则：\n` +
+      `- 【只做还没做完的部分】，不要重复已经完成的工作，针对还缺的推进；越接近目标，步骤越聚焦于收口/审校/补缺。\n` +
+      kindRule +
+      `- 若确实已无更多有价值的事可做，就直接 done=true 收尾，不要为了凑轮数硬排步骤。未完成时 steps 至少 1 人。\n` +
+      `只输出 JSON，不要解释。`
+    : // 协调者模式（原行为，单轮）。
+      `你是一个 AI 团队的协调者，负责把用户的需求安排给【最合适】的成员，并让不相关的人保持沉默。团队成员：\n${roster}\n\n` +
+      (tail ? `最近对话：\n${tail}\n\n` : '') +
+      `判断用户这条消息该走「讨论」还是「协作产出一份交付物」，并规划分工。只输出 JSON：\n` +
+      `{"kind":"discuss"|"collaborate","deliverable":"<若产出，给个文件名如 报告.md>","steps":[{"employeeId":"<上面的id>","task":"<这名成员这步具体做什么>"}]}\n\n` +
+      `规则：\n` +
+      selectionRule +
+      kindRule +
+      `- 不要空数组（至少 1 人）。\n` +
+      `只输出 JSON，不要解释。`
+
+  // 选人/判完成是轻量结构化任务，关掉扩展思考（planRound 走 generateText，拿不到 engine 的 relayCompat 兜底）。
   const provider = getProviders().find(p => p.id === providerId)
   const thinkOpts = thinkingStreamOpts(provider ? effectiveProtocol(provider, modelId) : undefined, 'fast', modelId)
 
@@ -163,15 +197,18 @@ async function planRound(sessionId: string, userText: string, candidates: Employ
     const { text } = await generateText({
       model: createLLMClient(providerId, modelId),
       system,
-      prompt: userText.slice(0, 1500),
+      prompt: (host ? host.goal : userText).slice(0, 1500),
       temperature: 0,
       ...thinkOpts,        // anthropic thinking:disabled（+ 可能的 maxTokens 上限）
-      maxTokens: 700,      // 选人 JSON 很短 —— 放在 thinkOpts 之后，确保 700 生效
+      maxTokens: 800,      // JSON 很短 —— 放在 thinkOpts 之后，确保生效
       abortSignal: controller.signal
     })
-    // 模型常把 JSON 包在 ```json 围栏或前后加客套话；先抠出 JSON 再解析，
-    // 否则解析失败会落回 discussFallback（全员开跑）——把"省钱选人"反转成最贵路径。
+    // 模型常把 JSON 包在 ```json 围栏或前后加客套话；先抠出 JSON 再解析。
     const plan = parseJsonLoose<GroupPlan>(extractJson(text))
+    // 主持人模式：先看是否判定完成。
+    if (host && plan?.done === true) {
+      return { kind: 'discuss', steps: [], done: true, closure: typeof plan.closure === 'string' ? plan.closure : '需求已完成。' }
+    }
     const steps = (Array.isArray(plan?.steps) ? plan.steps : [])
       .filter(s => s && typeof s.employeeId === 'string' && candidates.some(c => c.id === s.employeeId))
       .map(s => ({ employeeId: s.employeeId, task: String(s.task || '') }))
@@ -180,7 +217,7 @@ async function planRound(sessionId: string, userText: string, candidates: Employ
     const deliverable = kind === 'collaborate'
       ? (typeof plan?.deliverable === 'string' && plan.deliverable.trim() ? plan.deliverable.trim() : '协作产出.md')
       : undefined
-    return { kind, deliverable, steps }
+    return { kind, deliverable, steps, note: host && typeof plan?.note === 'string' ? plan.note : undefined }
   } catch {
     return discussFallback(candidates)
   } finally {
@@ -212,7 +249,10 @@ async function runSteps(
   steps: GroupStep[],
   kind: 'discuss' | 'collaborate',
   deliverable: string | undefined,
-  fromIndex: number
+  fromIndex: number,
+  /** 主持人持续模式：本轮所有发言者都 more=true（主持人随后会接管下一轮），
+   *  转圈不断、循环不停；最终停止由主持人的收尾消息发 more=false。 */
+  forceMore = false
 ): Promise<number> {
   const members = resolveMembers(sessionId)
   const memberNames = members.map(m => m.name)
@@ -242,7 +282,7 @@ async function runSteps(
           providerId: emp.providerId,
           modelId: emp.modelId,
           memberNames,
-          more: j < live.length - 1,
+          more: forceMore ? true : j < live.length - 1,
           mode: kind,
           task,
           deliverable
@@ -273,6 +313,49 @@ function unstickIfEmpty(win: BrowserWindow, sessionId: string, ran: number, ctl:
   }
 }
 
+/** Post a visible 主持人 (moderator) message into the group transcript and stream
+ *  it to the renderer like any speaker turn — so it renders with the dedicated
+ *  主持人 badge (speaker_employee_id = GROUP_HOST_ID). `more` drives the spinner:
+ *  true = keep running (the host will continue), false = stop the round. */
+function emitHostMessage(win: BrowserWindow, sessionId: string, text: string, more: boolean): void {
+  const id = randomUUID()
+  dbRun(
+    `INSERT INTO messages (id, session_id, role, content, created_at, speaker_employee_id) VALUES (?, ?, 'assistant', ?, ?, ?)`,
+    [id, sessionId, text, Date.now(), GROUP_HOST_ID]
+  )
+  win.webContents.send(IPC.AGENT_DELTA, { sessionId, messageId: id, delta: text, speakerEmployeeId: GROUP_HOST_ID })
+  win.webContents.send(IPC.AGENT_DONE, { sessionId, messageId: id, content: text, toolCallLog: [], more, speakerEmployeeId: GROUP_HOST_ID })
+}
+
+/**
+ * 主持人持续推进：盯着用户的最终目标，一轮接一轮自动推进——每轮主持人(planRound host
+ * 模式)先判断目标是否完成，未完成就规划下一步、让相关成员干活，干完再进下一轮。直到：
+ * 主持人判定完成 / 达安全上限 / 被中止(GROUP_STOP) / 有成员 ask_user(暂停等用户)。
+ * 期间所有发言者 more=true（转圈不停）；只有主持人的收尾消息发 more=false 停下。
+ */
+async function runHostLoop(win: BrowserWindow, sessionId: string, ctl: { aborted: boolean }, goal: string): Promise<void> {
+  const CAP = Math.max(1, Math.floor(getSettings().groupHostMaxRounds ?? 8))
+  let round = 0
+  while (!ctl.aborted && round < CAP) {
+    round++
+    const members = resolveMembers(sessionId)
+    if (members.length === 0) { emitHostMessage(win, sessionId, '群里没有可用的成员了，已停止。', false); return }
+    const plan = await planRound(sessionId, goal, members, false, { goal, round })
+    if (ctl.aborted) return
+    if (plan.done) { emitHostMessage(win, sessionId, plan.closure || '需求已完成。', false); return }
+    if (plan.note) emitHostMessage(win, sessionId, `第 ${round} 轮：${plan.note}`, true)
+    const deliverable = plan.kind === 'collaborate' ? plan.deliverable : undefined
+    if (plan.kind === 'collaborate') ensureGroupWorkspace(sessionId)
+    const ran = await runSteps(sessionId, win, ctl, plan.steps, plan.kind, deliverable, 0, true)
+    if (ctl.aborted) return
+    if (pausedRounds.has(sessionId)) return  // 有成员 ask_user → 等用户答完再续（resume 会重入本循环）
+    if (ran === 0) { emitHostMessage(win, sessionId, '本轮没有可执行的成员，已暂停。', false); return }
+  }
+  if (!ctl.aborted && !pausedRounds.has(sessionId)) {
+    emitHostMessage(win, sessionId, `已连续推进 ${CAP} 轮，先停一下。需要的话点「让大家继续讨论一轮」或再给我指示，我接着推进。`, false)
+  }
+}
+
 export function groupChatHandlers(): void {
   // Run ONE round. With a new user message the coordinator plans; without one
   // (继续讨论) it re-plans from the transcript. If a round is paused waiting on an
@@ -287,6 +370,11 @@ export function groupChatHandlers(): void {
       return { started: false }
     }
     const text = (args.message || '').trim()
+    // 主持人持续推进：开关 + 跨多轮对齐的目标（持久在 session 上）。
+    const sess = dbGet<{ host_mode: number | null; group_goal: string | null }>(
+      `SELECT host_mode, group_goal FROM sessions WHERE id = ?`, [sessionId]
+    )
+    const hostMode = !!sess?.host_mode
 
     // ── RESUME: a round is suspended on an ask_user card → this message is the
     // user's answer. Persist it, then continue the saved plan from the asker. ──
@@ -305,8 +393,13 @@ export function groupChatHandlers(): void {
       activeGroupRuns.set(sessionId, ctl)
       ;(async () => {
         try {
-          const ran = await runSteps(sessionId, win, ctl, paused.steps, paused.kind, paused.deliverable, paused.resumeIndex)
+          // 主持人模式下，被暂停轮的剩余步骤也 more=true（主持人随后接管续推）。
+          const ran = await runSteps(sessionId, win, ctl, paused.steps, paused.kind, paused.deliverable, paused.resumeIndex, hostMode)
           unstickIfEmpty(win, sessionId, ran, ctl)
+          // 答完这一轮后，主持人继续一轮轮推进直到完成/上限。
+          if (hostMode && !ctl.aborted && !pausedRounds.has(sessionId)) {
+            await runHostLoop(win, sessionId, ctl, (sess?.group_goal || '').trim() || '（继续推进之前的需求）')
+          }
         } catch (e) {
           win.webContents.send(IPC.AGENT_ERROR, { sessionId, error: (e as Error).message })
         } finally {
@@ -336,14 +429,21 @@ export function groupChatHandlers(): void {
 
     ;(async () => {
       try {
-        // Coordinator decides discuss vs. collaborate + WHO speaks (irrelevant
-        // members stay silent). @-mentioned members are an explicit pick → all speak.
-        const plan = await planRound(sessionId, text || '（请继续推进上面的任务或讨论：未完成的接着做，已完成则审校完善）', candidates, mentioned.length > 0)
-        if (ctl.aborted) return
-        const deliverable = plan.kind === 'collaborate' ? plan.deliverable : undefined
-        if (plan.kind === 'collaborate') ensureGroupWorkspace(sessionId)
-        const ran = await runSteps(sessionId, win, ctl, plan.steps, plan.kind, deliverable, 0)
-        unstickIfEmpty(win, sessionId, ran, ctl)
+        if (hostMode) {
+          // 主持人持续推进：记下需求(目标)，由主持人一轮轮自动推到完成/上限。
+          const goal = text || (sess?.group_goal || '').trim() || '（继续推进上面的任务）'
+          if (text) dbRun(`UPDATE sessions SET group_goal = ? WHERE id = ?`, [text, sessionId])
+          await runHostLoop(win, sessionId, ctl, goal)
+        } else {
+          // 单轮（原行为）：Coordinator decides discuss vs. collaborate + WHO speaks
+          // (irrelevant members stay silent). @-mentioned members are an explicit pick → all speak.
+          const plan = await planRound(sessionId, text || '（请继续推进上面的任务或讨论：未完成的接着做，已完成则审校完善）', candidates, mentioned.length > 0)
+          if (ctl.aborted) return
+          const deliverable = plan.kind === 'collaborate' ? plan.deliverable : undefined
+          if (plan.kind === 'collaborate') ensureGroupWorkspace(sessionId)
+          const ran = await runSteps(sessionId, win, ctl, plan.steps, plan.kind, deliverable, 0)
+          unstickIfEmpty(win, sessionId, ran, ctl)
+        }
       } catch (e) {
         win.webContents.send(IPC.AGENT_ERROR, { sessionId, error: (e as Error).message })
       } finally {

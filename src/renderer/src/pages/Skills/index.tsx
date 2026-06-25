@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Sparkles, Download, Trash2, ToggleLeft, ToggleRight, RefreshCw, Plus, Link2,
   MessageSquare, Code2, Video, Loader2, ExternalLink, X, AlertCircle, Globe, Package,
-  Search, ChevronLeft, ChevronRight, ChevronDown, Shield, FileText, FolderOpen
+  Search, ChevronLeft, ChevronRight, ChevronDown, Shield, FileText, FolderOpen,
+  Wand2, CheckCircle2, Ban, RotateCcw, TrendingUp
 } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { useT } from '../../lib/i18n'
@@ -16,7 +17,7 @@ import type {
 import { useVibeStore } from '../Vibe/store'
 import { DiscoverDialog } from './DiscoverDialog'
 
-type Tab = 'installed' | 'browse' | 'sources'
+type Tab = 'installed' | 'browse' | 'sources' | 'auto'
 
 const SCENARIO_META: Record<SkillScenario, { label: string; Icon: typeof MessageSquare; color: string }> = {
   chat:  { label: '对话', Icon: MessageSquare, color: 'text-slate-600 dark:text-slate-300' },
@@ -147,6 +148,35 @@ export function SkillsPage() {
     refreshInstalled()
     refreshSources()
   }, [])
+
+  // ---- 对话自动学习 (auto-induced skills) ----
+  const [induction, setInduction] = useState<{ enabled: boolean; autoEnable: boolean }>({ enabled: true, autoEnable: true })
+  useEffect(() => {
+    window.api.getSettings().then((s: { skillInductionEnabled?: boolean; skillAutoEnable?: boolean }) =>
+      setInduction({ enabled: s.skillInductionEnabled !== false, autoEnable: s.skillAutoEnable !== false })
+    ).catch(() => {/* defaults */})
+  }, [])
+  // Toast + refresh when a skill is auto-learned in the background.
+  useEffect(() => {
+    const off = window.api.onSkillInduced?.((d) => {
+      toast.success(`学会了新技能：${d.name}${d.status === 'pending' ? '（待审核）' : ''}`)
+      refreshInstalled()
+    })
+    return off
+  }, [])
+  async function toggleInduction(patch: { skillInductionEnabled?: boolean; skillAutoEnable?: boolean }) {
+    const s = await window.api.getSettings()
+    const next = { ...s, ...patch }
+    await window.api.setSettings(next)
+    setInduction({ enabled: next.skillInductionEnabled !== false, autoEnable: next.skillAutoEnable !== false })
+  }
+  async function setSkillStatus(s: InstalledSkillInfo, status: 'active' | 'pending' | 'deprecated') {
+    await window.api.setSkillStatus({ id: s.id, status })
+    refreshInstalled()
+  }
+
+  const autoSkills = useMemo(() => installed.filter(s => s.origin === 'auto'), [installed])
+  const manualSkills = useMemo(() => installed.filter(s => s.origin !== 'auto'), [installed])
 
   // Re-scan for importable local skills whenever the page mounts or the open
   // project changes (project .claude/skills may differ).
@@ -353,7 +383,8 @@ export function SkillsPage() {
         </div>
         <nav className="flex items-center gap-0.5 bg-muted/40 p-0.5 rounded-lg">
           {[
-            { id: 'installed' as Tab, label: `${t('skills.tabInstalled')} (${installed.length})`, Icon: Package },
+            { id: 'installed' as Tab, label: `${t('skills.tabInstalled')} (${manualSkills.length})`, Icon: Package },
+            { id: 'auto' as Tab, label: `自动学习 (${autoSkills.length})`, Icon: Wand2 },
             { id: 'browse' as Tab, label: t('skills.tabBrowse'), Icon: Globe },
             { id: 'sources' as Tab, label: t('skills.tabSources'), Icon: Link2 }
           ].map(({ id, label, Icon }) => (
@@ -393,9 +424,18 @@ export function SkillsPage() {
             </div>
           </div>
         )}
+        {tab === 'auto' && (
+          <AutoLearnTab
+            list={autoSkills}
+            induction={induction}
+            onToggleInduction={toggleInduction}
+            onSetStatus={setSkillStatus}
+            onUninstall={uninstall}
+          />
+        )}
         {tab === 'installed' && (
           <InstalledTab
-            list={installed}
+            list={manualSkills}
             installing={installing}
             onToggle={toggleEnabled}
             onToggleScenario={toggleScenario}
@@ -1301,6 +1341,173 @@ function SourcesTab({
           </div>
         ))}
       </div>
+    </div>
+  )
+}
+
+// ============================================================================
+// 自动学习 tab — auto-induced skills (review / approve / evolve)
+// ============================================================================
+
+const AUTO_STATUS_META: Record<'pending' | 'active' | 'deprecated', { label: string; cls: string }> = {
+  pending:    { label: '待审核', cls: 'bg-amber-500/15 text-amber-600 dark:text-amber-400' },
+  active:     { label: '已采纳', cls: 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400' },
+  deprecated: { label: '已停用', cls: 'bg-muted text-muted-foreground' },
+}
+
+function AutoLearnTab({
+  list, induction, onToggleInduction, onSetStatus, onUninstall
+}: {
+  list: InstalledSkillInfo[]
+  induction: { enabled: boolean; autoEnable: boolean }
+  onToggleInduction: (patch: { skillInductionEnabled?: boolean; skillAutoEnable?: boolean }) => void
+  onSetStatus: (s: InstalledSkillInfo, status: 'active' | 'pending' | 'deprecated') => void
+  onUninstall: (s: InstalledSkillInfo) => void
+}) {
+  // Order: pending(待审) → active(已采纳) → deprecated(已停用); within, newest first.
+  const rank: Record<string, number> = { pending: 0, active: 1, deprecated: 2 }
+  const sorted = useMemo(
+    () => [...list].sort((a, b) => (rank[a.status] - rank[b.status]) || (b.installedAt - a.installedAt)),
+    [list]
+  )
+
+  return (
+    <div className="max-w-4xl mx-auto px-6 py-6 space-y-4">
+      {/* Intro + global controls */}
+      <div className="rounded-xl border border-primary/25 bg-primary/[0.05] p-4">
+        <div className="flex items-start gap-3">
+          <div className="w-9 h-9 rounded-lg bg-primary/15 flex items-center justify-center shrink-0">
+            <Wand2 size={16} className="text-primary" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <h2 className="text-sm font-semibold">对话自动学习</h2>
+            <p className="text-[11px] text-muted-foreground leading-relaxed mt-0.5">
+              系统会在后台从你的对话里提炼可复用的做法，沉淀成可被模型按需加载的技能，并随使用不断进化（合并重复 / 停用没用的 / 失败时自我改进）。
+            </p>
+          </div>
+        </div>
+        <div className="mt-3 flex flex-col gap-2">
+          <ToggleRow
+            on={induction.enabled}
+            onClick={() => onToggleInduction({ skillInductionEnabled: !induction.enabled })}
+            title="开启对话自动学习"
+            desc="关闭后不再从对话提炼新技能（已有技能仍可用）。"
+          />
+          <ToggleRow
+            on={induction.autoEnable}
+            disabled={!induction.enabled}
+            onClick={() => onToggleInduction({ skillAutoEnable: !induction.autoEnable })}
+            title="激进模式：自动启用"
+            desc="提炼出的技能通过校验即自动生效；关闭则进入「待审核」，需你手动采纳。"
+          />
+        </div>
+      </div>
+
+      {sorted.length === 0 ? (
+        <EmptyState
+          icon={Wand2}
+          title="还没有自动学到的技能"
+          message="多用对话；当出现可复用的多步做法时，系统会在这里沉淀成技能。也可以在任意对话里点「把这次对话变成技能」。"
+        />
+      ) : (
+        <div className="space-y-3">
+          {sorted.map(s => (
+            <AutoSkillCard
+              key={s.id}
+              skill={s}
+              onSetStatus={(status) => onSetStatus(s, status)}
+              onUninstall={() => onUninstall(s)}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ToggleRow({ on, onClick, title, desc, disabled }: {
+  on: boolean; onClick: () => void; title: string; desc: string; disabled?: boolean
+}) {
+  return (
+    <div className={cn('flex items-start gap-2.5 rounded-lg bg-card/60 border border-border/60 p-2.5', disabled && 'opacity-50')}>
+      <button onClick={onClick} disabled={disabled} className="p-0.5 rounded shrink-0 text-primary disabled:cursor-not-allowed">
+        {on ? <ToggleRight size={22} className="text-primary" /> : <ToggleLeft size={22} className="text-muted-foreground" />}
+      </button>
+      <div className="flex-1 min-w-0">
+        <div className="text-xs font-medium">{title}</div>
+        <div className="text-[10px] text-muted-foreground/80 leading-relaxed">{desc}</div>
+      </div>
+    </div>
+  )
+}
+
+function AutoSkillCard({ skill, onSetStatus, onUninstall }: {
+  skill: InstalledSkillInfo
+  onSetStatus: (status: 'active' | 'pending' | 'deprecated') => void
+  onUninstall: () => void
+}) {
+  const [expanded, setExpanded] = useState(false)
+  const meta = AUTO_STATUS_META[skill.status] ?? AUTO_STATUS_META.active
+  const total = skill.timesSucceeded + skill.timesFailed
+  const conf = skill.confidence != null ? Math.round(skill.confidence * 100) : null
+  return (
+    <div className={cn('rounded-xl border bg-card p-4 transition-all', skill.status === 'deprecated' && 'opacity-60')}>
+      <div className="flex items-start gap-3">
+        <div className="w-9 h-9 rounded-lg bg-primary/10 flex items-center justify-center shrink-0 text-lg">✨</div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <h3 className="text-sm font-semibold">{skill.name}</h3>
+            <span className={cn('text-[10px] px-1.5 py-px rounded font-medium', meta.cls)}>{meta.label}</span>
+            <span className="text-[10px] text-muted-foreground/60 font-mono">v{skill.inducedVersion}</span>
+          </div>
+          <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed line-clamp-2">{skill.description}</p>
+          {/* Trust stats */}
+          <div className="flex items-center gap-3 mt-1.5 text-[10px] text-muted-foreground/70">
+            <span className="inline-flex items-center gap-1"><TrendingUp size={10} /> 加载 {skill.timesLoaded}</span>
+            {total > 0 && <span>成功 {skill.timesSucceeded} / 失败 {skill.timesFailed}</span>}
+            {conf != null && total > 0 && <span>成熟度 {conf}%</span>}
+          </div>
+        </div>
+      </div>
+
+      {/* Actions by status */}
+      <div className="mt-3 flex items-center gap-2 text-[11px] flex-wrap">
+        <button onClick={() => setExpanded(e => !e)} className="text-muted-foreground hover:text-foreground transition-colors">
+          {expanded ? '收起内容' : '查看内容'}
+        </button>
+        <div className="flex-1" />
+        {skill.status === 'pending' && (
+          <button onClick={() => onSetStatus('active')} className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/25 font-medium">
+            <CheckCircle2 size={12} /> 采纳启用
+          </button>
+        )}
+        {skill.status === 'active' && (
+          <button onClick={() => onSetStatus('deprecated')} className="inline-flex items-center gap-1 text-muted-foreground hover:text-foreground transition-colors">
+            <Ban size={11} /> 停用
+          </button>
+        )}
+        {skill.status === 'deprecated' && (
+          <button onClick={() => onSetStatus('active')} className="inline-flex items-center gap-1 text-primary hover:opacity-80 transition-colors">
+            <RotateCcw size={11} /> 恢复启用
+          </button>
+        )}
+        <button onClick={onUninstall} className="inline-flex items-center gap-1 text-destructive/80 hover:text-destructive transition-colors">
+          <Trash2 size={11} /> 删除
+        </button>
+      </div>
+
+      {expanded && (
+        <div className="mt-3 pt-3 border-t border-border/60 space-y-2 text-xs">
+          <pre className="whitespace-pre-wrap font-mono text-[11px] bg-muted/30 rounded-md p-2 max-h-60 overflow-y-auto scrollbar-prominent">
+            {skill.skillBody || '(空)'}
+          </pre>
+          {skill.triggerReason && (
+            <div className="text-[10px] text-muted-foreground/50 font-mono truncate" title={skill.triggerReason}>
+              来源：{skill.inducedFrom || '—'} · 触发：{skill.triggerReason}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }

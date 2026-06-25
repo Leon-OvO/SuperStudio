@@ -390,6 +390,37 @@ function applyMigrations(): void {
   // v21: 会话置顶 —— 置顶的会话排在列表最前的「置顶」区，且不参与自动归档。
   // 1 = 置顶；0/NULL = 普通。
   try { db.run(`ALTER TABLE sessions ADD COLUMN pinned INTEGER DEFAULT 0`) } catch { /* already exists */ }
+  // v22: 群聊「主持人持续推进」—— host_mode=1 时主持人会一轮接一轮自动推进到需求完成或
+  // 达上限；group_goal 记下用户的需求(目标),供主持人跨多轮始终对齐。0/NULL = 旧的单轮行为。
+  try { db.run(`ALTER TABLE sessions ADD COLUMN host_mode INTEGER DEFAULT 0`) } catch { /* already exists */ }
+  try { db.run(`ALTER TABLE sessions ADD COLUMN group_goal TEXT`) } catch { /* already exists */ }
+  // v23: 对话自动学习 —— 从对话蒸馏可装载的 SKILL 技能(origin='auto')，并给所有技能加
+  // 生命周期态 + 使用计数，支撑「检测→起草→校验→采纳→召回→进化」回路。status:
+  // 'active'(进 run) | 'pending'(待审) | 'deprecated'(停用，存档不删)。confidence =
+  // 成熟度(可塑↔稳定门控)。skill_events 记 A1/A2 信号(load/success/fail)。
+  try { db.run(`ALTER TABLE skills ADD COLUMN status TEXT NOT NULL DEFAULT 'active'`) } catch { /* already exists */ }
+  try { db.run(`ALTER TABLE skills ADD COLUMN origin TEXT NOT NULL DEFAULT 'manual'`) } catch { /* already exists */ }
+  try { db.run(`ALTER TABLE skills ADD COLUMN source_memory_id TEXT`) } catch { /* already exists */ }
+  try { db.run(`ALTER TABLE skills ADD COLUMN induced_version INTEGER NOT NULL DEFAULT 1`) } catch { /* already exists */ }
+  try { db.run(`ALTER TABLE skills ADD COLUMN body_hash TEXT`) } catch { /* already exists */ }
+  try { db.run(`ALTER TABLE skills ADD COLUMN trigger_reason TEXT`) } catch { /* already exists */ }
+  try { db.run(`ALTER TABLE skills ADD COLUMN induced_from TEXT`) } catch { /* already exists */ }
+  try { db.run(`ALTER TABLE skills ADD COLUMN times_loaded INTEGER NOT NULL DEFAULT 0`) } catch { /* already exists */ }
+  try { db.run(`ALTER TABLE skills ADD COLUMN times_succeeded INTEGER NOT NULL DEFAULT 0`) } catch { /* already exists */ }
+  try { db.run(`ALTER TABLE skills ADD COLUMN times_failed INTEGER NOT NULL DEFAULT 0`) } catch { /* already exists */ }
+  try { db.run(`ALTER TABLE skills ADD COLUMN last_used_at INTEGER`) } catch { /* already exists */ }
+  try { db.run(`ALTER TABLE skills ADD COLUMN confidence REAL`) } catch { /* already exists */ }
+  try {
+    db.run(`CREATE TABLE IF NOT EXISTS skill_events (
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      skill_id   TEXT NOT NULL,
+      session_id TEXT,
+      ts         INTEGER NOT NULL,
+      kind       TEXT NOT NULL,                 -- 'load' | 'success' | 'fail'
+      artifacts  INTEGER NOT NULL DEFAULT 0     -- A1 signal: artifact count produced that run
+    )`)
+  } catch { /* already exists */ }
+  try { db.run(`CREATE INDEX IF NOT EXISTS idx_skill_events_skill ON skill_events(skill_id, ts)`) } catch { /* already exists */ }
 }
 
 // Helper: run a query and save

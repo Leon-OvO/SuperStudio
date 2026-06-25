@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { ArrowLeft, Loader2, Plus, X, Check, AlertCircle } from 'lucide-react'
+import { ArrowLeft, Loader2, Plus, X, Check, AlertCircle, Eye, EyeOff, Copy } from 'lucide-react'
 import type { ProviderConfig } from '../../../../shared/ipc-types'
 import { randomId } from '../../lib/id'
 import { Select } from '../../components/ui/Select'
@@ -28,6 +28,8 @@ export function ProviderForm({ initial, onSave, onCancel }: Props) {
   const [newModel, setNewModel] = useState('')
   const [fetching, setFetching] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [showKey, setShowKey] = useState(false)
+  const [copiedKey, setCopiedKey] = useState(false)
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<{ ok: boolean; modelCount?: number; error?: string } | null>(null)
 
@@ -131,13 +133,37 @@ export function ProviderForm({ initial, onSave, onCancel }: Props) {
       </Field>
 
       <Field label="API 密钥">
-        <input
-          type="password"
-          value={apiKey}
-          onChange={e => setApiKey(e.target.value)}
-          placeholder="sk-..."
-          className="input"
-        />
+        <div className="relative">
+          <input
+            type={showKey ? 'text' : 'password'}
+            value={apiKey}
+            onChange={e => setApiKey(e.target.value)}
+            placeholder="sk-..."
+            className="input pr-16"
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
+            autoComplete="off"
+          />
+          <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
+            <button type="button" onClick={() => setShowKey(s => !s)} title={showKey ? '隐藏' : '查看'}
+              className="p-1 text-muted-foreground hover:text-foreground">
+              {showKey ? <EyeOff size={14} /> : <Eye size={14} />}
+            </button>
+            <button type="button" title="复制密钥"
+              onClick={async () => {
+                if (!apiKey) { toast.error('请先填写 API 密钥'); return }
+                try {
+                  await navigator.clipboard.writeText(apiKey)
+                  setCopiedKey(true)
+                  setTimeout(() => setCopiedKey(false), 1500)
+                } catch (e) { toast.error('复制失败：' + (e as Error).message) }
+              }}
+              className="p-1 text-muted-foreground hover:text-foreground">
+              {copiedKey ? <Check size={14} className="text-emerald-500" /> : <Copy size={14} />}
+            </button>
+          </div>
+        </div>
       </Field>
 
       <Field label="接口地址（可选）">
@@ -239,11 +265,11 @@ export function ProviderForm({ initial, onSave, onCancel }: Props) {
           <div className="flex-1">
             {testResult.ok ? (
               <span>
-                连接成功
+                <span className="font-medium">连接成功</span>
                 {testResult.modelCount != null && ` · 服务器返回了 ${testResult.modelCount} 个可用模型`}
               </span>
             ) : (
-              <span>{testResult.error}</span>
+              <span><span className="font-medium">连接失败：</span>{testResult.error}</span>
             )}
           </div>
         </div>

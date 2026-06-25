@@ -83,7 +83,20 @@ export function scanWorkdirSkills(dir: string, scenario: SkillScenario = 'chat')
       installPath: bundleDir,
       skillBody: body,
       resourceFiles: listBundleFiles(bundleDir),
-      allowScripts: true
+      allowScripts: true,
+      // Ephemeral workdir skills aren't tracked in the DB — neutral lifecycle defaults.
+      status: 'active',
+      origin: 'manual',
+      sourceMemoryId: null,
+      inducedVersion: 1,
+      bodyHash: null,
+      triggerReason: null,
+      inducedFrom: null,
+      timesLoaded: 0,
+      timesSucceeded: 0,
+      timesFailed: 0,
+      lastUsedAt: null,
+      confidence: null
     })
   }
   return out

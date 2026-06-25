@@ -49,6 +49,14 @@ export function friendlyError(message: string, cause?: unknown, statusCode?: num
   if (statusCode === 503 || full.includes('temporarily unavailable') || full.includes('service unavailable') || full.includes('503')) {
     return `服务暂时不可用（503）。这通常是模型服务过载，请稍等片刻后重试。\n\n原始信息：${message}`
   }
+  // 网关/中转转发失败（502/504/529 或「Upstream request failed / bad gateway / overloaded」）。
+  // 引擎已带退避自动重试若干次；走到这里说明重试仍未成功 → 提示稍后再试（可重试）。
+  if (statusCode === 502 || statusCode === 504 || statusCode === 529 ||
+      full.includes('upstream request failed') || full.includes('upstream error') ||
+      full.includes('bad gateway') || full.includes('gateway time') ||
+      full.includes('overloaded') || full.includes('502') || full.includes('504') || full.includes('529')) {
+    return `上游服务暂时不可用（网关/中转转发失败）。已自动重试多次仍未成功，请稍后再试或切换模型。\n\n原始信息：${message}`
+  }
   if (statusCode === 429 || full.includes('rate limit') || full.includes('429') || full.includes('too many requests')) {
     return `请求频率超限（429 Rate Limit）。请稍等几秒后重试，或切换到其他模型。\n\n原始信息：${message}`
   }

@@ -69,6 +69,8 @@ interface ChatState {
   setSessionAssignee: (sessionId: string, employeeId: string | null) => void
   /** Update a session's pinned flag locally (after setSessionPinned IPC). */
   setSessionPinned: (sessionId: string, pinned: boolean) => void
+  /** Update a group session's 主持人持续推进 flag locally (after setSessionHostMode IPC). */
+  setSessionHostMode: (sessionId: string, on: boolean) => void
   /** Update a group session's member list locally (after add/remove member IPC). */
   setSessionGroupEmployees: (sessionId: string, ids: string[]) => void
 }
@@ -180,6 +182,9 @@ export const useChatStore = create<ChatState>((set) => ({
   })),
   setSessionPinned: (sessionId, pinned) => set(s => ({
     sessions: s.sessions.map(sess => sess.id === sessionId ? { ...sess, pinned: pinned ? 1 : 0 } : sess)
+  })),
+  setSessionHostMode: (sessionId, on) => set(s => ({
+    sessions: s.sessions.map(sess => sess.id === sessionId ? { ...sess, hostMode: on ? 1 : 0 } : sess)
   })),
   setSessionGroupEmployees: (sessionId, ids) => set(s => ({
     sessions: s.sessions.map(sess => sess.id === sessionId ? { ...sess, groupEmployeeIds: ids } : sess)

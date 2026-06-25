@@ -3,6 +3,7 @@ import { BRAND } from '@shared/brand'
 import { createPortal } from 'react-dom'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import type { Message, ToolCallRecord, AskUserPayload, EmployeeInfo } from '../../../../shared/ipc-types'
+import { GROUP_HOST_ID } from '../../../../shared/ipc-types'
 import { cn } from '../../lib/utils'
 import { dept } from '../../lib/departments'
 import { copyImageToClipboard } from '../../lib/clipboard'
@@ -534,7 +535,13 @@ function MessageBubble({
       <div className={cn('group/msg flex flex-col', isUser ? 'items-end' : 'items-start')}>
         {/* Group chat: who said this — dept emoji + name above the bubble. If the
             speaker was fired since, label it so the message isn't shown unattributed. */}
-        {!isUser && speaker && speakerDept ? (
+        {!isUser && message.speakerEmployeeId === GROUP_HOST_ID ? (
+          <div className="flex items-center gap-1.5 mb-1 pl-1">
+            <span className="w-5 h-5 rounded-md grid place-items-center text-[12px] border border-border shrink-0 bg-primary/10">🧭</span>
+            <span className="text-xs font-medium text-foreground/90">主持人</span>
+            <span className="text-[10px] text-muted-foreground/70">持续推进</span>
+          </div>
+        ) : !isUser && speaker && speakerDept ? (
           <div className="flex items-center gap-1.5 mb-1 pl-1">
             <span className="w-5 h-5 rounded-md grid place-items-center text-[12px] border border-border shrink-0" style={{ background: speakerDept.color + '22' }}>{speakerDept.emoji}</span>
             <span className="text-xs font-medium text-foreground/90">{speaker.name}</span>

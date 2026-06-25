@@ -45,6 +45,7 @@ export function sessionHandlers(): void {
              COALESCE(s.archived, 0) AS archived,
              COALESCE(s.is_scheduled, 0) AS isScheduled,
              COALESCE(s.pinned, 0) AS pinned,
+             COALESCE(s.host_mode, 0) AS hostMode,
              s.working_dir AS workingDir,
              s.employee_id AS employeeId,
              s.group_employee_ids AS groupEmployeeIdsJson,
@@ -130,6 +131,14 @@ export function sessionHandlers(): void {
   // are excluded from auto-archive (see session-tidy.ts).
   ipcMain.handle(IPC.SESSIONS_SET_PINNED, (_e, id: string, pinned: boolean) => {
     dbRun(`UPDATE sessions SET pinned = ? WHERE id = ?`, [pinned ? 1 : 0, id])
+    return { ok: true }
+  })
+
+  // Group chat: toggle 主持人持续推进. Turning it off mid-run does NOT abort the
+  // current round — it just stops the host from queuing the next one (the loop
+  // re-reads host_mode each round). group_goal is set by the group runner.
+  ipcMain.handle(IPC.SESSIONS_SET_HOST_MODE, (_e, id: string, on: boolean) => {
+    dbRun(`UPDATE sessions SET host_mode = ? WHERE id = ?`, [on ? 1 : 0, id])
     return { ok: true }
   })
 

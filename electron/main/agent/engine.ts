@@ -715,6 +715,13 @@ export async function runAgent(
       // Finalize once (no-op if onKill/Esc already did). Aborted → cancelled=true
       // but the streamed process text is preserved, not wiped.
       finalize(abort.signal.aborted || isComputerUseAborted())
+      // Auto-learn: arm idle induction so a computer-use session can still be mined
+      // into a skill. (Per-skill trust signals are NOT credited here — like memory
+      // capture, the CU branch returns before the normal post-run signal block.)
+      try {
+        const { scheduleSkillInduction } = await import('../services/skill-induction')
+        scheduleSkillInduction(sessionId)
+      } catch { /* best-effort */ }
       return
     }
 
@@ -1776,12 +1783,26 @@ export async function runAgent(
     // 界面永远「加载中」。用独立的 stallCtl —— 绝不动共享的 abort，否则会被 isStaleRun
     // 误判为「本轮已被取代」从而【静默丢弃】，用户看不到任何错误。stall 触发后流会因
     // combinedSignal 中止，循环结束后我们把它当作一个可见错误抛出。
+    // 每轮思考模式（提前到看门狗常量之前算，好让 deep 放宽静默窗口）。
+    const effThinkMode: ThinkingMode = thinkingMode ?? (relayCompat ? 'fast' : (settings.chatThinkingMode ?? 'auto'))
     // 两档静默窗口：吐字时的 token 间隙用紧窗口；思考/工具调用/工具执行/下一轮推理等
     // 「干活不吐字」阶段给宽窗口（否则会把正常的扩展思考误判成无响应）。
+    // deep（xhigh/扩展思考）可能整块静默好几分钟——尤其中转不透传 reasoning 时整段思考
+    // 没有任何 part——240s 会把正常深思误判成「无响应」掐断，放宽到 10min（仍能兜真挂死）。
     const STREAM_GAP_MS = 120000
-    const SILENT_WORK_MS = 240000
+    const SILENT_WORK_MS = effThinkMode === 'deep' ? 600000 : 240000
     const stallCtl = new AbortController()
     const combinedSignal = AbortSignal.any([abort.signal, stallCtl.signal, progressCtl.signal])
+    // A CONTROLLED abort — stall watchdog / error-streak hard-stop / user stop /
+    // superseded run — surfaces from streamText as an AbortError ("This operation
+    // was aborted"). That's not a real stream failure: the actual reason is tracked
+    // by stalled / abortedByErrorStreak / isStaleRun and turned into the right
+    // user-facing message below. So we must NOT record it as `streamErr` (doing so
+    // masked the friendly messages and leaked the raw "This operation was aborted"
+    // into the reply as "⚠️ 流式响应中途出错"). Genuine errors (ECONNRESET, parse, …)
+    // are not AbortErrors and still flow through.
+    const isControlledAbort = (e: unknown): boolean =>
+      combinedSignal.aborted || (e as { name?: string })?.name === 'AbortError'
     let stalled = false
     let stallTimer: ReturnType<typeof setTimeout> | null = null
     // Soft pre-warning (Feature 1): before the hard stall fires, nudge the UI amber
@@ -1802,16 +1823,11 @@ export async function runAgent(
       softWarn2 = setTimeout(() => { if (!combinedSignal.aborted) warnPhase('timeout-soon', '即将超时，可点「停止」后重试') }, Math.floor(ms * 0.85))
     }
 
-    // 扩展思考策略(B)：按设置把 Anthropic 的 thinking providerOptions 注入。auto=不动。
-    // 兼容模式：【显式关闭】扩展思考（等同 fast）——只「不传」并不能关掉默认就思考的模型
-    // (Fable 5 / Opus)，而这些中转的 reasoning 流常不规范会炸整轮。关掉思考最稳。
-    // 但输入框「思考模式」选择器是用户的【显式】每轮选择，必须优先生效——哪怕在
-    // relayCompat 下也尊重它（用户主动开「深度」，接受更慢/中转怪癖）。没显式选时才回退
-    // 到「relayCompat→fast / 否则全局设置」的安全默认。
-    const effThinkMode: ThinkingMode = thinkingMode ?? (relayCompat ? 'fast' : (settings.chatThinkingMode ?? 'auto'))
-    // Native Anthropic extended thinking — the same path Claude Code uses, which works
-    // through Anthropic-native relays. providerType==='anthropic' gates it; relays that
-    // route anthropic-native (anthropicNative / type 'anthropic') get it too.
+    // 扩展思考策略(B)：按 effThinkMode(上面已算) 把 Anthropic 的 thinking providerOptions 注入。
+    // auto=不动；fast=显式关思考（relayCompat 默认，因这些中转的 reasoning 流常不规范会炸整轮）；
+    // 输入框「思考模式」每轮显式选择优先生效（哪怕 relayCompat 也尊重用户主动开「深度」）。
+    // Native Anthropic extended thinking — same path Claude Code uses; providerType==='anthropic'
+    // gates it（含 anthropicNative / type 'anthropic' 的中转）。
     const thinkOpts = thinkingStreamOpts(providerType, effThinkMode, effectiveModel)
 
     const MAX_STEPS = 30
@@ -1822,6 +1838,7 @@ export async function runAgent(
       maxSteps: MAX_STEPS,
       maxRetries: 5,
       onError: ({ error }: { error: unknown }) => {
+        if (isControlledAbort(error)) return // our own abort — not a real error
         console.error('[Agent] streamText onError', error)
         streamErr = error as Error
       },
@@ -1912,13 +1929,18 @@ export async function runAgent(
             setPhase('tool', tn ? `执行 ${tn}…` : '执行工具…', tn)
             closeThink()
           } else if (part.type === 'error') {
-            streamErr = part.error as Error
+            if (!isControlledAbort(part.error)) streamErr = part.error as Error
           }
         }
         closeThink()
       } catch (iterErr) {
-        console.error('[Agent] fullStream iteration threw', iterErr)
-        streamErr = iterErr as Error
+        // Controlled abort (stall / stop / superseded) throws here as AbortError —
+        // not a real failure; the reason becomes a friendly message below. Only
+        // record genuine iteration errors (network reset, parse, …).
+        if (!isControlledAbort(iterErr)) {
+          console.error('[Agent] fullStream iteration threw', iterErr)
+          streamErr = iterErr as Error
+        }
       } finally {
         clearStallTimers()
       }
@@ -1957,6 +1979,32 @@ export async function runAgent(
         await consumeStream(resultR)
         result = resultR
       }
+    }
+    // Claude Code-style auto-retry on TRANSIENT upstream/gateway failures — the relay
+    // returns "Upstream request failed" / 502 / 503 / 504 / 529 / overloaded / rate-limit
+    // (often as a 200-with-error-body or a mid-stream error the SDK's own maxRetries
+    // never sees). Retry the WHOLE turn a few times with exponential backoff instead of
+    // surfacing the raw error. Guarded on empty output (!fullText.trim()) so no
+    // side-effecting tool call is ever re-run. statusCode/cause are matched too since
+    // the AI SDK wraps these as APICallError.
+    const TRANSIENT_RE = /upstream request failed|upstream error|bad gateway|gateway time|service unavailable|temporarily unavailable|overloaded|too many requests|rate.?limit|internal server error|\b(429|500|502|503|504|529)\b/i
+    const isTransient = (e: unknown): boolean => {
+      const err = e as { message?: string; statusCode?: number; cause?: { code?: string; message?: string } }
+      const blob = `${err?.message ?? ''} ${err?.cause?.code ?? ''} ${err?.cause?.message ?? ''} ${err?.statusCode ?? ''}`
+      return TRANSIENT_RE.test(blob) || CONN_ERR_RE.test(blob)
+    }
+    let transientTries = 0
+    while (streamErr && !fullText.trim() && isTransient(streamErr) && transientTries < 3 && !isStaleRun()) {
+      transientTries++
+      const backoff = 800 * 2 ** (transientTries - 1) // 0.8s → 1.6s → 3.2s
+      console.warn(`[Agent] 上游瞬时失败，自动重试 ${transientTries}/3`, { msg: (streamErr as Error)?.message?.slice(0, 120) })
+      warnPhase('slow', `上游暂时失败，正在自动重试（${transientTries}/3）…`)
+      streamErr = null
+      await new Promise(r => setTimeout(r, backoff))
+      if (isStaleRun()) break
+      const rt = makeStream([])
+      await consumeStream(rt)
+      result = rt
     }
     // Hard failure with nothing produced (401/auth, network, …) → surface it NOW.
     // Awaiting result.usage / finishReason on an errored stream can hang on some
@@ -2265,6 +2313,34 @@ export async function runAgent(
       const { scheduleIdleCapture } = await import('../services/memory')
       scheduleIdleCapture(sessionId)
     } catch { /* memory module optional */ }
+    // Auto-learn skills: arm idle induction, and record this run's trust signals
+    // for any runtime skills the model actually consulted (load_skill). Both are
+    // fire-and-forget AFTER the reply — zero added latency.
+    try {
+      const { scheduleSkillInduction } = await import('../services/skill-induction')
+      scheduleSkillInduction(sessionId)
+      const isErr = (r: unknown): boolean => !!(r && typeof r === 'object' && 'error' in (r as Record<string, unknown>))
+      const consultedNames = toolCallLog
+        .filter(c => c.toolName === 'load_skill' && !isErr(c.result))
+        .map(c => (c.args as { name?: string })?.name)
+        .filter((n): n is string => !!n)
+      if (consultedNames.length && activeSkills.length) {
+        const norm = (s: string) => s.trim().toLowerCase()
+        const consultedIds = [...new Set(consultedNames.map(norm))]
+          // Skip ephemeral 工作目录 skills — their ids aren't DB-backed, so signals
+          // would just accumulate orphan rows.
+          .map(n => activeSkills.find(s => (norm(s.name) === n || norm(s.id) === n) && s.sourceUrl !== 'workdir')?.id)
+          .filter((id): id is string => !!id)
+        if (consultedIds.length) {
+          const { recordSkillSignals } = await import('../services/skill-evolution')
+          const artifacts = extractArtifactPaths(JSON.stringify(toolCallLog)).length
+          // A step-exhausted / length-truncated / paused turn isn't a real success —
+          // exclude it so a consulted skill's confidence isn't inflated.
+          const success = !!fullText.trim() && !streamErr && !incomplete
+          recordSkillSignals({ consultedSkillIds: consultedIds, success, artifacts, sessionId })
+        }
+      }
+    } catch { /* best-effort; never disturb the reply path */ }
     // Layer 3 — correction learning loop. If THIS user message is correcting a
     // lazy / under-delivered prior turn, distill a durable "delivery standard"
     // memory so future turns recall it. Deterministic detect + evidence gate

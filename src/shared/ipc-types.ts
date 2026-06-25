@@ -18,6 +18,7 @@ export const IPC = {
   SESSIONS_SET_WORKING_DIR: 'sessions:set-working-dir', // pin a per-conversation working directory (opt-in)
   SESSIONS_SET_ASSIGNEE: 'sessions:set-assignee', // bind/unbind a hired employee to a conversation
   SESSIONS_SET_PINNED: 'sessions:set-pinned',     // pin/unpin a conversation (top section + skip auto-archive)
+  SESSIONS_SET_HOST_MODE: 'sessions:set-host-mode', // group chat: toggle 主持人 continuous-execution mode
   SESSIONS_CHANGED: 'sessions:changed',           // main → renderer: list changed in the background (auto-tidy) → reload
   SESSIONS_ADD_MEMBER: 'sessions:add-member',     // pull an employee into a group chat
   SESSIONS_REMOVE_MEMBER: 'sessions:remove-member', // remove an employee from a group chat
@@ -176,6 +177,10 @@ export const IPC = {
   DASHBOARD_MODELS: 'dashboard:models',
   DASHBOARD_KEYS_USAGE: 'dashboard:keys-usage',
 
+  // Local usage stats (aggregated from the on-device messages / vibe_messages
+  // tables —真实消耗 token/缓存/成本, offline, works for every flavor)
+  USAGE_STATS: 'usage:stats',
+
   // Vibe / Build page (OpenSpec-style propose → apply workflow)
   // ---- Lifecycle: streamed events ----
   VIBE_PROGRESS: 'vibe:progress',
@@ -239,6 +244,10 @@ export const IPC = {
   SKILLS_IMPORT_LOCAL: 'skills:import-local',
   SKILLS_DISCOVER_LOCAL: 'skills:discover-local',   // scan ~/.claude/skills etc. for importable bundles
   SKILLS_EXPORT: 'skills:export',                    // export an installed skill as a re-importable .zip
+  // 对话自动学习（auto-induced skills）
+  SKILLS_INDUCE_SESSION: 'skills:induce-session',    // 「把这次对话变成技能」手动诱导
+  SKILLS_SET_STATUS: 'skills:set-status',            // 审核：active(采纳) | pending | deprecated(停用)
+  SKILL_INDUCED: 'skill:induced',                    // main → renderer (event): 自动学会了新技能
 
   // Talent pool (encrypted bundled catalog of agent personas / "招募人才")
   TALENT_BROWSE: 'talent:browse',
@@ -539,11 +548,20 @@ export interface AppSettings {
   kbGlobalSpaceIds: string[]
   /** Auto-capture long-term memories from conversations / company work. */
   memoryAutoCapture?: boolean
+  /** 对话自动学习：从对话蒸馏可装载的 SKILL 技能并持续进化。默认 true。 */
+  skillInductionEnabled?: boolean
+  /** 激进模式：诱导出的技能通过校验即自动启用（否则进「待审」）。默认 true。 */
+  skillAutoEnable?: boolean
+  /** 防 skill shadowing：单轮最多注入这么多个「自动学习」技能（按信任 top-k）。默认 12。 */
+  skillMaxAutoActive?: number
   /** 会话整理：超过这么多天没活动的普通会话自动归档（可逆，可在「显示归档」找回）。
    *  0 = 关闭自动归档。默认 30。置顶/员工单聊/群聊/定时会话不归档。 */
   autoArchiveDays?: number
   /** 会话整理：自动删除「随手新建却没发过消息、且超过一天」的空「新对话」。默认 true。 */
   autoPruneEmptyChats?: boolean
+  /** 群聊「主持人持续推进」的安全上限：主持人最多连续自动推进这么多轮就停下（防跑飞/费用）。
+   *  默认 8。 */
+  groupHostMaxRounds?: number
   /** 诊断：开启后把每条对外 API 请求（对话/生图/账号）记到本机 api-requests.jsonl，
    *  供内部排查；只记元数据、不记请求体/密钥，不上传。默认关闭。 */
   apiRequestLogging?: boolean
@@ -849,6 +867,22 @@ export interface InstalledSkillInfo extends SkillManifestInfo {
   resourceFiles: string[]
   /** Whether this skill is allowed to run its bundled scripts. */
   allowScripts: boolean
+  // --- Auto-learn lifecycle (v23) ---
+  /** 'active' = loads into runs; 'pending' = awaiting review; 'deprecated' = archived. */
+  status: 'active' | 'pending' | 'deprecated'
+  /** 'manual' | 'remote' | 'auto'(induced from conversations). */
+  origin: 'manual' | 'remote' | 'auto'
+  sourceMemoryId: string | null
+  inducedVersion: number
+  bodyHash: string | null
+  triggerReason: string | null
+  inducedFrom: string | null
+  timesLoaded: number
+  timesSucceeded: number
+  timesFailed: number
+  lastUsedAt: number | null
+  /** Maturity/confidence 0–1; null = no usage signal yet. */
+  confidence: number | null
 }
 
 export interface SkillSourceInfo {
@@ -944,6 +978,11 @@ export interface AuthState {
   allKeys?: StoredKeyInfo[]
 }
 
+/** Synthetic speaker id for the group-chat 主持人 (moderator). Used as
+ *  messages.speaker_employee_id so the renderer can render a dedicated 主持人
+ *  badge; it is NOT a real hired employee id. */
+export const GROUP_HOST_ID = '__host__'
+
 // Session
 export interface Session {
   id: string
@@ -959,6 +998,10 @@ export interface Session {
   /** 1 = pinned — sorts into the top「置顶」section and is excluded from
    *  auto-archive. 0/undefined = normal. */
   pinned?: number
+  /** Group chat only: 1 = 主持人持续推进 (a virtual moderator drives round after
+   *  round toward the requirement until done / round cap / stop). 0/undefined = the
+   *  classic one-round-then-wait behavior. */
+  hostMode?: number
   /** Sum of cost_usd across all messages in this session (0 if none priced). */
   totalCostUsd?: number
   totalInputTokens?: number
@@ -1218,6 +1261,68 @@ export interface EmployeeStats {
    *  this employee. Not persisted in the stats JSON. */
   tokensIn?: number
   tokensOut?: number
+}
+
+// ─── Local usage statistics (USAGE_STATS) ────────────────────────────────
+// Aggregated on-device from the messages + vibe_messages tables. Each assistant
+// message that carries usage = one "request" row.
+
+export type UsageRange = 'today' | 'last7d' | 'last30d' | 'all' | 'custom'
+
+/** Explicit window for range='custom'. start/end are epoch ms — ANY instant in
+ *  the desired day; the handler snaps start down to 00:00 and end up to the end
+ *  of its day (inclusive). Either side may be omitted (open-ended). */
+export interface UsageCustomRange {
+  start?: number
+  end?: number
+}
+
+/** One request row in the 请求日志 table. */
+export interface UsageLogRow {
+  ts: number
+  source: string                 // 对话 / 群聊 / 工作台
+  provider: string               // providerName (or '—' when unknown)
+  model: string
+  input: number                  // uncached input tokens (新增输入)
+  output: number                 // output tokens
+  cacheRead: number              // prompt-cache hit tokens (命中 / R)
+  cacheWrite: number             // prompt-cache creation tokens (创建 / W)
+  cost: number | null            // USD; null when the model isn't priced
+  durationMs: number | null
+  status: 'ok' | 'error' | 'partial'
+}
+
+export interface UsageTrendBucket {
+  label: string                  // "HH:00" (today) or "MM-DD" (multi-day)
+  tokens: number                 // total consumption in the bucket
+  cost: number
+}
+
+export interface UsageGroupRow {
+  key: string                    // provider name / model id
+  requests: number
+  tokens: number
+  cost: number
+}
+
+export interface UsageStats {
+  range: UsageRange
+  generatedAt: number
+  summary: {
+    requests: number
+    input: number                // 新增输入
+    output: number               // Output
+    cacheWrite: number           // 创建
+    cacheRead: number            // 命中
+    totalTokens: number          // input + output + cacheWrite + cacheRead
+    cost: number
+    cacheHitRate: number         // 0–1 = cacheRead / (cacheRead + cacheWrite + input)
+  }
+  trend: UsageTrendBucket[]
+  byProvider: UsageGroupRow[]
+  byModel: UsageGroupRow[]
+  log: UsageLogRow[]             // most-recent-first, capped
+  logTruncated: boolean          // true when more rows exist than the cap
 }
 
 /** A hired soul = employee in the user's AI company. */

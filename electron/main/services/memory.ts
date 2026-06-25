@@ -246,6 +246,18 @@ function capToBudget(rows: MemoryRow[]): MemoryRow[] {
   return picked
 }
 
+/** Bump use_count/last_used_at for the skill-kind memories actually surfaced this
+ *  recall — a single write. Drives "promote-from-memory" (a skill-memory recalled
+ *  enough graduates to a loadable SKILL.md). */
+function bumpSkillMemoryUse(rows: MemoryRow[]): void {
+  const ids = rows.filter(r => r.kind === 'skill').map(r => r.id)
+  if (!ids.length) return
+  try {
+    const ph = ids.map(() => '?').join(',')
+    dbRun(`UPDATE memories SET use_count = use_count + 1, last_used_at = ? WHERE id IN (${ph})`, [Date.now(), ...ids])
+  } catch { /* best-effort */ }
+}
+
 /** Recall for a chat turn: always-on user profile + relevant episodes/skills. */
 export function recallForChat(message: string): string {
   const haystack = (message || '').toLowerCase()
@@ -272,6 +284,7 @@ export function recallForChat(message: string): string {
     .map(x => x.r)
   // profile first (always), then matched delivery-standards, then relevant recalls
   const ordered = capToBudget([...profile, ...corrections, ...scored])
+  bumpSkillMemoryUse(ordered)
   return formatPicked(ordered)
 }
 
@@ -289,6 +302,7 @@ export function recallForProject(message: string, projectPath: string): string {
     .sort((a, b) => b.s - a.s || b.r.updated_at - a.r.updated_at)
     .map(x => x.r)
   const ordered = capToBudget([...profile, ...project, ...scoredSkills])
+  bumpSkillMemoryUse(ordered)
   return formatPicked(ordered)
 }
 

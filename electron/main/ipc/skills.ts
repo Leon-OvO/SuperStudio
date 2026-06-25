@@ -5,8 +5,10 @@ import {
   listInstalledSkills, installSkill, installRuntimeSkill, uninstallSkill, setSkillEnabled,
   setSkillScenarios, setSkillAllowScripts, getInstalledSkill, listSkillSources,
   addSkillSource, deleteSkillSource, setSkillSourceEnabled, ensureBuiltinSource,
-  type SkillScenario
+  setSkillStatus, type SkillScenario, type SkillLifecycleStatus
 } from '../services/skills-db'
+import { induceFromSession } from '../services/skill-induction'
+import { startSkillOps } from '../services/skill-evolution'
 import { fetchRegistry, fetchManifest, ensureBundledInstalled, type RegistryEntry, type FetchedRegistry, type BrowseParams } from '../services/skills-registry'
 import { downloadSkillBundle, importLocalSkillBundle, parseSkillMd, readSkillResource, buildSkillExportZip } from '../services/skill-files'
 import { discoverLocalSkills } from '../services/skill-discover'
@@ -17,9 +19,23 @@ export function skillsHandlers(): void {
   // "Installed" tab on first launch).
   ensureBuiltinSource()
   ensureBundledInstalled()
+  // Auto-skill evolution sweep (deprecate/merge/promote/refine) — startup + interval.
+  startSkillOps()
 
   // --- Installed skills ---
   ipcMain.handle(IPC.SKILLS_LIST, () => listInstalledSkills())
+
+  // 对话自动学习：手动「把这次对话变成技能」。Returns the induced skill or null.
+  ipcMain.handle(IPC.SKILLS_INDUCE_SESSION, async (_e, sessionId: string) => {
+    const skill = await induceFromSession(sessionId, { manual: true })
+    return skill ? { ok: true, skill } : { ok: false, error: '这段对话里没有提炼出可复用的技能' }
+  })
+
+  // 审核：采纳(active) / 待审(pending) / 停用(deprecated)。
+  ipcMain.handle(IPC.SKILLS_SET_STATUS, (_e, args: { id: string; status: SkillLifecycleStatus }) => {
+    setSkillStatus(args.id, args.status)
+    return { ok: true }
+  })
 
   ipcMain.handle(IPC.SKILLS_INSTALL, async (_e, args: { sourceUrl: string; entry: RegistryEntry }) => {
     const { entry, sourceUrl } = args
