@@ -1,0 +1,48 @@
+name: Build macOS
+
+# Build the macOS package on a real macOS runner — Windows can't cross-build it
+# (electron-builder refuses; dmg needs hdiutil; darwin native modules aren't
+# installed on Windows). Trigger manually (Actions ▸ Build macOS ▸ Run workflow)
+# or by pushing a v* tag, then download the .dmg from the run's Artifacts.
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-mac:
+    runs-on: macos-latest        # arm64 runner; electron-builder still emits x64 + arm64
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci   # installs the darwin native variants (@napi-rs/canvas, node-pty)
+
+      - name: Build (skip pack-talent → keep the committed talent-pool.enc)
+        run: npx electron-vite build
+
+      - name: Package macOS (dmg + zip, x64 + arm64)
+        # Unsigned — internal/manual distribution (matches the local unsigned builds).
+        # Provide an Apple cert + notarization secrets later if Gatekeeper-clean is needed.
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npx electron-builder --mac --publish never
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: SuperStudio-macOS
+          path: |
+            dist/*.dmg
+            dist/*.zip
+            dist/latest-mac.yml
+          if-no-files-found: error
+          retention-days: 14
