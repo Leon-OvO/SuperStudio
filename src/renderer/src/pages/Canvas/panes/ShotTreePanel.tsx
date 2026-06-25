@@ -11,7 +11,7 @@ import { useCanvasBridge } from '../CanvasBridge'
 import { buildShotTree, type ShotTreeNode, type ShotTreeGroup } from './shot-tree'
 
 /** MIME used for in-app asset drags from this tree to the canvas (see Canvas onDrop). */
-export const ASSET_DRAG_MIME = 'application/x-superstudio-asset'
+export const ASSET_DRAG_MIME = 'application/x-canvas-asset'
 
 type TypeFilter = 'all' | 'image' | 'video'
 

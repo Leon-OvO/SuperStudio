@@ -191,7 +191,7 @@ function CanvasEditor({ embedded = false, openDocId = null, openNonce = 0, onDoc
   const onDrop = useCallback(async (e: React.DragEvent) => {
     e.preventDefault(); setDragOver(false)
     // In-app drag from the left 素材/分镜树 → add that asset at the drop point.
-    const asset = e.dataTransfer.getData('application/x-superstudio-asset')
+    const asset = e.dataTransfer.getData('application/x-canvas-asset')
     if (asset) {
       const at = rf.screenToFlowPosition({ x: e.clientX, y: e.clientY })
       window.api.approvePath?.(asset)
@@ -663,7 +663,7 @@ function CanvasEditor({ embedded = false, openDocId = null, openNonce = 0, onDoc
         onDragOver={(e) => {
           const types = Array.from(e.dataTransfer.types)
           if (types.includes('Files')) { e.preventDefault(); setDragOver(true) }
-          else if (types.includes('application/x-superstudio-asset')) e.preventDefault() // in-app asset drag
+          else if (types.includes('application/x-canvas-asset')) e.preventDefault() // in-app asset drag
         }}
         onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as globalThis.Node | null)) setDragOver(false) }}
         onDrop={onDrop}
