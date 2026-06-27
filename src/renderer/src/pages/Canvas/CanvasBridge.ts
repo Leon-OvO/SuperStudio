@@ -1,5 +1,6 @@
 import { createContext, useContext } from 'react'
 import type { Node } from '@xyflow/react'
+import type { EmployeeInfo } from '../../../../shared/ipc-types'
 
 /**
  * A stable handle onto the canvas's generation/asset operations, exposed by
@@ -35,6 +36,11 @@ export interface CanvasBridge {
   selImageNodes: Node[]
   /** Current canvas doc id (null = unsaved) — keys the per-canvas AI session. */
   currentId: string | null
+  /** Hired employees (the「专家团」roster, canvas-level). */
+  employees: EmployeeInfo[]
+  /** Selected expert ids — 扩写 uses them to enhance the prompt from each专业角度. */
+  expertIds: string[]
+  setExpertIds: (ids: string[]) => void
 }
 
 export const CanvasBridgeContext = createContext<CanvasBridge | null>(null)

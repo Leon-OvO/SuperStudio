@@ -46,6 +46,14 @@ function fmtDuration(ms: number | null): string {
   return `${(ms / 1000).toFixed(1)}s`
 }
 
+/** Per-request cache hit rate, same definition as the summary:
+ *  命中 / (命中 + 创建 + 新增输入). 0–1. */
+function rowCacheRate(r: UsageLogRow): number {
+  const denom = r.cacheRead + r.cacheWrite + r.input
+  return denom > 0 ? r.cacheRead / denom : 0
+}
+const fmtPct = (x: number): string => `${(x * 100).toFixed(0)}%`
+
 export function UsageStatsPanel({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [range, setRange] = useState<UsageRange>('today')
   const [data, setData] = useState<UsageStats | null>(null)
@@ -399,32 +407,47 @@ function LogTable({ rows, loading }: { rows: UsageLogRow[]; loading: boolean }) 
             <th className="text-left px-3 py-2 font-medium">模型</th>
             <th className="text-right px-3 py-2 font-medium">输入</th>
             <th className="text-right px-3 py-2 font-medium">输出</th>
+            <th className="text-right px-3 py-2 font-medium">
+              缓存<span className="block text-[9px] font-normal text-muted-foreground/60">命中/创建</span>
+            </th>
+            <th className="text-right px-3 py-2 font-medium">缓存率</th>
             <th className="text-right px-3 py-2 font-medium">成本</th>
             <th className="text-right px-3 py-2 font-medium">用时</th>
             <th className="text-center px-3 py-2 font-medium">状态</th>
           </tr>
         </thead>
         <tbody>
-          {rows.map((r, i) => (
+          {rows.map((r, i) => {
+            const hasCache = r.cacheRead > 0 || r.cacheWrite > 0
+            const rate = rowCacheRate(r)
+            return (
             <tr key={i} className={cn('border-b border-border/40 last:border-0 hover:bg-muted/30 transition-colors', i % 2 !== 0 && 'bg-muted/10')}>
               <td className="px-4 py-2 text-[11px] font-mono text-muted-foreground whitespace-nowrap">{fmtTime(r.ts)}</td>
               <td className="px-3 py-2 text-[11px] text-muted-foreground whitespace-nowrap">{r.source}</td>
               <td className="px-3 py-2 text-xs truncate max-w-[140px]">{r.provider}</td>
               <td className="px-3 py-2 text-xs font-mono truncate max-w-[160px]">{r.model}</td>
-              <td className="px-3 py-2 text-right">
-                <div className="font-mono text-xs">{formatTokens(r.input)}</div>
-                {(r.cacheRead > 0 || r.cacheWrite > 0) && (
-                  <div className="text-[10px] text-muted-foreground/70 font-mono whitespace-nowrap">
-                    R{formatTokens(r.cacheRead)}·W{formatTokens(r.cacheWrite)}
-                  </div>
-                )}
-              </td>
+              <td className="px-3 py-2 text-right font-mono text-xs">{formatTokens(r.input)}</td>
               <td className="px-3 py-2 text-right font-mono text-xs">{formatTokens(r.output)}</td>
+              <td className="px-3 py-2 text-right whitespace-nowrap">
+                {hasCache ? (
+                  <span className="font-mono text-xs" title={`命中 ${r.cacheRead.toLocaleString()} · 创建 ${r.cacheWrite.toLocaleString()}`}>
+                    <span className="text-emerald-500">{formatTokens(r.cacheRead)}</span>
+                    <span className="text-muted-foreground/40"> / </span>
+                    <span className="text-violet-500">{formatTokens(r.cacheWrite)}</span>
+                  </span>
+                ) : <span className="text-muted-foreground/40 text-xs">—</span>}
+              </td>
+              <td className="px-3 py-2 text-right">
+                {hasCache
+                  ? <span className="font-mono text-xs font-medium text-emerald-500">{fmtPct(rate)}</span>
+                  : <span className="text-muted-foreground/40 text-xs">—</span>}
+              </td>
               <td className="px-3 py-2 text-right font-mono text-xs">{r.cost == null ? '—' : formatCostUsd(r.cost)}</td>
               <td className="px-3 py-2 text-right font-mono text-[11px] text-muted-foreground">{fmtDuration(r.durationMs)}</td>
               <td className="px-3 py-2 text-center"><StatusBadge status={r.status} /></td>
             </tr>
-          ))}
+            )
+          })}
         </tbody>
       </table>
     </div>
@@ -448,6 +471,7 @@ function GroupTable({ rows, loading, nameLabel }: { rows: UsageGroupRow[]; loadi
             <th className="text-left px-4 py-2 font-medium">{nameLabel}</th>
             <th className="text-right px-3 py-2 font-medium">请求数</th>
             <th className="text-right px-3 py-2 font-medium">Tokens</th>
+            <th className="text-right px-3 py-2 font-medium">缓存率</th>
             <th className="text-right px-3 py-2 font-medium">成本</th>
             <th className="px-4 py-2 font-medium w-32">占比</th>
           </tr>
@@ -458,6 +482,11 @@ function GroupTable({ rows, loading, nameLabel }: { rows: UsageGroupRow[]; loadi
               <td className="px-4 py-2.5 text-xs font-mono truncate max-w-[220px]">{r.key}</td>
               <td className="px-3 py-2.5 text-right font-mono text-xs text-muted-foreground">{r.requests.toLocaleString()}</td>
               <td className="px-3 py-2.5 text-right font-mono text-xs">{formatTokens(r.tokens)}</td>
+              <td className="px-3 py-2.5 text-right font-mono text-xs">
+                {(r.cacheRead + r.cacheWrite) > 0
+                  ? <span className="text-emerald-500">{fmtPct(r.cacheHitRate)}</span>
+                  : <span className="text-muted-foreground/40">—</span>}
+              </td>
               <td className="px-3 py-2.5 text-right font-mono text-xs">{formatCostUsd(r.cost)}</td>
               <td className="px-4 py-2.5">
                 <div className="bg-muted rounded-full h-1.5 overflow-hidden">

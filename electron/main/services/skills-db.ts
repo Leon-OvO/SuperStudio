@@ -341,6 +341,21 @@ export function getActiveSkillsForScenario(scenario: SkillScenario): InstalledSk
   return eligible.filter(s => s.origin !== 'auto' || keep.has(s.id))
 }
 
+/**
+ * Resolve skills by explicit id, BYPASSING every gate of
+ * getActiveSkillsForScenario (enabled / scenario / auto-status / auto-cap). Used
+ * when the user FORCES a specific skill for one turn via the input-box skill
+ * quick-bar — an explicit pick overrides all automatic gating, so a forced skill
+ * may be pending/deprecated/over-cap/wrong-scenario and still load. Unknown ids
+ * are dropped silently; the result is de-duplicated and order-stable.
+ */
+export function getSkillsByIds(ids: string[]): InstalledSkill[] {
+  const want = [...new Set((ids || []).filter(Boolean))]
+  if (!want.length) return []
+  const byId = new Map(listInstalledSkills().map(s => [s.id, s]))
+  return want.map(id => byId.get(id)).filter((s): s is InstalledSkill => !!s)
+}
+
 // ============================================================================
 // Lifecycle + usage signals (v23) — auto-induced skill evolution loop
 // ============================================================================

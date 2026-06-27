@@ -54,7 +54,7 @@ import type { EmployeeInfo } from '../../../src/shared/ipc-types'
 import { getSoul } from '../services/talent-pool'
 import { dbRun } from '../db/sqlite'
 import { writeProposalMd, writeTasksMd } from '../services/vibe-spec'
-import { getActiveSkillsForScenario, type InstalledSkill } from '../services/skills-db'
+import { getActiveSkillsForScenario, getSkillsByIds, type InstalledSkill } from '../services/skills-db'
 import { scanWorkdirSkills } from '../services/workdir-extensions'
 import { buildSkillTools } from '../agent/skill-tools'
 import { classifyVibeIntent } from '../agent/classify'
@@ -72,10 +72,20 @@ import { computeCost } from '../services/model-pricing'
  * Build a system-prompt fragment from the skills the user enabled for the
  * "vibe" (build) scenario. Returns '' when no skills apply.
  */
-function buildVibeSkillsSection(projectPath?: string): { section: string; skills: InstalledSkill[] } {
+function buildVibeSkillsSection(projectPath?: string, forceSkillIds: string[] = []): { section: string; skills: InstalledSkill[] } {
   let skills: InstalledSkill[] = []
   try { skills = getActiveSkillsForScenario('vibe') }
   catch (e) { console.warn('[vibe] failed to load active skills:', (e as Error).message) }
+  // 用户在输入框技能快捷条「装备」的技能：按 id 并集进来，绕过场景/状态/上限门控
+  // （显式选择覆盖一切自动门控）。先于 workdir 的 name 去重，保证优先级稳定。
+  let forced: InstalledSkill[] = []
+  if (forceSkillIds.length) {
+    try {
+      const have = new Set(skills.map(s => s.id))
+      forced = getSkillsByIds(forceSkillIds).filter(s => !have.has(s.id))
+      if (forced.length) skills = [...skills, ...forced]
+    } catch (e) { console.warn('[vibe] 强制技能加载失败：', (e as Error).message) }
+  }
   // 工作目录扩展（随项目临时生效）：<project>/.claude/skills 里的技能仅为本次运行加载，
   // 不写 DB、不进全局「技能中心」。按 name 去重，已启用的同名技能优先。
   if (projectPath) {
@@ -116,6 +126,19 @@ function buildVibeSkillsSection(projectPath?: string): { section: string; skills
       `full instructions, then follow them. Use \`read_skill_file\` to read bundled reference files; ` +
       `run any bundled scripts through \`code_bash\`.\n\n${lines.join('\n')}`
     )
+  }
+
+  // Per-turn FORCED skills (input-box skill quick-bar): the user explicitly armed
+  // these, so instruct the model to actually use them this run.
+  if (forceSkillIds.length) {
+    const armed = skills.filter(s => forceSkillIds.includes(s.id))
+    if (armed.length) {
+      const names = armed.map(s => `「${s.name}」`).join('、')
+      const howto = armed.some(s => s.runtime)
+        ? '请先对相应技能调用 load_skill 获取其完整说明，再严格按其中步骤执行；不要跳过、也不要凭空发挥。'
+        : '请严格遵循上面这些技能的指引来完成本次任务；不要跳过、也不要凭空发挥。'
+      parts.push(`## 本次必须使用的技能\n本轮用户指定必须使用以下技能：${names}。${howto}`)
+    }
   }
 
   return { section: parts.length ? '\n\n' + parts.join('\n\n') : '', skills }
@@ -1227,7 +1250,7 @@ export function vibeHandlers(): void {
   ) => ReturnType<typeof buildVibeTools> | ReturnType<typeof buildReadOnlyVibeTools>
 
   function runStreamMode(
-    args: { projectPath: string; prompt: string; requestId?: string; attachments?: Array<{ name: string; path: string; mimeType: string }>; thinkingMode?: ThinkingMode },
+    args: { projectPath: string; prompt: string; requestId?: string; attachments?: Array<{ name: string; path: string; mimeType: string }>; thinkingMode?: ThinkingMode; forceSkillIds?: string[] },
     opts: {
       kind: 'chat' | 'explore' | 'bugfix'
       label: string                                  // for system event text
@@ -1314,7 +1337,7 @@ export function vibeHandlers(): void {
           ? opts.buildTools(projectPath, toolEmit, ctl.signal)
           : undefined
 
-        const { section: skillsSection, skills: activeSkills } = buildVibeSkillsSection(projectPath)
+        const { section: skillsSection, skills: activeSkills } = buildVibeSkillsSection(projectPath, args.forceSkillIds)
         let tools: Record<string, Tool> | undefined =
           rawTools ? applyVibeSkillsFilter(rawTools, activeSkills) : undefined
         // Merge progressive-disclosure skill tools when this mode has tools.
@@ -1486,7 +1509,7 @@ export function vibeHandlers(): void {
 
   // Extracted as a named function so VIBE_RUN can dispatch to it after auto-
   // classifying the intent as 'change'. Behavior unchanged.
-  function runPropose(args: { projectPath: string; prompt: string; requestId?: string; attachments?: Array<{ name: string; path: string; mimeType: string }> }) {
+  function runPropose(args: { projectPath: string; prompt: string; requestId?: string; attachments?: Array<{ name: string; path: string; mimeType: string }>; thinkingMode?: ThinkingMode; forceSkillIds?: string[] }) {
     const win = getMainWindow()
     if (!win) return { error: 'No window' }
     const projectPath = path.resolve(args.projectPath)
@@ -1548,7 +1571,7 @@ export function vibeHandlers(): void {
         const userContent = buildVibeUserContent(userPrompt, args.attachments)
 
         let captured: z.infer<typeof ProposalSchema> | null = null
-        const { section: proposeSkillsSection } = buildVibeSkillsSection(projectPath)
+        const { section: proposeSkillsSection } = buildVibeSkillsSection(projectPath, args.forceSkillIds)
         const propProvCfg = getProviders().find(p => p.id === modelInfo.providerId)
         const propProvType = propProvCfg ? effectiveProtocol(propProvCfg, modelInfo.modelId) : undefined
         const proposeSystem = PROPOSE_SYSTEM + (isPromotion
@@ -1737,7 +1760,7 @@ export function vibeHandlers(): void {
   // The user no longer manually picks chat/explore/bugfix/change. Pass
   // forceIntent to override (manual lock). Returns the resolved intent so the
   // renderer can show the right running banner.
-  ipcMain.handle(IPC.VIBE_RUN, async (_e, args: { projectPath: string; prompt: string; requestId?: string; forceIntent?: VibeIntent; attachments?: Array<{ name: string; path: string; mimeType: string }>; thinkingMode?: ThinkingMode }) => {
+  ipcMain.handle(IPC.VIBE_RUN, async (_e, args: { projectPath: string; prompt: string; requestId?: string; forceIntent?: VibeIntent; attachments?: Array<{ name: string; path: string; mimeType: string }>; thinkingMode?: ThinkingMode; forceSkillIds?: string[] }) => {
     const win = getMainWindow()
     if (!win) return { error: 'No window' }
     const projectPath = path.resolve(args.projectPath)
@@ -1757,7 +1780,7 @@ export function vibeHandlers(): void {
       } catch { intent = 'chat' }
     }
 
-    const passthrough = { projectPath: args.projectPath, prompt: args.prompt, requestId: args.requestId, attachments: args.attachments, thinkingMode: args.thinkingMode }
+    const passthrough = { projectPath: args.projectPath, prompt: args.prompt, requestId: args.requestId, attachments: args.attachments, thinkingMode: args.thinkingMode, forceSkillIds: args.forceSkillIds }
     let res: { started?: boolean; requestId?: string; error?: string }
     switch (intent) {
       case 'explore':

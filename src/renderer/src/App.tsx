@@ -68,18 +68,25 @@ export default function App() {
     return () => { off?.() }
   }, [cuConfirm])
 
-  // SSH remote execution: first command on a connection asks for confirmation
-  // (host + command shown). Approving trusts that connection for this app run.
+  // SSH remote execution confirmation. cuConfirm shows ONE dialog at a time, so
+  // concurrent requests (e.g. running on several servers at once) must be QUEUED —
+  // otherwise later requests would overwrite the dialog and silently hang. We chain
+  // them so every server gets its own prompt in turn.
+  const sshConfirmQueue = useRef<Promise<unknown>>(Promise.resolve())
   useEffect(() => {
-    const off = window.api.onSshExecConfirm?.(async (req) => {
-      const ok = await cuConfirm.confirm({
-        title: '允许 Agent 在远程服务器执行命令？',
-        message: `主机：${req.host}\n命令：${req.command}\n\n仅在你信任该任务时允许。批准后本次运行内该连接的后续命令将自动放行。`,
-        tone: 'danger',
-        confirmLabel: '允许执行',
-        cancelLabel: '取消',
-      })
-      window.api.respondSshExecConfirm?.(req.id, ok)
+    const off = window.api.onSshExecConfirm?.((req) => {
+      sshConfirmQueue.current = sshConfirmQueue.current.then(async () => {
+        const ok = await cuConfirm.confirm({
+          title: '允许 Agent 在远程服务器执行命令？',
+          message: `主机：${req.host}\n命令：${req.command}\n\n` + (req.write
+            ? '⚠️ 这是会修改/删除的写操作，将在远程服务器真实执行。只读命令已自动放行，写操作需逐次确认。'
+            : '将在远程服务器真实执行，仅在你信任该任务时允许。批准后本次运行内该连接的后续命令自动放行。'),
+          tone: 'danger',
+          confirmLabel: '允许执行',
+          cancelLabel: '取消',
+        })
+        window.api.respondSshExecConfirm?.(req.id, ok)
+      }).catch(() => { window.api.respondSshExecConfirm?.(req.id, false) })
     })
     return () => { off?.() }
   }, [cuConfirm])

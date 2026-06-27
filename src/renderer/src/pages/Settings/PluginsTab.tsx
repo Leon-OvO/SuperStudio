@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react'
-import { Monitor, Terminal, ToggleLeft, ToggleRight, ChevronDown, type LucideIcon } from 'lucide-react'
+import { Monitor, Terminal, Server, ToggleLeft, ToggleRight, ChevronDown, type LucideIcon } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import type { AppSettings } from '../../../../shared/ipc-types'
 
@@ -81,6 +81,20 @@ export function PluginsTab({ settings, onSave }: Props) {
               勾选后，每条<b>新命令</b>执行前弹窗请你确认（相同命令在本次运行内不再重复询问）。默认关闭。
             </SubToggle>
           )}
+        </PluginCard>
+
+        <PluginCard
+          icon={Server}
+          name="远程 SSH 命令确认"
+          desc="AI 在远程服务器执行命令时的确认策略。"
+          enabled={settings.sshReadonlyNoConfirm !== false}
+          onToggle={() => onSave({ ...settings, sshReadonlyNoConfirm: settings.sshReadonlyNoConfirm === false })}
+        >
+          <p className="text-xs text-foreground/70 leading-relaxed">
+            <b>开启（默认）</b>：只读命令（ls、cat、grep、df 等）自动放行不弹窗；<b>写操作 / 危险命令</b>（rm、改文件、安装、重启、重定向写入等）<b>每次</b>执行前都弹窗确认。<br />
+            <b>关闭</b>：改为「首次确认即信任」——某连接第一条命令确认后，本次运行内该连接的后续命令（含写操作）不再询问。<br />
+            无论哪种，单个连接都可在「设置 → SSH 连接」里设为「免确认」彻底跳过。
+          </p>
         </PluginCard>
       </div>
     </div>

@@ -23,7 +23,8 @@ export function agentHandlers(): void {
       forceImage: overrides?.forceImage,
       thinkingMode: overrides?.thinkingMode,
       sshDefaultConnIds: overrides?.sshDefaultConnIds,
-      contextRefs: overrides?.contextRefs
+      contextRefs: overrides?.contextRefs,
+      forceSkillIds: overrides?.forceSkillIds
     }, win).catch(err => {
       console.error('[IPC] runAgent crashed', err)
       win.webContents.send(IPC.AGENT_ERROR, { sessionId, error: (err as Error)?.message || String(err) })

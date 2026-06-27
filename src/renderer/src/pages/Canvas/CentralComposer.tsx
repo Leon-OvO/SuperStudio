@@ -14,6 +14,7 @@ export function CentralComposer() {
   const bridge = useCanvasBridge()
   const [open, setOpen] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [draft, setDraft] = useState('')   // persisted prompt — survives generate / remount
 
   // Escape collapses the composer (GenPromptBar stops Esc when its @ menu is open).
   useEffect(() => {
@@ -61,7 +62,8 @@ export function CentralComposer() {
           className="absolute -top-2 -right-2 z-40 w-6 h-6 grid place-items-center rounded-full bg-card border border-border shadow text-muted-foreground hover:text-foreground hover:bg-accent">
           <X size={13} />
         </button>
-        <GenPromptBar busy={busy} placeholder="描述要生成的画面…「@」引入参考图" onSubmit={handleSubmit} />
+        <GenPromptBar busy={busy} placeholder="描述要生成的画面…「@」引入参考图"
+          value={draft} onChange={setDraft} onSubmit={handleSubmit} />
       </div>
     </div>
   )

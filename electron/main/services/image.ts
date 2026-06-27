@@ -219,22 +219,36 @@ async function doOneRequest(
     if (quality) body.quality = quality
     console.log('[image] generate request', `${baseUrl}/v1/images/generations`,
       `prompt=${prompt.slice(0, 60)} size=${size} n=${requestedN}`)
-    try {
-      res = await traceImageFetch(`${baseUrl}/v1/images/generations`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${provider.apiKey}` },
-        body: JSON.stringify(body),
-        signal: reqSignal(abortSignal, IMAGE_GEN_TIMEOUT_MS)
-      }, modelName)
-    } catch (e) {
-      if ((e as Error)?.name === 'TimeoutError') {
-        throw new Error(
-          `生图超时：${Math.round(IMAGE_GEN_TIMEOUT_MS / 1000)} 秒内 ${baseUrl}/v1/images/generations 无响应` +
-          `（provider=「${provider.name}」, model=${modelName}）。该接口可能不支持此图片模型、或服务端过慢/暂不可用，请换图片模型/接口或稍后重试。`
-        )
+    // 瞬时网络错误（连接重置 / 握手超时 / fetch failed 等）在请求内退避重试，避免一次抖动
+    // 就报"生成失败"，也避免"上一轮说挂了、下一轮又好了"的前后矛盾。
+    const MAX_ATTEMPTS = 3
+    let lastErr: Error | null = null
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      try {
+        if (attempt > 1) await new Promise(r => setTimeout(r, 800 * 2 ** (attempt - 2) + Math.floor(Math.random() * 300)))
+        res = await traceImageFetch(`${baseUrl}/v1/images/generations`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${provider.apiKey}` },
+          body: JSON.stringify(body),
+          signal: reqSignal(abortSignal, IMAGE_GEN_TIMEOUT_MS)
+        }, modelName)
+        break
+      } catch (e) {
+        if ((e as Error)?.name === 'TimeoutError') {
+          throw new Error(
+            `生图超时：${Math.round(IMAGE_GEN_TIMEOUT_MS / 1000)} 秒内 ${baseUrl}/v1/images/generations 无响应` +
+            `（provider=「${provider.name}」, model=${modelName}）。该接口可能不支持此图片模型、或服务端过慢/暂不可用，请换图片模型/接口或稍后重试。`
+          )
+        }
+        lastErr = e as Error
+        if (isTransientNetworkError(e) && attempt < MAX_ATTEMPTS) {
+          console.warn(`[image] generate 瞬时网络错误，退避重试 #${attempt}：`, lastErr.message)
+          continue
+        }
+        throw e // user-abort / 非瞬时错误 / 重试用尽 → 如实抛出
       }
-      throw e // user-abort / real network error
     }
+    if (!res) throw lastErr || new Error('图片生成请求失败')
   }
 
   if (!res) throw new Error('Image generation request did not produce a response')
@@ -242,7 +256,14 @@ async function doOneRequest(
     const err = await res.text()
     throw new Error(`生图失败（provider=「${provider.name}」, baseUrl=${baseUrl}, model=${modelName}）：${err}`)
   }
-  const data = await res.json() as { data: Array<{ url?: string; b64_json?: string }> }
+  const data = await res.json() as { data?: Array<{ url?: string; b64_json?: string }> }
+  // 空结果判为失败——绝不"声称已生成"却 0 张图（防假成功）。
+  if (!data?.data?.length) {
+    throw new Error(
+      `生图失败：接口返回空结果（无图片数据）（provider=「${provider.name}」, model=${modelName}）。` +
+      `可能该图片模型/接口不被支持或被风控，请换模型/接口或稍后重试。`
+    )
+  }
 
   const baseDir = settings.dataDirectory || app.getPath('userData')
   const imagesDir = path.join(baseDir, 'gallery', 'images')
@@ -290,5 +311,9 @@ export async function generateImage(params: GenerateImageParams): Promise<Genera
     collected.push(...more.images.slice(0, requestedTotal - collected.length))
   }
 
+  // 一张都没有 = 失败，如实抛出（防"已生成"假成功）。
+  if (collected.length === 0) {
+    throw new Error('图片生成失败：接口未返回任何图片，请稍后重试或更换图片模型/接口。')
+  }
   return { images: collected, referencesIgnored: first.referencesIgnored }
 }

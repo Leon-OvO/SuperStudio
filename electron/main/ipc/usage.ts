@@ -224,16 +224,26 @@ function buildTrend(records: Rec[], opts: { since: number; until: number; range:
 }
 
 function groupBy(records: Rec[], pick: (r: Rec) => string): UsageGroupRow[] {
-  const map = new Map<string, UsageGroupRow>()
+  // Track input separately (the cache-rate denominator) without exposing it.
+  const map = new Map<string, UsageGroupRow & { input: number }>()
   for (const r of records) {
     const key = pick(r) || '—'
     let g = map.get(key)
-    if (!g) { g = { key, requests: 0, tokens: 0, cost: 0 }; map.set(key, g) }
+    if (!g) { g = { key, requests: 0, tokens: 0, cost: 0, cacheRead: 0, cacheWrite: 0, cacheHitRate: 0, input: 0 }; map.set(key, g) }
     g.requests += 1
     g.tokens += r.input + r.output + r.cacheRead + r.cacheWrite
     g.cost += r.cost ?? 0
+    g.cacheRead += r.cacheRead
+    g.cacheWrite += r.cacheWrite
+    g.input += r.input
   }
-  return [...map.values()].sort((a, b) => b.tokens - a.tokens).slice(0, 30)
+  return [...map.values()]
+    .map(({ input, ...g }) => {
+      const denom = g.cacheRead + g.cacheWrite + input
+      return { ...g, cacheHitRate: denom > 0 ? g.cacheRead / denom : 0 }
+    })
+    .sort((a, b) => b.tokens - a.tokens)
+    .slice(0, 30)
 }
 
 function computeStats(range: UsageRange, custom?: UsageCustomRange): UsageStats {

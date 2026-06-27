@@ -39,7 +39,7 @@ interface Props {
   messages: VibeMessageInfo[]
   streamingTaskId: string | null
   running: 'propose' | 'apply' | 'explore' | 'chat' | 'bugfix' | null
-  onRun: (prompt: string, requestId?: string, forceIntent?: 'chat' | 'explore' | 'bugfix' | 'change', attachments?: Array<{ name: string; path: string; mimeType: string }>, thinkingMode?: ThinkingMode) => void
+  onRun: (prompt: string, requestId?: string, forceIntent?: 'chat' | 'explore' | 'bugfix' | 'change', attachments?: Array<{ name: string; path: string; mimeType: string }>, thinkingMode?: ThinkingMode, forceSkillIds?: string[]) => void
   /** Project model — forwarded to RequestTabContent to gate the 思考模式 picker. */
   providerId?: string
   model?: string

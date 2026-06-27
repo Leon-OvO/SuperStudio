@@ -405,7 +405,7 @@ export function VibeWorkbench() {
   // Unified send: backend auto-classifies (or honors forceIntent) and dispatches.
   // We optimistically show a generic running state, then refine it from the
   // returned intent so the banner reads correctly.
-  function handleRun(prompt: string, requestId?: string, forceIntent?: 'chat' | 'explore' | 'bugfix' | 'change', attachments?: Array<{ name: string; path: string; mimeType: string }>, thinkingMode?: ThinkingMode) {
+  function handleRun(prompt: string, requestId?: string, forceIntent?: 'chat' | 'explore' | 'bugfix' | 'change', attachments?: Array<{ name: string; path: string; mimeType: string }>, thinkingMode?: ThinkingMode, forceSkillIds?: string[]) {
     if (!s.projectPath) return
     s.setErrorBanner(null)
     if (!requestId) {
@@ -415,7 +415,7 @@ export function VibeWorkbench() {
     }
     // Optimistic: assume the lightest mode until the classifier returns.
     s.setRunning(forceIntent === 'change' ? 'propose' : (forceIntent ?? 'chat'))
-    window.api.vibeRun?.({ projectPath: s.projectPath, prompt, requestId, forceIntent, attachments, ...(thinkingMode && thinkingMode !== 'auto' ? { thinkingMode } : {}) })
+    window.api.vibeRun?.({ projectPath: s.projectPath, prompt, requestId, forceIntent, attachments, ...(thinkingMode && thinkingMode !== 'auto' ? { thinkingMode } : {}), ...(forceSkillIds?.length ? { forceSkillIds } : {}) })
       .then((res: { intent?: 'chat' | 'explore' | 'bugfix' | 'change'; error?: string }) => {
         if (res?.error) { s.setRunning(null); s.setErrorBanner(res.error); return }
         // change → propose running label (apply may follow); others map 1:1.

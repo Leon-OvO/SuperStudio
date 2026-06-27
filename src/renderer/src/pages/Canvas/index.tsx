@@ -14,6 +14,7 @@ import { ShotTreePanel } from './panes/ShotTreePanel'
 import { CentralComposer } from './CentralComposer'
 import { VideoToolbar } from './VideoToolbar'
 import { blobToBase64, toLocalFileUrl } from '../../lib/attachments'
+import type { EmployeeInfo } from '../../../../shared/ipc-types'
 import { useConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { toast } from '../../components/ui/Toast'
 
@@ -76,6 +77,9 @@ function CanvasEditor({ embedded = false, openDocId = null, openNonce = 0, onDoc
   const [dragOver, setDragOver] = useState(false)
   // Left 素材/分镜树 collapse state.
   const [leftCollapsed, setLeftCollapsed] = useState(false)
+  // Canvas-level「专家团」shared across all GenPromptBars — 扩写 uses them to enhance the prompt.
+  const [employees, setEmployees] = useState<EmployeeInfo[]>([])
+  const [expertIds, setExpertIds] = useState<string[]>([])
   const [imageModelName, setImageModelName] = useState('')
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [expanding, setExpanding] = useState<Set<string>>(new Set())
@@ -101,6 +105,7 @@ function CanvasEditor({ embedded = false, openDocId = null, openNonce = 0, onDoc
   const onDocOpenedRef = useRef(onDocOpened); onDocOpenedRef.current = onDocOpened
 
   useEffect(() => { loadCanvases() }, [])
+  useEffect(() => { window.api.listEmployees?.().then(r => setEmployees(r as EmployeeInfo[])).catch(() => { /* no roster */ }) }, [])
   useEffect(() => {
     window.api.getSettings?.().then((s: { defaultImageModel?: string }) => setImageModelName(s?.defaultImageModel || '')).catch(() => { /* chip stays hidden */ })
   }, [])
@@ -578,7 +583,10 @@ function CanvasEditor({ embedded = false, openDocId = null, openNonce = 0, onDoc
     selectedIds,
     selImageNodes,
     currentId,
-  }), [addAtCenter, addImageNode, runImageGen, runImageGenStandalone, createStackAtCenter, importLocal, rf, nodes, selectedIds, selImageNodes, currentId])
+    employees,
+    expertIds,
+    setExpertIds,
+  }), [addAtCenter, addImageNode, runImageGen, runImageGenStandalone, createStackAtCenter, importLocal, rf, nodes, selectedIds, selImageNodes, currentId, employees, expertIds])
 
   const onConnect = useCallback((c: Connection) => setEdges(es => addEdge({ ...c, ...DEFAULT_EDGE_OPTS }, es)), [setEdges])
 

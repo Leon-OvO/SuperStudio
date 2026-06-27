@@ -1,11 +1,13 @@
 import { createContext, useContext, useState, useRef } from 'react'
 import { Handle, Position, NodeToolbar, NodeResizer, type NodeProps } from '@xyflow/react'
-import { Loader2, Trash2, Maximize2, Download, ArrowUp, ImageOff, Sparkles, Play, Plus, FolderOpen, Layers, X, Wand2, ChevronDown, Pencil, RotateCw } from 'lucide-react'
+import { Loader2, Trash2, Maximize2, Download, ArrowUp, ImageOff, Sparkles, Play, Plus, FolderOpen, Layers, X, Wand2, ChevronDown, Pencil, RotateCw, Users } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { toLocalFileUrl } from '../../lib/attachments'
+import { dept } from '../../lib/departments'
+import type { EmployeeInfo } from '../../../../shared/ipc-types'
 import { useCanvasBridge } from './CanvasBridge'
 import { useCanvasMentionPicker } from './canvas-mention'
-import { RichComposer, type RichComposerHandle } from '../Chat/RichComposer'
+import { RichComposer, type RichComposerHandle, type RichSegment } from '../Chat/RichComposer'
 import { toast } from '../../components/ui/Toast'
 
 /** Free-canvas image card. `status:'generating'` is a placeholder that fills in
@@ -220,14 +222,97 @@ function SceneDropdown({ value, onChange }: { value: string; onChange: (v: strin
   )
 }
 
+/** Parse a persisted draft (JSON rich segments, or a legacy plain-text string). */
+function parseDraftSegments(v?: string): RichSegment[] | undefined {
+  if (!v) return undefined
+  try { const p = JSON.parse(v); if (Array.isArray(p)) return p as RichSegment[] } catch { /* legacy plain text */ }
+  return [{ t: 'text', s: v }]
+}
+
+type ChipSeg = Extract<RichSegment, { t: 'chip' }>
+
+/** Replace chips with positional 【图N】 placeholders so 扩写 keeps them in place. */
+function tokenizeSegments(segs: RichSegment[]): { text: string; refByToken: Map<number, ChipSeg['ref']> } {
+  const refByToken = new Map<number, ChipSeg['ref']>()
+  let i = 0
+  const text = segs.map(s => s.t === 'text' ? s.s : (refByToken.set(++i, s.ref), `【图${i}】`)).join('')
+  return { text, refByToken }
+}
+
+/** Rebuild segments from refined text, restoring 【图N】 placeholders to chips IN
+ *  PLACE; any chip the model dropped is re-appended so no reference is lost. */
+function detokenizeText(text: string, refByToken: Map<number, ChipSeg['ref']>): RichSegment[] {
+  const out: RichSegment[] = []
+  const used = new Set<ChipSeg['ref']>()
+  const re = /【图(\d+)】/g
+  let last = 0
+  let m: RegExpExecArray | null
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > last) out.push({ t: 'text', s: text.slice(last, m.index) })
+    const ref = refByToken.get(Number(m[1]))
+    if (ref) { out.push({ t: 'chip', ref }); used.add(ref) }
+    last = re.lastIndex
+  }
+  if (last < text.length) out.push({ t: 'text', s: text.slice(last) })
+  for (const ref of refByToken.values()) if (!used.has(ref)) out.push({ t: 'chip', ref })
+  return out.length ? out : [{ t: 'text', s: text }]
+}
+
+/** Compact「专家」picker in the prompt bar — pick hired employees (摄影师 / 美工 /
+ *  调色…) whose expertise enhances the 扩写. Selection is canvas-level (in the bridge),
+ *  so all prompt bars share one team. */
+function ExpertPicker({ employees, selectedIds, onToggle }: {
+  employees: EmployeeInfo[]
+  selectedIds: string[]
+  onToggle: (id: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const n = selectedIds.length
+  return (
+    <div className="relative shrink-0"
+      onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget as globalThis.Node | null)) setOpen(false) }}>
+      <button type="button" onClick={() => setOpen(o => !o)} title="选员工专家加持扩写（摄影 / 美工 / 调色…）"
+        className={cn('flex items-center gap-1 text-[11px] rounded-full border pl-2 pr-1.5 py-1',
+          n > 0 ? 'border-primary/50 bg-primary/10 text-primary' : 'border-border bg-background text-muted-foreground hover:bg-accent/40')}>
+        <Users size={11} className={n > 0 ? 'text-primary' : 'text-muted-foreground'} />
+        {n > 0 ? `专家 ${n}` : '专家'}
+        <ChevronDown size={11} className={cn('transition-transform', open && 'rotate-180')} />
+      </button>
+      {open && (
+        <div className="absolute bottom-full left-0 mb-1 z-[60] w-60 max-h-72 overflow-auto rounded-lg border border-border bg-popover shadow-xl py-1">
+          <div className="px-3 py-1 text-[10px] text-muted-foreground/60">让员工从专业角度加持「扩写」</div>
+          {employees.length === 0 ? (
+            <div className="px-3 py-2 text-[11px] text-muted-foreground/70 leading-relaxed">还没有员工。去「公司 · 人才市场」雇摄影师 / 美工等图像专家。</div>
+          ) : employees.map(e => {
+            const on = selectedIds.includes(e.id)
+            const d = dept(e.dept)
+            return (
+              <button type="button" key={e.id} onClick={() => onToggle(e.id)}
+                className={cn('w-full flex items-center gap-2 px-3 py-1.5 text-left text-[12px] hover:bg-accent/50', on && 'bg-accent/30')}>
+                <span className="w-5 h-5 rounded-full grid place-items-center shrink-0 text-[11px]" style={{ background: `${d.color}22` }}>{d.emoji}</span>
+                <span className="flex-1 min-w-0"><span className="truncate block">{e.name}</span><span className="text-[9.5px] block" style={{ color: d.color }}>{d.label}</span></span>
+                {on && <span className="text-primary text-xs shrink-0">✓</span>}
+              </button>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
 /** Shared floating prompt bar (image card + reference stack + central composer).
  *  Built on the chat RichComposer so @-introduced references render as INLINE chips
  *  that flow with the typed text (same as 对话). Uncontrolled — the DOM owns content;
  *  read on submit via serialize(). 扩写 rewrites the text (drops chips). Count/size/
  *  quality/scene stay local. onSubmit gets the prompt text + the inline ref paths. */
-export function GenPromptBar({ busy, placeholder, onSubmit }: {
+export function GenPromptBar({ busy, placeholder, value, onChange, onSubmit }: {
   busy: boolean
   placeholder: string
+  /** Persisted draft text — seeds the editor on (re)mount so the prompt survives the
+   *  bar being torn down on generate. onChange persists it back (e.g. to node data). */
+  value?: string
+  onChange?: (text: string) => void
   /** refs = paths of @-introduced inline reference images (canvas / stack / 素材库 / local). */
   onSubmit: (prompt: string, count: number, size: string, quality: string, scene: string, refs: string[]) => void
 }) {
@@ -258,15 +343,35 @@ export function GenPromptBar({ busy, placeholder, onSubmit }: {
   }
 
   const expand = async () => {
+    const segs = composerRef.current?.serializeSegments() ?? []
     const s = composerRef.current?.serialize()
-    const text = (s?.text ?? '').trim()
-    if (!text || expanding) return
+    if (!(s?.text ?? '').trim() || expanding) return
     const refs = (s?.inlineAttachments ?? []).map(a => a.path)
+    // Tokenize chips → 【图N】 so the model keeps them IN PLACE while expanding.
+    const hasChips = segs.some(g => g.t === 'chip')
+    const { text: tokenText, refByToken } = tokenizeSegments(segs)
+    const goal = hasChips
+      ? `${tokenText}\n\n（注意：文中的【图1】【图2】等是图片占位符，扩写时请把它们保留在语义合适的位置、原样不动，不要删除或改写。）`
+      : tokenText
     setExpanding(true)
     try {
-      const r = await window.api.canvasExpandPrompt({ prompt: text, referenceImagePaths: refs.length ? refs : undefined }) as { ok?: boolean; text?: string; error?: string }
-      if (r?.ok && r.text) composerRef.current?.setText(r.text)
-      else toast.error(r?.error || '扩写失败')
+      let refined = ''
+      if (bridge.expertIds.length) {
+        // 专家扩写：选中的员工(摄影师/美工/调色…)各从专业角度加持，汇总成更专业的提示词。
+        const r = await window.api.canvasExpertAdvise({ goal, referenceImagePaths: refs.length ? refs : undefined, expertIds: bridge.expertIds })
+        if (r.ok && r.refinedPrompt) { refined = r.refinedPrompt; if (r.advices?.length) toast.success(`${r.advices.map(a => a.name).join('、')} 已加持提示词`) }
+        else { toast.error(r.error || '专家扩写失败'); return }
+      } else {
+        const r = await window.api.canvasExpandPrompt({ prompt: goal, referenceImagePaths: refs.length ? refs : undefined }) as { ok?: boolean; text?: string; error?: string }
+        if (r?.ok && r.text) refined = r.text
+        else { toast.error(r?.error || '扩写失败'); return }
+      }
+      // Restore chips IN PLACE from the 【图N】 placeholders, then persist (setSegments
+      // is imperative — it doesn't fire onInput — so the expanded draft would otherwise
+      // be lost on the next generate/remount).
+      const newSegs = hasChips ? detokenizeText(refined, refByToken) : [{ t: 'text' as const, s: refined.trim() }]
+      composerRef.current?.setSegments(newSegs)
+      onChange?.(JSON.stringify(composerRef.current?.serializeSegments() ?? []))
     } catch (e) { toast.error((e as Error).message) } finally { setExpanding(false) }
   }
 
@@ -275,11 +380,13 @@ export function GenPromptBar({ busy, placeholder, onSubmit }: {
       {picker.menu}
       <RichComposer
         ref={composerRef}
+        initialSegments={parseDraftSegments(value)}
         placeholder={placeholder}
         disabled={busy}
         onMention={setMentionQuery}
         onEnter={submit}
         onEmptyChange={setEmpty}
+        onInput={() => onChange?.(JSON.stringify(composerRef.current?.serializeSegments() ?? []))}
         onPasteFiles={() => { /* canvas composer ignores pasted files for now */ }}
         onMentionKeyDown={(e) => {
           // Esc closes the @ menu; stop it bubbling so it doesn't also collapse the
@@ -293,9 +400,16 @@ export function GenPromptBar({ busy, placeholder, onSubmit }: {
         <CountDropdown value={count} onChange={setCount} />
         <SizeDropdown value={size} onChange={setSize} />
         <QualityDropdown value={quality} onChange={setQuality} />
-        <button onClick={expand} disabled={empty || expanding} title="提示词扩写（AI 补充画面细节）"
-          className="flex items-center gap-1 text-[11px] rounded-full border border-border px-2 py-1 text-muted-foreground hover:bg-accent/40 hover:text-foreground disabled:opacity-40 shrink-0">
-          {expanding ? <Loader2 size={12} className="animate-spin" /> : <Wand2 size={12} />} 扩写
+        <ExpertPicker
+          employees={bridge.employees}
+          selectedIds={bridge.expertIds}
+          onToggle={(id) => bridge.setExpertIds(bridge.expertIds.includes(id) ? bridge.expertIds.filter(x => x !== id) : [...bridge.expertIds, id])}
+        />
+        <button onClick={expand} disabled={empty || expanding}
+          title={bridge.expertIds.length ? '专家扩写：选中的员工各从专业角度加持提示词' : '提示词扩写（AI 补充画面细节）'}
+          className={cn('flex items-center gap-1 text-[11px] rounded-full border px-2 py-1 hover:bg-accent/40 hover:text-foreground disabled:opacity-40 shrink-0',
+            bridge.expertIds.length ? 'border-primary/50 bg-primary/10 text-primary' : 'border-border text-muted-foreground')}>
+          {expanding ? <Loader2 size={12} className="animate-spin" /> : <Wand2 size={12} />} {bridge.expertIds.length ? '专家扩写' : '扩写'}
         </button>
         <div className="flex-1" />
         <button onClick={submit} disabled={empty || busy} title="生成（Enter）"
@@ -336,6 +450,8 @@ function ImageCardNode({ id, data, selected }: NodeProps) {
       {/* Floating prompt bar below the card — type → fan out N images. Image cards only. */}
       <NodeToolbar isVisible={!!selected && !generating && !!d.path && !isVideo} position={Position.Bottom} offset={12}>
         <GenPromptBar busy={busy} placeholder="请输入你想要把这张图改成什么…（「@」引入参考图）"
+          value={typeof d.draftPrompt === 'string' ? d.draftPrompt : ''}
+          onChange={t => ctx?.onDraftChange(id, t)}
           onSubmit={(p, c, s, q, sc, refs) => ctx?.onGenerate(id, p, c, s, q, sc, refs)} />
       </NodeToolbar>
 
@@ -418,6 +534,8 @@ function ReferenceStackNode({ id, data, selected }: NodeProps) {
       <NodeToolbar isVisible={!!selected && refs.length >= 1} position={Position.Bottom} offset={12}>
         <GenPromptBar busy={busy}
           placeholder={`描述要生成的画面（这 ${refs.length} 张一起作为参考，「@」可再加）…`}
+          value={typeof d.draftPrompt === 'string' ? d.draftPrompt : ''}
+          onChange={t => ctx?.onDraftChange(id, t)}
           onSubmit={(p, c, s, q, sc, refs) => ctx?.onGenerateFromStack(id, p, c, s, q, sc, refs)} />
       </NodeToolbar>
 

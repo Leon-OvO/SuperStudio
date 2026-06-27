@@ -63,6 +63,7 @@ const defaults: StoreSchema = {
     shellIntegrationEnabled: true,
     localScriptsEnabled: true,
     localScriptsConfirmEachRun: false,
+    sshReadonlyNoConfirm: true,
     startupPage: 'chat',
     minimizeToTray: true,
     webhookBots: [],

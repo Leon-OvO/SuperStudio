@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Send, Square, Paperclip, ImagePlus, X, FileText, ImageOff, MessageSquare, Search, Bug, Wrench, Wand2 } from 'lucide-react'
+import { Send, Square, Paperclip, ImagePlus, X, FileText, ImageOff, MessageSquare, Search, Bug, Wrench, Wand2, Sparkles } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { Select } from '../../components/ui/Select'
 import { ThinkingModePicker, type ThinkingMode } from '../../components/ThinkingModePicker'
+import { SkillQuickBar } from '../../components/SkillQuickBar'
 import { toast } from '../../components/ui/Toast'
 import { type ComposerAttachment, getMimeType, toLocalFileUrl, blobToBase64, isImageMime } from '../../lib/attachments'
-import type { VibeIntent } from '../../../../shared/ipc-types'
+import type { VibeIntent, InstalledSkillInfo } from '../../../../shared/ipc-types'
 
 export type VibeMode = 'auto' | VibeIntent
 export type VibeRunning = 'propose' | 'apply' | 'explore' | 'chat' | 'bugfix' | null
@@ -36,7 +37,8 @@ interface Props {
   providerId?: string
   model?: string
   running: VibeRunning
-  onSubmit: () => void
+  /** Submit the turn; `forceSkillIds` = skills armed via the quick-bar (forced this run). */
+  onSubmit: (forceSkillIds?: string[]) => void
   /** Shown as a 停止 button while running; omit to show a disabled send instead. */
   onStop?: () => void
   autoFocus?: boolean
@@ -167,8 +169,53 @@ export function VibeComposer({
 
   const canSend = (!!value.trim() || attachments.length > 0) && !isRunning
 
+  // Skills "armed" for the NEXT send via the quick-bar (forced to load this run).
+  const [armedSkills, setArmedSkills] = useState<InstalledSkillInfo[]>([])
+
+  // Quick-bar click: append the primer to the textarea AND arm the skill so the
+  // next send forces it to load + run (an armed chip shows above the input).
+  const handlePickSkill = useCallback((skill: InstalledSkillInfo, primer: string) => {
+    if (isRunning) return
+    const next = value ? (value.endsWith('\n') ? value + primer : value + '\n' + primer) : primer
+    onChange(next)
+    setArmedSkills(prev => prev.some(s => s.id === skill.id) ? prev : [...prev, skill])
+    requestAnimationFrame(() => {
+      const ta = taRef.current
+      if (ta) { ta.focus(); ta.setSelectionRange(next.length, next.length) }
+    })
+  }, [isRunning, value, onChange])
+
+  // Single submit path (Enter + 发送 button): forwards armed skill ids, then clears
+  // them. Mirrors the parent's empty-guard so an empty Enter doesn't drop arming.
+  const submit = useCallback(() => {
+    if (isRunning || (!value.trim() && attachments.length === 0)) return
+    const ids = armedSkills.map(s => s.id)
+    onSubmit(ids.length ? ids : undefined)
+    setArmedSkills([])
+  }, [isRunning, value, attachments, onSubmit, armedSkills])
+
   return (
     <div>
+      {/* 技能快捷条 — 一键填入引子并「装备」技能（含自主学习到的技能 ✨，强感知自学习能力）。 */}
+      <SkillQuickBar scenario="vibe" onPick={handlePickSkill} disabled={isRunning} className="mb-2 px-1" />
+
+      {/* 本轮已「装备」的技能（可移除）——发送时强制加载并使用它们。 */}
+      {armedSkills.length > 0 && (
+        <div className="mb-2 flex items-center gap-1.5 flex-wrap px-1">
+          <span className="text-[11px] text-muted-foreground select-none">本轮使用：</span>
+          {armedSkills.map(s => (
+            <span key={s.id} className="inline-flex items-center gap-1 h-6 pl-1.5 pr-1 rounded-md text-xs border border-primary/30 bg-primary/10 text-primary">
+              {s.origin === 'auto'
+                ? <Sparkles size={11} className="shrink-0" />
+                : s.icon ? <span className="text-[11px] leading-none shrink-0">{s.icon}</span> : <Wrench size={11} className="shrink-0" />}
+              <span className="max-w-[140px] truncate font-medium">{s.name}</span>
+              <button type="button" onClick={() => setArmedSkills(prev => prev.filter(x => x.id !== s.id))}
+                title="移除（本轮不再强制使用）" className="opacity-60 hover:opacity-100"><X size={11} /></button>
+            </span>
+          ))}
+        </div>
+      )}
+
       {/* Attachment previews */}
       {attachments.length > 0 && (
         <div className="mb-2 flex flex-wrap gap-2 px-1">
@@ -235,7 +282,7 @@ export function VibeComposer({
             // IME guard: Enter that confirms a composition candidate must not send.
             if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
               e.preventDefault()
-              onSubmit()
+              submit()
             }
           }}
           rows={2}
@@ -287,7 +334,7 @@ export function VibeComposer({
             </button>
           ) : (
             <button
-              onClick={onSubmit}
+              onClick={submit}
               disabled={!canSend}
               title={mode === 'auto' ? 'Enter — 自动识别' : `Enter — ${INTENT_META[mode].label}`}
               className={cn(

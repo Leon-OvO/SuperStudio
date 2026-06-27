@@ -9,6 +9,7 @@ import { agentHandlers } from './agent'
 import { groupChatHandlers } from './group-chat'
 import { fileHandlers } from './files'
 import { galleryHandlers } from './gallery'
+import { canvasExpertHandlers } from './canvas-experts'
 import { memoryHandlers } from './memory'
 import { workflowHandlers } from './workflows'
 import { imageEditHandlers } from './image-edit'
@@ -50,6 +51,7 @@ export function registerIpcHandlers(): void {
     ['groupChat', groupChatHandlers],
     ['files', fileHandlers],
     ['gallery', galleryHandlers],
+    ['canvasExperts', canvasExpertHandlers],
     ['memory', memoryHandlers],
     ['workflows', workflowHandlers],
     ['imageEdit', imageEditHandlers],

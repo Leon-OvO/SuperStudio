@@ -50,6 +50,7 @@ export const IPC = {
   CANVAS_GENERATE_ONE: 'canvas:generate-one',       // 画布右键微调重生单张
   CANVAS_EXPORT_GROUP: 'canvas:export-group',        // 按场景一键导出整个变体组
   CANVAS_EXPAND_PROMPT: 'canvas:expand-prompt',      // 用对话模型把简短想法扩写成图像提示词
+  CANVAS_EXPERT_ADVISE: 'canvas:expert-advise',      // 多位员工专家并行出谋划策 + 汇总成出图提示词
 
   // Video generation
   VIDEO_GENERATE: 'video:generate',
@@ -600,6 +601,10 @@ export interface AppSettings {
   localScriptsConfirmEachRun?: boolean
   /** Timeout (ms) for `run_script`. Default 300_000 (5 min). */
   localScriptsTimeoutMs?: number
+  /** SSH gate: when true (default), READ-ONLY remote commands run without a confirm
+   *  popup and only WRITE/dangerous commands are confirmed (each time). When false,
+   *  use trust-on-first-use (first command per connection confirms, then trusted). */
+  sshReadonlyNoConfirm?: boolean
   /** Extra folder to scan for importable local skill bundles (auto-discovery). */
   skillDiscoverDir?: string
 
@@ -1304,6 +1309,9 @@ export interface UsageGroupRow {
   requests: number
   tokens: number
   cost: number
+  cacheRead: number              // 命中（缓存读）合计
+  cacheWrite: number             // 创建（缓存写）合计
+  cacheHitRate: number           // 0–1 = cacheRead / (cacheRead + cacheWrite + input)
 }
 
 export interface UsageStats {
@@ -1340,3 +1348,8 @@ export interface EmployeeInfo {
   stats: EmployeeStats
   hiredAt: number
 }
+
+/** One expert's advice in the canvas「专家团出谋划策」flow. */
+export interface CanvasExpertAdvice { id: string; name: string; dept: EmployeeDept | string; text: string }
+/** Result of CANVAS_EXPERT_ADVISE: per-expert advice + a synthesized image prompt. */
+export interface CanvasExpertAdviseResult { ok: boolean; advices?: CanvasExpertAdvice[]; refinedPrompt?: string; error?: string }

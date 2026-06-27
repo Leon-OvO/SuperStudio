@@ -20,7 +20,7 @@ interface Props {
   streamingTaskId: string | null
   running: 'propose' | 'apply' | 'explore' | 'chat' | 'bugfix' | null
   /** Unified send: auto-detect intent unless forceIntent is given (manual lock). */
-  onRun: (prompt: string, requestId?: string, forceIntent?: VibeIntent, attachments?: ComposerAttachment[], thinkingMode?: ThinkingMode) => void
+  onRun: (prompt: string, requestId?: string, forceIntent?: VibeIntent, attachments?: ComposerAttachment[], thinkingMode?: ThinkingMode, forceSkillIds?: string[]) => void
   /** Project model (gates the 思考模式 picker); '' → global default. */
   providerId?: string
   model?: string
@@ -131,11 +131,11 @@ export function RequestTabContent({
   // Parallel apply may have several running tasks at once — banner summarizes them.
   const runningTasks = tasks.filter(t => t.status === 'running')
 
-  function submit() {
+  function submit(forceSkillIds?: string[]) {
     const t = input.trim()
     // Allow attachment-only sends (e.g. "看看这张图" pasted with no text).
     if ((!t && attachments.length === 0) || running || !request) return
-    onRun(t, request.id, mode === 'auto' ? undefined : mode, attachments.length ? attachments : undefined, thinkingMode === 'auto' ? undefined : thinkingMode)
+    onRun(t, request.id, mode === 'auto' ? undefined : mode, attachments.length ? attachments : undefined, thinkingMode === 'auto' ? undefined : thinkingMode, forceSkillIds)
     setInput('')
     setAttachments([])
     // User just sent a message — always pin them to the bottom.

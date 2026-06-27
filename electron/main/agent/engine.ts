@@ -1,7 +1,7 @@
 import { streamText, tool, jsonSchema, type Tool, type CoreMessage } from 'ai'
 import { z } from 'zod'
 import { BrowserWindow } from 'electron'
-import { IPC, AgentProgressEvent, type AgentPhase, type AgentPhaseEvent, type ContextRef } from '../../../src/shared/ipc-types'
+import { IPC, AgentProgressEvent, type AgentPhase, type AgentPhaseEvent, type ContextRef, type AskUserPayload } from '../../../src/shared/ipc-types'
 import { parseJsonLoose } from '../../../src/shared/json-repair'
 import { BRAND } from '../../../src/shared/brand'
 import { createLLMClient, thinkingStreamOpts, effectiveProtocol, type ThinkingMode } from '../services/llm'
@@ -11,6 +11,8 @@ import { confirmSshExec } from '../services/ssh-guard'
 import { runShell } from '../services/shell'
 import { confirmRunScript } from '../services/local-script-guard'
 import { generateImage } from '../services/image'
+import { buildImagePrompt, buildImagePromptSet } from '../services/image-prompt'
+import { classifyImageTurnIntent } from './classify'
 import { compressImageToFit, DEFAULT_MAX_IMAGE_BYTES } from '../services/image-compress'
 import { generateVideo } from '../services/video'
 import { readFile, writeFile, writeTextFile, listDir } from '../services/fileops'
@@ -21,7 +23,7 @@ import { armComputerUse, isComputerUseAborted, disarmComputerUse, setComputerUse
 import { publishXiaohongshuNote } from '../services/web-publish-playwright'
 import { saveGalleryItem } from '../services/gallery'
 import { mcpManager, type McpTool } from '../services/mcp'
-import { getActiveSkillsForScenario, type InstalledSkill } from '../services/skills-db'
+import { getActiveSkillsForScenario, getSkillsByIds, type InstalledSkill } from '../services/skills-db'
 import { scanWorkdirSkills, readWorkdirMcpConfigs } from '../services/workdir-extensions'
 import { getEmployee } from '../services/employees-db'
 import { getSoul } from '../services/talent-pool'
@@ -71,6 +73,11 @@ interface RunParams {
   /** @-mentioned context the user pinned for THIS turn (a prior message to follow
    *  up on, a produced file, or "the whole conversation"). Injected as a note. */
   contextRefs?: ContextRef[]
+  /** Skills the user FORCED for THIS turn via the input-box skill quick-bar. These
+   *  are unioned into activeSkills (bypassing scenario/status/cap gating) and a
+   *  per-turn nudge tells the model to actually load + follow them. Empty/undefined
+   *  → behaves exactly like today (passive, model-driven skill loading). */
+  forceSkillIds?: string[]
   /** Group chat: this run is ONE employee's turn inside a multi-agent round. When
    *  set, runAgent uses this employee's model + soul persona (not the session's
    *  single binding), skips inserting a user message (the orchestrator inserts it
@@ -97,6 +104,18 @@ interface RunParams {
 }
 
 const runningAgents = new Map<string, AbortController>()
+
+/** Per-session image edit-session state (in-memory): accumulated corrections +
+ *  how many consecutive "edit / 还是不对" turns — drives clarify-on-repeated-failure. */
+interface ImgEditState { constraints: string[]; editStreak: number }
+const imageEditSessions = new Map<string, ImgEditState>()
+
+/** "还是不对/重来" 这类没信息量的纠正不进 constraints（否则污染 prompt）。 */
+const TRIVIAL_CORRECTIONS = new Set(['还是不对', '不对', '不行', '重来', '再来', '重画', '换一张', '换个', '不好', '重新', '再改改', '改改', '不满意'])
+function isMeaningfulCorrection(s: string): boolean {
+  const t = s.trim()
+  return t.length >= 3 && !TRIVIAL_CORRECTIONS.has(t)
+}
 
 function tryAutoTitle(sessionId: string, userMessage: string, isImage: boolean, isVideo: boolean): string | null {
   try {
@@ -142,7 +161,7 @@ export async function runAgent(
   params: RunParams,
   win: BrowserWindow
 ): Promise<void> {
-  const { sessionId, message, attachments = [], overrideProviderId, overrideModel, mountedSpaceIds = [], imageSize, imageQuality, imageCount, scheduledContext = false, computerMode = false, forceImage = false, thinkingMode, groupTurn, sshDefaultConnIds = [], contextRefs = [] } = params
+  const { sessionId, message, attachments = [], overrideProviderId, overrideModel, mountedSpaceIds = [], imageSize, imageQuality, imageCount, scheduledContext = false, computerMode = false, forceImage = false, thinkingMode, groupTurn, sshDefaultConnIds = [], contextRefs = [], forceSkillIds = [] } = params
   const runStartTime = Date.now()
   // Ephemeral 工作目录 MCP server ids registered for THIS run — reaped in finally.
   const ephemeralMcpIds: string[] = []
@@ -166,10 +185,13 @@ export async function runAgent(
   const boundEmployee = readSessionEmployee(sessionId)
   // Group turn → this speaker's model wins. Otherwise: per-session override, then
   // the (single) bound employee, then the global default.
-  const effectiveProviderId = groupTurn?.providerId || overrideProviderId || boundEmployee?.providerId || settings.defaultChatProviderId
-  const effectiveModel = groupTurn?.modelId || overrideModel || boundEmployee?.modelId || settings.defaultChatModel
+  // `let`, not const: when a turn on an IMAGE-model session turns out to be a
+  // question/complaint (not an image request), we re-point these at the default
+  // CHAT model so the normal path can answer in text (see the image block below).
+  let effectiveProviderId = groupTurn?.providerId || overrideProviderId || boundEmployee?.providerId || settings.defaultChatProviderId
+  let effectiveModel = groupTurn?.modelId || overrideModel || boundEmployee?.modelId || settings.defaultChatModel
   const allProviders = getProviders()
-  const effectiveProviderName = allProviders.find(p => p.id === effectiveProviderId)?.name || effectiveProviderId
+  let effectiveProviderName = allProviders.find(p => p.id === effectiveProviderId)?.name || effectiveProviderId
   console.log('[Agent] resolved model', { provider: effectiveProviderId, model: effectiveModel })
 
   const emit = (event: Omit<AgentProgressEvent, 'sessionId'>) => {
@@ -295,6 +317,20 @@ export async function runAgent(
     } catch (e) {
       console.warn('[Agent] failed to load active skills:', (e as Error).message)
     }
+    // User FORCED skills for this turn (input-box skill quick-bar): union them in
+    // by id, bypassing scenario/status/cap gating. De-dup against already-active
+    // ones; do this BEFORE the name-based workdir merge so precedence is stable.
+    let forcedSkills: InstalledSkill[] = []
+    if (forceSkillIds.length) {
+      try {
+        const have = new Set(activeSkills.map(s => s.id))
+        forcedSkills = getSkillsByIds(forceSkillIds).filter(s => !have.has(s.id))
+        if (forcedSkills.length) {
+          activeSkills = [...activeSkills, ...forcedSkills]
+          console.log(`[Agent] forced chat skills: ${forcedSkills.map(s => s.id).join(', ')}`)
+        }
+      } catch (e) { console.warn('[Agent] failed to force skills:', (e as Error).message) }
+    }
     // Set below after computeToolAllowSet. When web_snapshot is allowed (i.e.
     // 网页操作 skill is active), web_open auto-includes the snapshot in its
     // return — fixes a class of failures where the model treats web_open's
@@ -381,6 +417,20 @@ export async function runAgent(
         turnContextParts.push(`【用户引用了一个已生成/已有文件作为追问对象】绝对路径：${ref.path}（可直接用对应工具读取/处理它）。`)
       }
     }
+    // Per-turn FORCED skills (input-box skill quick-bar): the user explicitly armed
+    // these, so instruct the model to actually use them this turn. Runtime skills
+    // must be load_skill'd first; legacy skills are already inlined in the system
+    // prompt — either way, follow them, don't improvise around them.
+    if (forceSkillIds.length) {
+      const forced = activeSkills.filter(s => forceSkillIds.includes(s.id))
+      if (forced.length) {
+        const names = forced.map(s => `「${s.name}」`).join('、')
+        const howto = forced.some(s => s.runtime)
+          ? '请先对相应技能调用 load_skill 获取其完整说明，再严格按其中步骤执行；不要跳过、也不要凭空发挥。'
+          : '请严格遵循系统提示中给出的这些技能指引来完成本轮任务；不要跳过、也不要凭空发挥。'
+        turnContextParts.push(`【本轮必须使用以下技能：${names}】${howto}`)
+      }
+    }
     const turnContext = turnContextParts.length ? turnContextParts.join('\n\n') + '\n\n' : ''
 
     let streamErr: Error | null = null
@@ -394,15 +444,75 @@ export async function runAgent(
     // must generate with the configured DEFAULT image provider/model instead.
     const sessionIsImageModel = effectiveModel === settings.defaultImageModel && !!settings.defaultImageModel
     if (sessionIsImageModel || forceImage) {
-      const imgProviderId = sessionIsImageModel ? effectiveProviderId : settings.defaultImageProviderId
-      const imgModel = sessionIsImageModel ? effectiveModel : settings.defaultImageModel
-      const imgProviderName = sessionIsImageModel ? effectiveProviderName : (allProviders.find(p => p.id === imgProviderId)?.name || imgProviderId)
-      if (!imgModel || !imgProviderId) {
-        throw new Error('请先在「设置 → 模型」配置默认图片模型，再开启「生成图片」。')
+      // 逐轮意图分流：图像模型 / 强制出图不再【锁死每一轮】。先判断这轮到底要不要图——
+      // 纯提问/抱怨/纠错(chat) 用文字回答、绝不出图；要图(generate/edit) 才出图。
+      // （edit-session 尚未引入，hasBaseImage 暂传 false；edit 在分类器里降级为 generate。）
+      // edit-session：本会话已有图时，分类器才可能判定 'edit'（在上一张上改）。
+      const lastSessionImage = getLastSessionImage(sessionId)
+      const imgIntent = await classifyImageTurnIntent(message, settings.defaultChatProviderId, settings.defaultChatModel, !!lastSessionImage)
+      if (imgIntent !== 'chat') {
+        const imgProviderId = sessionIsImageModel ? effectiveProviderId : settings.defaultImageProviderId
+        const imgModel = sessionIsImageModel ? effectiveModel : settings.defaultImageModel
+        const imgProviderName = sessionIsImageModel ? effectiveProviderName : (allProviders.find(p => p.id === imgProviderId)?.name || imgProviderId)
+        if (!imgModel || !imgProviderId) {
+          throw new Error('请先在「设置 → 模型」配置默认图片模型，再开启「生成图片」。')
+        }
+        // 'edit' 意图且本会话已有图 → 在上一张基础上改（走 edits 流程），而不是从零重画
+        //（修复"还是不对"越改越离题）。
+        const editBaseImagePath = (imgIntent === 'edit' && lastSessionImage) ? lastSessionImage : undefined
+        // edit-session 状态：累积历轮纠正 + 连续"还是不对"计数。
+        const st = imageEditSessions.get(sessionId) ?? { constraints: [], editStreak: 0 }
+        if (editBaseImagePath) {
+          st.editStreak += 1
+          const corr = message.trim().slice(0, 80)
+          if (isMeaningfulCorrection(corr) && !st.constraints.includes(corr)) st.constraints.push(corr)
+          if (st.constraints.length > 6) st.constraints = st.constraints.slice(-6)
+          // 连续 3 次仍"不对" → 停手反问给选项，不再盲改（DeepMind Proactive T2I 思路）。
+          if (st.editStreak >= 3) {
+            imageEditSessions.set(sessionId, { ...st, editStreak: 0 })
+            const clarify: AskUserPayload = {
+              question: '这张图还是不对的话，告诉我【哪里】不对，我据此再改：',
+              options: [
+                { label: '风格不对（要更写实 / 更家装 / 更卡通…）', description: '换整体风格' },
+                { label: '构图 / 视角不对', description: '调画面布局或机位' },
+                { label: '配色 / 光线不对', description: '改颜色或明暗' },
+                { label: '某个东西不对（家具 / 物体 / 文字…）', description: '具体说要改哪个元素' }
+              ],
+              allowCustom: true
+            }
+            const toolCalls = [{ toolName: 'ask_user', args: clarify, result: clarify }]
+            const askId = randomUUID()
+            const askMeta = { model: imgModel, providerId: imgProviderId, providerName: imgProviderName, durationMs: Date.now() - runStartTime }
+            dbRun(
+              `INSERT INTO messages (id, session_id, role, content, tool_calls, meta, created_at) VALUES (?, ?, 'assistant', ?, ?, ?, ?)`,
+              [askId, sessionId, clarify.question, JSON.stringify(toolCalls), JSON.stringify(askMeta), Date.now()]
+            )
+            dbRun(`UPDATE sessions SET updated_at = ? WHERE id = ?`, [Date.now(), sessionId])
+            if (!isStaleRun()) win.webContents.send(IPC.AGENT_DONE, { sessionId, messageId: askId, content: clarify.question, toolCallLog: toolCalls, meta: askMeta })
+            return
+          }
+        } else {
+          // generate（新主体）→ 重置 edit-session。
+          st.constraints = []
+          st.editStreak = 0
+        }
+        imageEditSessions.set(sessionId, st)
+        // 提示词构造层的上下文：最近几轮 + @引用 +（编辑时）累积纠正，忠于"已生成文案"而非用户最后一句话。
+        const imageContext = await buildImageContext(sessionId, contextRefs, editBaseImagePath ? st.constraints : [])
+        setPhase('generating', editBaseImagePath ? '正在修改图片…' : '正在生成图片…')
+        await runDirectImageGeneration({ message, imageContext, editBaseImagePath, sessionId, settings, emit, win, toolCallLog, providerId: imgProviderId, providerName: imgProviderName, model: imgModel, imageSize, imageQuality, imageCount, attachments, runStartTime, isStale: isStaleRun })
+        return
       }
-      setPhase('generating', '正在生成图片…')
-      await runDirectImageGeneration({ message, sessionId, settings, emit, win, toolCallLog, providerId: imgProviderId, providerName: imgProviderName, model: imgModel, imageSize, imageQuality, imageCount, attachments, runStartTime, isStale: isStaleRun })
-      return
+      // imgIntent === 'chat'：这轮是提问/抱怨/纠错，不出图。会话模型若是图像模型本身
+      // 没法对话 → 本轮改用默认对话模型来回答；随后落到下面正常对话路径。
+      if (sessionIsImageModel) {
+        effectiveProviderId = settings.defaultChatProviderId
+        effectiveModel = settings.defaultChatModel
+        effectiveProviderName = allProviders.find(p => p.id === effectiveProviderId)?.name || effectiveProviderId
+        if (!effectiveProviderId || !effectiveModel) {
+          throw new Error('请先在「设置 → 默认模型」配置对话模型，才能在图片会话里回答问题。')
+        }
+      }
     }
 
     // Video-only models are not usable as chat models
@@ -2647,7 +2757,8 @@ function buildSystemPrompt(kbContext: string, mcpTools: McpTool[] = [], skills: 
     `- 写文件【铁律】：只有当你在【本回合】真实调用了 file_write 且其返回结果成功（包含 modified/created、没有 error）时，才可以说"已生成/已写入/已保存文件"。若本回合没有这样的成功调用，【绝对不许】声称文件已生成（哪怕上一回合写过、哪怕你"打算"写）——要么现在就真的调用 file_write，要么如实说"尚未写入"。同理不要凭空输出形如"[本回合已生成文件: …]"的字样，那是系统记账、不是你来写的。\n` +
     `- 运行脚本【铁律】：任务需要执行脚本/命令（如"用 Python 处理数据""跑一下这个脚本""查这张大表"）时，必须【真的调用 run_script（本机执行，默认已开）或 ssh_exec】并等待其真实返回，再据结果作答。【严禁】把脚本/命令贴进对话、然后让用户"自己复制去跑 / 双击运行 / 把输出贴回来"——那是把本可自己完成的活儿甩给用户，等于没做。若本地执行确被关闭或多次执行失败，就【如实说明"无法执行"并给出开启/排查方式】，绝不假装已跑、也不要用"这是给你的脚本，你去运行"来搪塞。\n` +
     `- 被要求"重新生成/重做"时，必须重新【真实调用】对应工具产出新结果，不能只用文字复述一遍就当作完成。\n` +
-    `- 若工具失败、需要登录、或拿不到足够数据，就【如实说明】并交付你已真实获得的部分结果——绝不用编造来凑数或假装完成。`
+    `- 若工具失败、需要登录、或拿不到足够数据，就【如实说明】并交付你已真实获得的部分结果——绝不用编造来凑数或假装完成。\n` +
+    `- 生成图片/视频等失败时，按工具返回的【真实原因】如实说（如"被内容规则拦截，请换个描述""接口超时，请稍后重试"）；【严禁】编造"服务暂时不可用"之类与真实状态不符的说辞，也不要前一句说生成失败、下一句又凭空说已生成。`
 
   // Anti-laziness / staleness: the sibling failure to fabrication. The model
   // tends to TRUST an earlier tool result (or its own past summary) as if it were
@@ -2866,8 +2977,47 @@ async function buildKbContext(message: string, _sessionId: string, _settings: Ap
   }
 }
 
+/** edit-session：本会话最近一张已生成图片的绝对路径（作为"改上一张"的 baseImage）。 */
+function getLastSessionImage(sessionId: string): string | null {
+  try {
+    const row = dbGet<{ file_path: string }>(
+      `SELECT file_path FROM gallery WHERE session_id = ? AND type = 'image' ORDER BY created_at DESC LIMIT 1`,
+      [sessionId]
+    )
+    return row?.file_path && fs.existsSync(row.file_path) ? row.file_path : null
+  } catch { return null }
+}
+
+/** 攒出图提示词构造层要用的上下文：最近几轮消息 + 用户 @ 引用的内容。让"配图"忠于
+ *  会话里【已生成的文案】，而不是用户最后一句"还是不对/配个图"。 */
+async function buildImageContext(sessionId: string, contextRefs: ContextRef[] = [], extraConstraints: string[] = []): Promise<string> {
+  const parts: string[] = []
+  try {
+    const rows = dbAll<{ role: string; content: string }>(
+      `SELECT role, content FROM messages WHERE session_id = ? ORDER BY created_at DESC LIMIT 6`,
+      [sessionId]
+    )
+    const recent = rows.reverse()
+      .map(r => (r.content || '').trim() ? `${r.role === 'user' ? '用户' : '助手'}：${(r.content || '').slice(0, 800)}` : '')
+      .filter(Boolean)
+    if (recent.length) parts.push(recent.join('\n'))
+  } catch { /* 没有历史也无妨 */ }
+  for (const ref of contextRefs) {
+    if (ref.kind === 'message' && ref.text?.trim()) parts.push(`【用户引用的内容】\n${ref.text.trim().slice(0, 1500)}`)
+  }
+  // edit-session 累积的历轮修改要求——让"改上一张"同时满足之前每一条纠正，不丢前面的。
+  if (extraConstraints.length) {
+    parts.push(`【用户对这张图累积的修改要求（每条都要满足）】\n${extraConstraints.map(c => `- ${c}`).join('\n')}`)
+  }
+  return parts.join('\n\n')
+}
+
 async function runDirectImageGeneration(opts: {
   message: string
+  /** 最近对话 / 已生成文案 / @引用，喂给提示词构造层。 */
+  imageContext?: string
+  /** edit-session：在这张已生成图基础上修改（走 edits 流程），而非从零重画。 */
+  editBaseImagePath?: string
   sessionId: string
   settings: AppSettings
   emit: (e: Omit<AgentProgressEvent, 'sessionId'>) => void
@@ -2883,40 +3033,75 @@ async function runDirectImageGeneration(opts: {
   runStartTime: number
   isStale: () => boolean
 }): Promise<void> {
-  const { message, sessionId, settings, emit, win, toolCallLog, providerId, providerName, model, imageSize, imageQuality, imageCount, attachments, runStartTime, isStale } = opts
+  const { message, imageContext, editBaseImagePath, sessionId, settings, emit, win, toolCallLog, providerId, providerName, model, imageSize, imageQuality, imageCount, attachments, runStartTime, isStale } = opts
   const size = imageSize || parseSizeFromMessage(message)
   const actualN = Math.min(Math.max(imageCount ?? 1, 1), 4)
-  const referenceImagePaths = attachments?.filter(a => a.mimeType.startsWith('image/')).map(a => a.path)
-  const refCount = referenceImagePaths?.length ?? 0
+  // 参考图：edit-session 把"上一张图"作为首个参考图走 edits 流程在其上改；用户本轮附带的图追加其后。
+  const attachRefs = attachments?.filter(a => a.mimeType.startsWith('image/')).map(a => a.path) ?? []
+  const referenceImagePaths = editBaseImagePath ? [editBaseImagePath, ...attachRefs] : attachRefs
+  const refCount = referenceImagePaths.length
+  const refs = refCount ? referenceImagePaths : undefined
   emit({ stepIndex: 0, stepName: 'Image Generation', toolName: 'image_generate', status: 'running',
     message: refCount
       ? `Generating ${actualN} image${actualN > 1 ? 's' : ''} (${size}, ${refCount} reference${refCount > 1 ? 's' : ''})…`
       : `Generating ${actualN} image${actualN > 1 ? 's' : ''} (${size})…` })
   try {
-    // Generate with the provider/model passed in: either the session's selected
-    // image model (classic image mode) or the global default image model (when the
-    // 强制本轮生成图片 toggle fired on top of a chat model). Set BOTH explicitly so the
-    // forced path never silently falls back to whatever settings.defaultImageModel is.
     const imageSettings = { ...settings, defaultImageProviderId: providerId, defaultImageModel: model }
-    const result = await generateImage({
-      prompt: message, n: actualN, size, quality: imageQuality, settings: imageSettings,
-      referenceImagePaths: refCount ? referenceImagePaths : undefined
-    })
-    for (const img of result.images) {
-      await saveGalleryItem({
-        type: 'image', filePath: img.path, prompt: message,
-        source: 'chat', sessionId, modelName: model
-      })
-      emit({ stepIndex: 0, stepName: 'Image Generation', toolName: 'image_generate', status: 'done',
-        artifact: { type: 'image', path: img.path } })
-    }
-    toolCallLog.push({ toolName: 'image_generate', args: { prompt: message, n: actualN, size }, result })
+    // 多图扇出：非编辑 + N>1 → 拆成 N 条【不同场景】各出 1 张（修复"配 6 张图 = 同一 prompt 6 份"）；
+    // 否则单 prompt 出 N 张（编辑 / 单图）。拆解失败会自动回退成单条。
+    const scenes = (!editBaseImagePath && actualN > 1)
+      ? await buildImagePromptSet({ userMessage: message, context: imageContext, count: actualN, settings })
+      : [{ label: '', prompt: await buildImagePrompt({ userMessage: message, context: imageContext, settings }) }]
+    const multi = scenes.length > 1
+    const variantGroupId = multi ? randomUUID() : undefined
 
-    const gotCount = result.images.length
+    const saved: Array<{ path: string }> = []
+    let referencesIgnored = false
+    let failed = 0
+
+    if (multi) {
+      // 每个场景出 1 张；单个场景失败不拖垮整批。
+      for (const sc of scenes) {
+        if (isStale()) return
+        try {
+          const r = await generateImage({ prompt: sc.prompt, n: 1, size, quality: imageQuality, settings: imageSettings, referenceImagePaths: refs })
+          referencesIgnored = referencesIgnored || !!r.referencesIgnored
+          for (const img of r.images) {
+            await saveGalleryItem({ type: 'image', filePath: img.path, prompt: sc.prompt, source: 'chat', sessionId, modelName: model, variantGroupId, sceneLabel: sc.label || undefined })
+            saved.push({ path: img.path })
+            emit({ stepIndex: 0, stepName: 'Image Generation', toolName: 'image_generate', status: 'done', artifact: { type: 'image', path: img.path } })
+          }
+          toolCallLog.push({ toolName: 'image_generate', args: { prompt: sc.prompt, n: 1, size, sceneLabel: sc.label || undefined }, result: r })
+        } catch (e) {
+          failed++
+          console.warn('[image] 场景出图失败：', (e as Error)?.message)
+        }
+      }
+    } else {
+      const r = await generateImage({ prompt: scenes[0].prompt, n: actualN, size, quality: imageQuality, settings: imageSettings, referenceImagePaths: refs })
+      referencesIgnored = !!r.referencesIgnored
+      for (const img of r.images) {
+        await saveGalleryItem({ type: 'image', filePath: img.path, prompt: scenes[0].prompt, source: 'chat', sessionId, modelName: model })
+        saved.push({ path: img.path })
+        emit({ stepIndex: 0, stepName: 'Image Generation', toolName: 'image_generate', status: 'done', artifact: { type: 'image', path: img.path } })
+      }
+      toolCallLog.push({ toolName: 'image_generate', args: { prompt: scenes[0].prompt, n: actualN, size }, result: r })
+    }
+
+    // 如实执行：一张都没出来就当失败，绝不发"已为你生成图片"的假成功。
+    if (!saved.length) {
+      throw new Error('图片接口没有返回任何图片，请稍后重试或更换图片模型 / 接口。')
+    }
+
+    const gotCount = saved.length
     const noun = gotCount > 1 ? `${gotCount} 张图片` : '图片'
-    const replyText = result.referencesIgnored
-      ? `已为你生成${noun}：${message}\n\n> ⚠️ 当前 API 不支持参考图功能，已按文本提示直接生成。`
-      : `已为你生成${noun}：${message}`
+    // 说明只描述结果，不再回显用户原话（修复"已为你生成图片：<用户那句话>"）。
+    // edit-session 改图成功用"已修改"；编辑端点不可用降级成文生图则照实说"已生成"。
+    const verb = editBaseImagePath ? '已按你的要求修改' : '已为你生成'
+    const failNote = failed > 0 ? `（另有 ${failed} 张没生成出来，可再说一句"重试"补齐）` : ''
+    const replyText = referencesIgnored
+      ? `已为你生成${noun}${failNote}。\n\n> ⚠️ 当前 API 不支持参考图/编辑功能，已按文本提示直接生成。`
+      : `${verb}${noun}${failNote}。`
 
     // Run was stopped — drop the generated result quietly.
     if (isStale()) return

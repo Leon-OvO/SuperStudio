@@ -10,7 +10,7 @@ import { copyImageToClipboard } from '../../lib/clipboard'
 import { useImageContextMenu } from '../../components/ui/ImageContextMenu'
 import { toast } from '../../components/ui/Toast'
 import { Markdown } from '../../lib/markdown'
-import { Play, X, RotateCcw, Clock, Cpu, Copy, Check, Download, Wand2, Brain, ChevronRight, ChevronDown, ChevronUp, Pencil, Trash2, RefreshCw, Coins, ImagePlus, Wrench, CheckCircle2, XCircle, Loader2, Quote, Server, MessagesSquare, FileText } from 'lucide-react'
+import { Play, X, RotateCcw, Clock, Cpu, Copy, Check, Download, Wand2, Brain, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Pencil, Trash2, RefreshCw, Coins, ImagePlus, Wrench, CheckCircle2, XCircle, Loader2, Quote, Server, MessagesSquare, FileText } from 'lucide-react'
 import { formatUsageLine } from '../../lib/format-cost'
 import { scrubAddresses } from '../../../../shared/scrub'
 
@@ -431,7 +431,8 @@ function MessageBubble({
 }: BubbleProps) {
   const isUser = message.role === 'user'
   const speakerDept = speaker ? dept(speaker.dept) : null
-  const [lightboxSrc, setLightboxSrc] = useState<{ src: string; filePath: string } | null>(null)
+  // 灯箱：一组图 + 当前下标，支持左右翻页（修复"多图生成后看不了下一张"）。
+  const [lightbox, setLightbox] = useState<{ items: string[]; index: number } | null>(null)
   const [copied, setCopied] = useState(false)
   const [editing, setEditing] = useState(false)
   const [editDraft, setEditDraft] = useState('')
@@ -478,9 +479,13 @@ function MessageBubble({
     return () => { window.removeEventListener('mousedown', onDown); window.removeEventListener('keydown', onKey) }
   }, [quoteMenu])
 
+  const lbPath = lightbox ? lightbox.items[lightbox.index] : null
+  const lbSrc = lbPath ? toFileUrl(lbPath) : ''
+  const lbCount = lightbox?.items.length ?? 0
+
   async function handleLightboxCopy() {
-    if (!lightboxSrc) return
-    const ok = await copyImageToClipboard(lightboxSrc.src)
+    if (!lbSrc) return
+    const ok = await copyImageToClipboard(lbSrc)
     if (ok) {
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
@@ -488,13 +493,28 @@ function MessageBubble({
   }
 
   async function handleLightboxSaveAs() {
-    if (!lightboxSrc) return
+    if (!lbPath) return
     try {
-      await window.api.saveFileAs(lightboxSrc.filePath)
+      await window.api.saveFileAs(lbPath)
     } catch (e) {
       console.error('[save-as]', e)
     }
   }
+
+  // 灯箱键盘导航：← → 翻页，Esc 关闭。
+  useEffect(() => {
+    if (!lightbox) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setLightbox(null)
+      else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+        e.preventDefault()
+        const delta = e.key === 'ArrowLeft' ? -1 : 1
+        setLightbox(s => s ? { ...s, index: (s.index + delta + s.items.length) % s.items.length } : s)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [lightbox])
 
   // Extract image and video artifacts from tool calls (skip internal __retry__ marker).
   // Sources covered:
@@ -570,11 +590,11 @@ function MessageBubble({
                   <AttachedImage
                     key={i}
                     att={att}
-                    onPreview={() => setLightboxSrc({ src: toFileUrl(att.path), filePath: att.path })}
+                    onPreview={() => setLightbox({ items: [att.path], index: 0 })}
                     onContextMenu={e => openContextMenu(e, {
                       filePath: att.path,
                       src: toFileUrl(att.path),
-                      onPreview: () => setLightboxSrc({ src: toFileUrl(att.path), filePath: att.path }),
+                      onPreview: () => setLightbox({ items: [att.path], index: 0 }),
                       onEdit: () => onEditImage(toFileUrl(att.path))
                     })}
                   />
@@ -646,11 +666,11 @@ function MessageBubble({
                     src={toFileUrl(imgPath)}
                     alt="Generated"
                     className="max-w-[360px] max-h-[280px] rounded-lg border border-border cursor-pointer hover:opacity-90 transition-opacity object-cover"
-                    onClick={() => setLightboxSrc({ src: toFileUrl(imgPath), filePath: imgPath })}
+                    onClick={() => setLightbox({ items: imageArtifacts, index: i })}
                     onContextMenu={e => openContextMenu(e, {
                       filePath: imgPath,
                       src: toFileUrl(imgPath),
-                      onPreview: () => setLightboxSrc({ src: toFileUrl(imgPath), filePath: imgPath }),
+                      onPreview: () => setLightbox({ items: imageArtifacts, index: i }),
                       onEdit: () => onEditImage(toFileUrl(imgPath)),
                       ...(onUseAsReference ? { onUseAsReference: () => onUseAsReference(imgPath) } : {})
                     })}
@@ -849,15 +869,25 @@ function MessageBubble({
 
       {/* Image lightbox — portaled to body because the virtualized row's
           transform would otherwise become the containing block for `fixed`. */}
-      {lightboxSrc && createPortal(
+      {lightbox && lbPath && createPortal(
         <div
           className="fixed inset-0 z-50 bg-black/85 flex flex-col p-4 gap-3"
-          onClick={() => setLightboxSrc(null)}
+          onClick={() => setLightbox(null)}
         >
           {/* Image area — takes remaining vertical space above the toolbar */}
-          <div className="flex-1 min-h-0 flex items-center justify-center">
+          <div className="relative flex-1 min-h-0 flex items-center justify-center">
+            {lbCount > 1 && (
+              <button
+                onClick={e => { e.stopPropagation(); setLightbox(s => s ? { ...s, index: (s.index - 1 + s.items.length) % s.items.length } : s) }}
+                title="上一张（←）"
+                className="absolute left-2 top-1/2 -translate-y-1/2 w-10 h-10 flex items-center justify-center rounded-full bg-white/10 hover:bg-white/25 text-white transition-colors"
+              >
+                <ChevronLeft size={22} />
+              </button>
+            )}
             <img
-              src={lightboxSrc.src}
+              key={lbPath}
+              src={lbSrc}
               alt="Preview"
               className="max-w-full max-h-full object-contain rounded-xl shadow-2xl"
               onClick={e => e.stopPropagation()}
@@ -865,15 +895,32 @@ function MessageBubble({
                 e.preventDefault()
                 e.stopPropagation()
                 openContextMenu(e, {
-                  filePath: lightboxSrc.filePath,
-                  src: lightboxSrc.src,
-                  onEdit: () => { onEditImage(lightboxSrc.src); setLightboxSrc(null) }
+                  filePath: lbPath,
+                  src: lbSrc,
+                  onEdit: () => { onEditImage(lbSrc); setLightbox(null) }
                 })
               }}
             />
+            {lbCount > 1 && (
+              <button
+                onClick={e => { e.stopPropagation(); setLightbox(s => s ? { ...s, index: (s.index + 1) % s.items.length } : s) }}
+                title="下一张（→）"
+                className="absolute right-2 top-1/2 -translate-y-1/2 w-10 h-10 flex items-center justify-center rounded-full bg-white/10 hover:bg-white/25 text-white transition-colors"
+              >
+                <ChevronRight size={22} />
+              </button>
+            )}
+            {lbCount > 1 && (
+              <div className="absolute bottom-2 left-1/2 -translate-x-1/2 px-2.5 py-1 rounded-full bg-black/55 text-white text-xs tabular-nums" onClick={e => e.stopPropagation()}>
+                {lightbox.index + 1} / {lbCount}
+              </div>
+            )}
           </div>
           {/* Toolbar — centered below the image */}
           <div className="shrink-0 flex items-center justify-center gap-2" onClick={e => e.stopPropagation()}>
+            {lbCount > 1 && (
+              <span className="text-white/60 text-xs mr-1 tabular-nums">第 {lightbox.index + 1} / {lbCount} 张</span>
+            )}
             <button
               onClick={handleLightboxCopy}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white text-xs font-medium transition-colors"
@@ -889,7 +936,7 @@ function MessageBubble({
               另存为
             </button>
             <button
-              onClick={() => { if (lightboxSrc) { onEditImage(lightboxSrc.src); setLightboxSrc(null) } }}
+              onClick={() => { if (lbSrc) { onEditImage(lbSrc); setLightbox(null) } }}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white text-xs font-medium transition-colors"
             >
               <Wand2 size={13} />
@@ -897,7 +944,7 @@ function MessageBubble({
             </button>
             <button
               className="w-8 h-8 flex items-center justify-center rounded-lg bg-white/10 hover:bg-white/20 text-white transition-colors"
-              onClick={() => setLightboxSrc(null)}
+              onClick={() => setLightbox(null)}
             >
               <X size={16} />
             </button>

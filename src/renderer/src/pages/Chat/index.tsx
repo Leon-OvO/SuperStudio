@@ -9,7 +9,9 @@ import { SessionList } from './SessionList'
 import { SessionListResizer } from './SessionListResizer'
 import { NewGroupDialog } from './NewGroupDialog'
 import { MessageList } from './MessageList'
-import { ChatInput } from './ChatInput'
+import { ChatInput, type ChatInputHandle } from './ChatInput'
+import { NewChatHome } from './NewChatHome'
+import { defaultPrimer } from '../../hooks/useSkills'
 import type { ThinkingMode } from '../../components/ThinkingModePicker'
 import { AgentProgress } from './AgentProgress'
 import { ChatHeader, computeImageSize, DEFAULT_IMAGE_PARAMS } from './ChatHeader'
@@ -18,7 +20,7 @@ import { extractGeneratedImages } from './extractGeneratedImages'
 import type { AgentProgressEvent, AgentPhaseEvent, Message, ContextRef } from '../../../../shared/ipc-types'
 
 /** Per-turn @-mentioned references sent alongside text + attachments. */
-interface MentionPayload { sshDefaultConnIds?: string[]; contextRefs?: ContextRef[] }
+interface MentionPayload { sshDefaultConnIds?: string[]; contextRefs?: ContextRef[]; forceSkillIds?: string[] }
 import { randomId } from '../../lib/id'
 import { ImageEditor } from '../../components/ui/ImageEditor'
 import { buildExportTarget } from '../../lib/session-export'
@@ -61,6 +63,8 @@ export function ChatPage() {
   // other's last-sent text (retry) or pending auto-route intent (DONE tagging).
   const lastSentRef = useRef<Record<string, { text: string; attachments?: Array<{ name: string; path: string; mimeType: string }>; mentions?: MentionPayload }>>({})
   const pendingAutoRouteRef = useRef<Record<string, { intent: string }>>({})
+  // Lets the new-chat home cards fill/arm into the composer below.
+  const chatInputRef = useRef<ChatInputHandle>(null)
   const [imageParamsMap, setImageParamsMap] = React.useState<Record<string, ImageParams>>({})
   const [defaultImageModel, setDefaultImageModel] = React.useState<string>('')
   // Global default image rules (Settings → 模型); seeds each session's per-turn params.
@@ -415,7 +419,8 @@ export function ChatPage() {
         // global setting / relayCompat-safe default); only fast/deep ride along.
         ...((sessionThinkingMode[sessionId] && sessionThinkingMode[sessionId] !== 'auto') ? { thinkingMode: sessionThinkingMode[sessionId] } : {}),
         ...(mentions?.sshDefaultConnIds?.length ? { sshDefaultConnIds: mentions.sshDefaultConnIds } : {}),
-        ...(mentions?.contextRefs?.length ? { contextRefs: mentions.contextRefs } : {})
+        ...(mentions?.contextRefs?.length ? { contextRefs: mentions.contextRefs } : {}),
+        ...(mentions?.forceSkillIds?.length ? { forceSkillIds: mentions.forceSkillIds } : {})
       }
     )
   }
@@ -641,21 +646,29 @@ export function ChatPage() {
           onAddGroupMember={activeIsGroup ? handleAddGroupMember : undefined}
           onRemoveGroupMember={activeIsGroup ? handleRemoveGroupMember : undefined}
         />
-        <MessageList
-          messages={currentMessages}
-          sessionId={activeSessionId}
-          employees={employees}
-          onRetry={canRetry ? handleRetry : undefined}
-          onEditImage={setEditorSrc}
-          onUseAsReference={handleUseAsReference}
-          providersCount={providersCount}
-          defaultChatModel={defaultChatModel}
-          onDeleteMessage={handleDeleteMessage}
-          onRegenerate={handleRegenerate}
-          onEditUserMessage={handleEditUserMessage}
-          isRunning={isRunning}
-          onChoose={(value) => handleSend(value)}
-        />
+        {/* 空会话（新对话）→ 首页卡片引导；有消息 → 正常消息流。群聊不走首页。 */}
+        {currentMessages.length === 0 && !isRunning && !activeIsGroup ? (
+          <NewChatHome
+            onPickSkill={(s) => chatInputRef.current?.pickSkill(s, defaultPrimer(s))}
+            onPickText={(t) => chatInputRef.current?.fillText(t)}
+          />
+        ) : (
+          <MessageList
+            messages={currentMessages}
+            sessionId={activeSessionId}
+            employees={employees}
+            onRetry={canRetry ? handleRetry : undefined}
+            onEditImage={setEditorSrc}
+            onUseAsReference={handleUseAsReference}
+            providersCount={providersCount}
+            defaultChatModel={defaultChatModel}
+            onDeleteMessage={handleDeleteMessage}
+            onRegenerate={handleRegenerate}
+            onEditUserMessage={handleEditUserMessage}
+            isRunning={isRunning}
+            onChoose={(value) => handleSend(value)}
+          />
+        )}
         {/* 群聊：主持人持续推进开关 + 让员工再聊一轮（无需新输入） */}
         {activeIsGroup && (
           <div className="px-4 pb-1 shrink-0 space-y-1.5">
@@ -676,6 +689,7 @@ export function ChatPage() {
         )}
         <AgentProgress />
         <ChatInput
+          ref={chatInputRef}
           onSend={handleSend}
           onStop={handleStop}
           isRunning={isRunning}

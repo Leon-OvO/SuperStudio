@@ -9,7 +9,7 @@ interface Props {
   hasProject: boolean
   running: 'propose' | 'apply' | 'explore' | 'chat' | 'bugfix' | null
   /** Unified send: auto-detect intent unless forceIntent given (manual lock). */
-  onRun: (prompt: string, requestId?: string, forceIntent?: VibeIntent, attachments?: ComposerAttachment[], thinkingMode?: ThinkingMode) => void
+  onRun: (prompt: string, requestId?: string, forceIntent?: VibeIntent, attachments?: ComposerAttachment[], thinkingMode?: ThinkingMode, forceSkillIds?: string[]) => void
   onStop?: () => void
 }
 
@@ -40,10 +40,10 @@ export function EmptyStateHero({ hasProject, running, onRun, onStop }: Props) {
   const [thinkingMode, setThinkingMode] = useState<ThinkingMode>('auto')
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([])
 
-  function submit() {
+  function submit(forceSkillIds?: string[]) {
     const t = input.trim()
     if ((!t && attachments.length === 0) || running) return
-    onRun(t, undefined, mode === 'auto' ? undefined : mode, attachments.length ? attachments : undefined, thinkingMode === 'auto' ? undefined : thinkingMode)
+    onRun(t, undefined, mode === 'auto' ? undefined : mode, attachments.length ? attachments : undefined, thinkingMode === 'auto' ? undefined : thinkingMode, forceSkillIds)
     setInput('')
     setAttachments([])
   }

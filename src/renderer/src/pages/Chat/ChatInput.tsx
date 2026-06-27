@@ -1,13 +1,14 @@
-import { useState, useRef, useCallback, useEffect, useMemo, Fragment } from 'react'
+import { useState, useRef, useCallback, useEffect, useMemo, useImperativeHandle, forwardRef, Fragment } from 'react'
 import { createPortal } from 'react-dom'
 import { BRAND } from '@shared/brand'
 import type { GeneratedImageRef } from './extractGeneratedImages'
-import type { GalleryItem, SshConnectionMeta, ContextRef } from '../../../../shared/ipc-types'
+import type { GalleryItem, SshConnectionMeta, ContextRef, InstalledSkillInfo } from '../../../../shared/ipc-types'
 import { RichComposer, type RichComposerHandle } from './RichComposer'
+import { SkillQuickBar } from '../../components/SkillQuickBar'
 
 /** Max 素材库 results the @-picker requests per query (LIMIT pushed into SQL). */
 const MENTION_GALLERY_LIMIT = 40
-import { Send, Square, Paperclip, X, ImagePlus, FileText, ImageOff, Monitor, Folder, FolderOpen, AtSign, Server, MessageSquare, MessagesSquare, ChevronDown, ChevronRight, Trash2 } from 'lucide-react'
+import { Send, Square, Paperclip, X, ImagePlus, FileText, ImageOff, Monitor, Folder, FolderOpen, AtSign, Server, MessageSquare, MessagesSquare, ChevronDown, ChevronRight, Trash2, Sparkles, Wrench } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { ModelPicker } from './ModelPicker'
 import { ThinkingModePicker, type ThinkingMode } from '../../components/ThinkingModePicker'
@@ -19,7 +20,7 @@ import { type ImageParams, IMAGE_RATIOS, computeImageSize } from './ChatHeader'
 interface Attachment { name: string; path: string; mimeType: string }
 
 /** Extra @-mentioned references sent alongside the text + attachments. */
-interface MentionPayload { sshDefaultConnIds?: string[]; contextRefs?: ContextRef[] }
+interface MentionPayload { sshDefaultConnIds?: string[]; contextRefs?: ContextRef[]; forceSkillIds?: string[] }
 
 interface Props {
   onSend: (text: string, attachments?: Attachment[], mentions?: MentionPayload) => void
@@ -70,6 +71,13 @@ interface Props {
   mentionEmployees?: Array<{ id: string; name: string; dept: string }>
 }
 
+/** Imperative handle so the new-chat home screen can drive this composer:
+ *  fill a skill primer (and arm it) or fill plain example text. */
+export interface ChatInputHandle {
+  pickSkill: (skill: InstalledSkillInfo, primer: string) => void
+  fillText: (text: string) => void
+}
+
 /** A single row in the rich `@` picker (attachment / image / SSH server / context). */
 type MentionEntry =
   | { kind: 'image'; key: string; label: string; sub: string; path: string; group: string }
@@ -84,7 +92,7 @@ function msgSnippet(s: string): string {
   return clean.length > 40 ? clean.slice(0, 40) + '…' : clean
 }
 
-export function ChatInput({
+export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   onSend, onStop, isRunning, disabled, imageMode,
   forceImage, onForceImageChange,
   computerMode, onComputerModeChange, computerUseEnabled,
@@ -94,12 +102,14 @@ export function ChatInput({
   thinkingMode, onThinkingModeChange,
   imageParams, onImageParamsChange,
   onEditImage, mentionEmployees
-}: Props) {
+}: Props, ref) {
   // Group session → `@` mentions employees (to direct a turn) instead of the rich
   // picker (images / 服务器 / 上下文).
   const employeeMentionMode = (mentionEmployees?.length ?? 0) > 0
   const composerRef = useRef<RichComposerHandle>(null)
   const [composerEmpty, setComposerEmpty] = useState(true)
+  // Skills "armed" for the NEXT send via the quick-bar (forced to load this turn).
+  const [armedSkills, setArmedSkills] = useState<InstalledSkillInfo[]>([])
   const [previewSrc, setPreviewSrc] = useState<string | null>(null)
   // Active `@` query (null = picker closed), reported by the rich editor.
   const [mentionQuery, setMentionQuery] = useState<string | null>(null)
@@ -269,6 +279,26 @@ export function ChatInput({
     return () => window.removeEventListener('keydown', onKey)
   }, [previewSrc])
 
+  // Quick-bar click: fill the primer into the editor AND arm the skill so the next
+  // send forces it to load + run this turn (an armed chip shows below the toolbar).
+  const handlePickSkill = useCallback((skill: InstalledSkillInfo, primer: string) => {
+    if (isRunning) return
+    if (composerRef.current?.isEmpty()) composerRef.current?.setText(primer)
+    else composerRef.current?.insertText(primer)
+    composerRef.current?.focus()
+    setArmedSkills(prev => prev.some(s => s.id === skill.id) ? prev : [...prev, skill])
+  }, [isRunning])
+
+  // Fill plain example text (no skill arming) — used by the new-chat home cards.
+  const fillText = useCallback((text: string) => {
+    if (composerRef.current?.isEmpty()) composerRef.current?.setText(text)
+    else composerRef.current?.insertText(text)
+    composerRef.current?.focus()
+  }, [])
+
+  // Let the new-chat home screen drive this composer (fill skill primer / example).
+  useImperativeHandle(ref, () => ({ pickSkill: handlePickSkill, fillText }), [handlePickSkill, fillText])
+
   const handleSend = useCallback(() => {
     if (isRunning) return
     const ser = composerRef.current?.serialize()
@@ -283,13 +313,19 @@ export function ChatInput({
       finalAttachments.push(a)
     }
     if (!text && finalAttachments.length === 0) return
-    const mentions: MentionPayload | undefined = (ser && (ser.sshDefaultConnIds.length || ser.contextRefs.length))
-      ? { sshDefaultConnIds: ser.sshDefaultConnIds, contextRefs: ser.contextRefs }
+    const forceSkillIds = armedSkills.map(s => s.id)
+    const mentions: MentionPayload | undefined = (ser && (ser.sshDefaultConnIds.length || ser.contextRefs.length)) || forceSkillIds.length
+      ? {
+          ...(ser?.sshDefaultConnIds.length ? { sshDefaultConnIds: ser.sshDefaultConnIds } : {}),
+          ...(ser?.contextRefs.length ? { contextRefs: ser.contextRefs } : {}),
+          ...(forceSkillIds.length ? { forceSkillIds } : {})
+        }
       : undefined
     onSend(text, finalAttachments.length ? finalAttachments : undefined, mentions)
     composerRef.current?.clear()
     setAttachments([])
-  }, [isRunning, attachments, onSend, setAttachments])
+    setArmedSkills([])
+  }, [isRunning, attachments, onSend, setAttachments, armedSkills])
 
   // While the picker is open, drive Arrow/Enter/Tab/Esc from the rich editor's
   // keydown. Returns true when a key was consumed (editor then preventDefaults).
@@ -416,6 +452,26 @@ export function ChatInput({
 
   return (
     <div className="px-4 pb-4 pt-1 shrink-0">
+
+      {/* 技能快捷条 — 一键填入引子并「装备」技能（含自主学习到的技能 ✨，让用户强感知自学习能力）。 */}
+      <SkillQuickBar scenario="chat" onPick={handlePickSkill} disabled={isRunning} className="mb-2 px-0.5" />
+
+      {/* 本轮已「装备」的技能（可移除）——发送时强制加载并使用它们。 */}
+      {armedSkills.length > 0 && (
+        <div className="mb-2 flex items-center gap-1.5 flex-wrap">
+          <span className="text-[11px] text-muted-foreground select-none">本轮使用：</span>
+          {armedSkills.map(s => (
+            <span key={s.id} className="inline-flex items-center gap-1 h-6 pl-1.5 pr-1 rounded-md text-xs border border-primary/30 bg-primary/10 text-primary">
+              {s.origin === 'auto'
+                ? <Sparkles size={11} className="shrink-0" />
+                : s.icon ? <span className="text-[11px] leading-none shrink-0">{s.icon}</span> : <Wrench size={11} className="shrink-0" />}
+              <span className="max-w-[140px] truncate font-medium">{s.name}</span>
+              <button type="button" onClick={() => setArmedSkills(prev => prev.filter(x => x.id !== s.id))}
+                title="移除（本轮不再强制使用）" className="opacity-60 hover:opacity-100"><X size={11} /></button>
+            </span>
+          ))}
+        </div>
+      )}
 
       {/* Folded attachments panel — ABOVE the box. Resources brought in via
           paste/drop/select/Gallery live here as a collapsible list of thumbnails /
@@ -740,7 +796,7 @@ export function ChatInput({
       {ctxMenu.element}
     </div>
   )
-}
+})
 
 /** An item in the folded attachments panel: an image thumbnail tile or a file
  *  row, each with a remove × and a hover preview (enlarged image / file path). */

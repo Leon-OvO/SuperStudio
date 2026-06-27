@@ -119,3 +119,66 @@ export async function classifyVibeIntent(
     return 'chat'
   }
 }
+
+// ── 出图意图分类（逐轮判定：要不要出图 / 是改上一张 / 还是纯对话）──────────────
+export type ImageTurnIntent = 'generate' | 'edit' | 'chat'
+const IMG_VALID: ImageTurnIntent[] = ['generate', 'edit', 'chat']
+
+const IMAGE_INTENT_SYSTEM = `你是一个"出图意图"分类器。判断用户这轮到底要不要生成/修改图片，只输出 JSON：{"intent":"<label>"}，不要解释。
+
+标签：
+- generate: 明确想要一张/多张【新图】（"画一张…""给这篇文案配图""生成图片""做张海报"）。
+- edit: 想在【上一张已生成的图】基础上修改（"还是不对""换成暖色""把人物去掉""保持构图再调一下""更装修风一点"）—— 通常是对上一张图的纠正/微调。
+- chat: 不是要图，而是提问、抱怨、闲聊、求解释（"为什么你无法生成图片""这图和文案没关系""你能做什么""怎么用"）—— 应当用文字回答，绝不出图。
+
+判定要点（重要）：
+1. 用户在【抱怨/质疑/提问】时归 chat，哪怕句子里出现"图片"二字——"为什么不能生成图片"是 chat，不是 generate。
+2. 只有针对上一张图的增量修改（还是不对/再改改/换X/调Y/保持Z/更…一点）才归 edit；没有上一张图时把 edit 当 generate。
+3. 拿不准：有明确画面诉求→generate；针对上一张的修改→edit；其余→chat。
+
+示例：
+用户：帮我画一只猫 → {"intent":"generate"}
+用户：给这篇文案配 6 张图 → {"intent":"generate"}
+用户：为什么你无法生成图片 → {"intent":"chat"}
+用户：这张图和文案完全没关系 → {"intent":"chat"}
+用户：还是不对，要更装修风 → {"intent":"edit"}
+用户：把背景换成夜晚 → {"intent":"edit"}`
+
+/**
+ * 判断"出图会话"里这一轮的意图，避免图像模型/强制出图把【每一轮】都强行出图
+ * （含把提问/抱怨当画面去画）。失败时默认 'generate'（已在出图态，倾向保留出图happy path）；
+ * 无上一张图时 edit 降级为 generate。短超时，绝不拖慢发送。
+ */
+export async function classifyImageTurnIntent(
+  message: string,
+  providerId: string,
+  model: string,
+  hasBaseImage: boolean,
+  timeoutMs = 6000
+): Promise<ImageTurnIntent> {
+  try {
+    if (!providerId || !model) return 'generate'
+    const llm = createLLMClient(providerId, model)
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), timeoutMs)
+    try {
+      const { text } = await generateText({
+        model: llm,
+        system: IMAGE_INTENT_SYSTEM,
+        prompt: message.slice(0, 400),
+        temperature: 0,
+        maxTokens: 30,
+        abortSignal: controller.signal
+      })
+      const match = text.match(/"intent"\s*:\s*"(\w+)"/)
+      let label = match?.[1] as ImageTurnIntent | undefined
+      if (!label || !IMG_VALID.includes(label)) label = 'generate'
+      if (label === 'edit' && !hasBaseImage) label = 'generate'
+      return label
+    } finally {
+      clearTimeout(timer)
+    }
+  } catch {
+    return 'generate'
+  }
+}

@@ -11,6 +11,10 @@ export type InlineRef =
   | { kind: 'msg'; text: string; label: string }
   | { kind: 'summary' }
 
+/** Ordered rich content: text runs + inline chips. Lets a parent persist/restore
+ *  the editor WITHOUT flattening chips to 【…】 text (survives remount + 扩写). */
+export type RichSegment = { t: 'text'; s: string } | { t: 'chip'; ref: InlineRef }
+
 export interface ComposerSerialized {
   /** Plain message text with inline refs flattened to name-based 【…】 tokens. */
   text: string
@@ -34,6 +38,10 @@ export interface RichComposerHandle {
   /** Replace the WHOLE editor content with plain text (drops chips). Used by the
    *  canvas composer's 扩写 to write back an expanded prompt. */
   setText(text: string): void
+  /** Ordered rich content (text runs + chips) — persist this to keep chips intact. */
+  serializeSegments(): RichSegment[]
+  /** Rebuild the whole editor from ordered segments (restores chips). */
+  setSegments(segs: RichSegment[]): void
   /** Insert a bare `@` at the caret and open the mention picker (toolbar button). */
   triggerMention(): void
   /** Delete the active @query text without inserting anything (used when an @-pick
@@ -55,6 +63,14 @@ interface Props {
   /** While a mention picker is open, let the parent drive Arrow/Enter/Tab/Esc.
    *  Return true if it handled the key (we then preventDefault). */
   onMentionKeyDown?: (e: React.KeyboardEvent) => boolean
+  /** Seed the (uncontrolled) editor with this plain text ONCE on mount — lets a
+   *  parent persist a draft and restore it across remounts. Chips aren't restored. */
+  initialText?: string
+  /** Like initialText but RICH — restores text + chips on mount (preferred for the
+   *  canvas, so @-image chips survive remount/扩写 instead of flattening to text). */
+  initialSegments?: RichSegment[]
+  /** Fired on every input — the parent can read serialize()/serializeSegments() to persist a draft. */
+  onInput?: () => void
 }
 
 function toLocalFileUrl(filePath: string): string {
@@ -107,7 +123,7 @@ function buildChip(key: string, ref: InlineRef): HTMLSpanElement {
  *  context render as inline chips that flow with the typed text. Uncontrolled
  *  (the DOM owns content); the parent reads it via serialize() on send. */
 export const RichComposer = forwardRef<RichComposerHandle, Props>(function RichComposer(
-  { placeholder, disabled, onMention, onEnter, onEmptyChange, onPasteFiles, onMentionKeyDown }, ref
+  { placeholder, disabled, onMention, onEnter, onEmptyChange, onPasteFiles, onMentionKeyDown, initialText, initialSegments, onInput }, ref
 ) {
   const editorRef = useRef<HTMLDivElement>(null)
   const refMap = useRef<Map<string, InlineRef>>(new Map())
@@ -152,7 +168,19 @@ export const RichComposer = forwardRef<RichComposerHandle, Props>(function RichC
   const handleInput = useCallback(() => {
     syncEmpty()
     detectMention()
-  }, [syncEmpty, detectMention])
+    onInput?.()
+  }, [syncEmpty, detectMention, onInput])
+
+  // Seed the editor once on mount from a persisted draft. Prefer RICH segments
+  // (restores text + chips); fall back to plain text. Runs again on remount, so a
+  // parent-held draft (incl. @-image chips) survives the bar being torn down.
+  useEffect(() => {
+    const el = editorRef.current
+    if (!el || el.textContent || refMap.current.size) return // already has content
+    if (initialSegments && initialSegments.length) { setSegmentsImpl(initialSegments); return }
+    if (initialText) { el.appendChild(document.createTextNode(initialText)); syncEmpty() }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // Place the caret right after `node`.
   const caretAfter = (node: Node) => {
@@ -269,6 +297,55 @@ export const RichComposer = forwardRef<RichComposerHandle, Props>(function RichC
     return { text: parts.join('').replace(/\n{3,}/g, '\n\n').trim(), inlineAttachments, sshDefaultConnIds, contextRefs }
   }, [])
 
+  // Ordered rich content (text runs + chips) — lets a parent persist/restore the
+  // editor without flattening chips to 【…】 text.
+  const serializeSegments = useCallback((): RichSegment[] => {
+    const el = editorRef.current
+    const out: RichSegment[] = []
+    const pushText = (s: string) => {
+      if (!s) return
+      const last = out[out.length - 1]
+      if (last && last.t === 'text') last.s += s
+      else out.push({ t: 'text', s })
+    }
+    const walk = (node: Node) => {
+      if (node.nodeType === Node.TEXT_NODE) { pushText((node.textContent || '').replace(/ /g, ' ')); return }
+      if (node.nodeType !== Node.ELEMENT_NODE) return
+      const elNode = node as HTMLElement
+      const ck = elNode.dataset?.chip
+      if (ck) { const d = refMap.current.get(ck); if (d) out.push({ t: 'chip', ref: d }); return }
+      if (elNode.nodeName === 'BR') { pushText('\n'); return }
+      const isBlock = elNode.nodeName === 'DIV' || elNode.nodeName === 'P'
+      if (isBlock) { const last = out[out.length - 1]; if (last && last.t === 'text' && !last.s.endsWith('\n')) pushText('\n') }
+      for (const c of Array.from(elNode.childNodes)) walk(c)
+    }
+    if (el) for (const c of Array.from(el.childNodes)) walk(c)
+    return out
+  }, [])
+
+  const setSegmentsImpl = useCallback((segs: RichSegment[]) => {
+    const el = editorRef.current
+    if (!el) return
+    el.innerHTML = ''
+    refMap.current.clear()
+    for (const seg of segs) {
+      if (seg.t === 'text') { if (seg.s) el.appendChild(document.createTextNode(seg.s)) }
+      else {
+        const key = nextKey()
+        el.appendChild(buildChip(key, seg.ref))
+        el.appendChild(document.createTextNode(' '))
+        refMap.current.set(key, seg.ref)
+      }
+    }
+    const sel = window.getSelection()
+    const r = document.createRange()
+    r.selectNodeContents(el); r.collapse(false)
+    sel?.removeAllRanges(); sel?.addRange(r)
+    mentionRange.current = null
+    onMention(null)
+    syncEmpty()
+  }, [onMention, syncEmpty])
+
   const triggerMention = useCallback(() => {
     const el = editorRef.current
     if (!el) return
@@ -324,9 +401,11 @@ export const RichComposer = forwardRef<RichComposerHandle, Props>(function RichC
       onMention(null)
       syncEmpty()
     },
+    serializeSegments,
+    setSegments: setSegmentsImpl,
     triggerMention,
     removeQuery
-  }), [empty, serialize, insertRef, insertText, triggerMention, removeQuery, onMention, syncEmpty])
+  }), [empty, serialize, serializeSegments, setSegmentsImpl, insertRef, insertText, triggerMention, removeQuery, onMention, syncEmpty])
 
   // --- Chip remove (delegated) + hover preview ----------------------------
   const removeChip = useCallback((key: string) => {

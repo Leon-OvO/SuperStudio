@@ -93,6 +93,14 @@ module.exports = {
         'toast-in': {
           from: { opacity: '0', transform: 'translateX(16px) scale(0.98)' },
           to: { opacity: '1', transform: 'translateX(0) scale(1)' }
+        },
+        // One-shot celebration for a just-auto-learned skill chip: a gentle
+        // scale + glow burst that settles. Kept short so it reads as a "刚学会"
+        // celebration, not a distracting infinite pulse.
+        'skill-pop': {
+          '0%': { transform: 'scale(0.92)', boxShadow: '0 0 0 0 hsl(var(--primary) / 0)' },
+          '45%': { transform: 'scale(1.05)', boxShadow: '0 0 14px 2px hsl(var(--primary) / 0.45)' },
+          '100%': { transform: 'scale(1)', boxShadow: '0 0 0 0 hsl(var(--primary) / 0)' }
         }
       },
       animation: {
@@ -100,7 +108,8 @@ module.exports = {
         'dialog-in': 'dialog-in 0.2s cubic-bezier(0.16, 1, 0.3, 1)',
         'popover-in': 'popover-in 0.15s cubic-bezier(0.16, 1, 0.3, 1)',
         'menu-in': 'menu-in 0.13s cubic-bezier(0.16, 1, 0.3, 1)',
-        'toast-in': 'toast-in 0.22s cubic-bezier(0.16, 1, 0.3, 1)'
+        'toast-in': 'toast-in 0.22s cubic-bezier(0.16, 1, 0.3, 1)',
+        'skill-pop': 'skill-pop 0.6s cubic-bezier(0.16, 1, 0.3, 1)'
       }
     }
   },

@@ -68,7 +68,7 @@ const api = {
     ipcRenderer.invoke(IPC.VIBE_BUGFIX, args),
   vibePropose: (args: { projectPath: string; prompt: string; requestId?: string }) =>
     ipcRenderer.invoke(IPC.VIBE_PROPOSE, args),
-  vibeRun: (args: { projectPath: string; prompt: string; requestId?: string; forceIntent?: 'chat' | 'explore' | 'bugfix' | 'change'; attachments?: Array<{ name: string; path: string; mimeType: string }>; thinkingMode?: 'auto' | 'fast' | 'deep' }) =>
+  vibeRun: (args: { projectPath: string; prompt: string; requestId?: string; forceIntent?: 'chat' | 'explore' | 'bugfix' | 'change'; attachments?: Array<{ name: string; path: string; mimeType: string }>; thinkingMode?: 'auto' | 'fast' | 'deep'; forceSkillIds?: string[] }) =>
     ipcRenderer.invoke(IPC.VIBE_RUN, args),
   vibeApply: (args: { requestId: string }) => ipcRenderer.invoke(IPC.VIBE_APPLY, args),
   vibeStop: (args: { projectPath: string }) => ipcRenderer.invoke(IPC.VIBE_STOP, args),
@@ -160,7 +160,7 @@ const api = {
     sessionId: string,
     message: string,
     attachments?: unknown[],
-    overrides?: { providerId?: string; model?: string; mountedSpaceIds?: string[]; imageSize?: string; imageQuality?: string; imageCount?: number; computerMode?: boolean; forceImage?: boolean; thinkingMode?: 'auto' | 'fast' | 'deep'; sshDefaultConnIds?: string[]; contextRefs?: import('../../src/shared/ipc-types').ContextRef[] }
+    overrides?: { providerId?: string; model?: string; mountedSpaceIds?: string[]; imageSize?: string; imageQuality?: string; imageCount?: number; computerMode?: boolean; forceImage?: boolean; thinkingMode?: 'auto' | 'fast' | 'deep'; sshDefaultConnIds?: string[]; contextRefs?: import('../../src/shared/ipc-types').ContextRef[]; forceSkillIds?: string[] }
   ) => ipcRenderer.invoke(IPC.AGENT_RUN, sessionId, message, attachments, overrides),
   stopAgent: (sessionId: string) => ipcRenderer.invoke(IPC.AGENT_STOP, sessionId),
   // --- Group chat (multi-agent) ---
@@ -253,6 +253,8 @@ const api = {
     ipcRenderer.invoke(IPC.CANVAS_EXPORT_GROUP, variantGroupId) as Promise<{ canceled?: boolean; saved: number; failures?: string[]; targetDir?: string }>,
   canvasExpandPrompt: (params: { prompt: string; referenceImagePaths?: string[] }) =>
     ipcRenderer.invoke(IPC.CANVAS_EXPAND_PROMPT, params) as Promise<{ ok: boolean; text?: string; error?: string }>,
+  canvasExpertAdvise: (params: { goal: string; referenceImagePaths?: string[]; expertIds: string[] }) =>
+    ipcRenderer.invoke(IPC.CANVAS_EXPERT_ADVISE, params) as Promise<import('../../src/shared/ipc-types').CanvasExpertAdviseResult>,
   exportFilesToDir: (paths: string[]) =>
     ipcRenderer.invoke(IPC.FILE_EXPORT_TO_DIR, paths) as Promise<{ canceled?: boolean; saved: number; failures?: string[]; targetDir?: string }>,
   importGallery: () => ipcRenderer.invoke(IPC.GALLERY_IMPORT) as Promise<{
@@ -344,8 +346,8 @@ const api = {
   sshDeleteConnection: (id: string) => ipcRenderer.invoke(IPC.SSH_DELETE, id),
   sshTestConnection: (conn: unknown) => ipcRenderer.invoke(IPC.SSH_TEST, conn) as Promise<{ ok: boolean; error?: string }>,
   sshImportConnections: (filePath: string) => ipcRenderer.invoke(IPC.SSH_IMPORT, filePath) as Promise<{ imported: number; duplicates: number; skipped: number; missingKey: number }>,
-  onSshExecConfirm: (cb: (req: { id: string; host: string; command: string }) => void) => {
-    const listener = (_e: unknown, req: { id: string; host: string; command: string }) => cb(req)
+  onSshExecConfirm: (cb: (req: { id: string; host: string; command: string; write?: boolean }) => void) => {
+    const listener = (_e: unknown, req: { id: string; host: string; command: string; write?: boolean }) => cb(req)
     ipcRenderer.on(IPC.SSH_EXEC_CONFIRM, listener)
     return () => ipcRenderer.removeListener(IPC.SSH_EXEC_CONFIRM, listener)
   },
