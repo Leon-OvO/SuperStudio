@@ -4,11 +4,11 @@ import { BRAND } from '@shared/brand'
 import type { GeneratedImageRef } from './extractGeneratedImages'
 import type { GalleryItem, SshConnectionMeta, ContextRef, InstalledSkillInfo } from '../../../../shared/ipc-types'
 import { RichComposer, type RichComposerHandle } from './RichComposer'
-import { SkillQuickBar } from '../../components/SkillQuickBar'
+import { SkillQuickBar, SkillIcon } from '../../components/SkillQuickBar'
 
 /** Max 素材库 results the @-picker requests per query (LIMIT pushed into SQL). */
 const MENTION_GALLERY_LIMIT = 40
-import { Send, Square, Paperclip, X, ImagePlus, FileText, ImageOff, Monitor, Folder, FolderOpen, AtSign, Server, MessageSquare, MessagesSquare, ChevronDown, ChevronRight, Trash2, Sparkles, Wrench } from 'lucide-react'
+import { Send, Square, Paperclip, X, ImagePlus, FileText, ImageOff, Monitor, Folder, FolderOpen, AtSign, Server, MessageSquare, MessagesSquare, ChevronDown, ChevronRight, Trash2 } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { ModelPicker } from './ModelPicker'
 import { ThinkingModePicker, type ThinkingMode } from '../../components/ThinkingModePicker'
@@ -69,6 +69,9 @@ interface Props {
   /** Group chat: members that can be @-mentioned. When provided, typing `@`
    *  opens an employee picker (to direct a turn) instead of the rich picker. */
   mentionEmployees?: Array<{ id: string; name: string; dept: string }>
+  /** Show the inline 技能快捷条 above the editor. Hidden on the new-chat home
+   *  (its cards already surface the same skills — avoids the duplicate row). */
+  showSkillBar?: boolean
 }
 
 /** Imperative handle so the new-chat home screen can drive this composer:
@@ -101,7 +104,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   providerId, model, onModelChange,
   thinkingMode, onThinkingModeChange,
   imageParams, onImageParamsChange,
-  onEditImage, mentionEmployees
+  onEditImage, mentionEmployees, showSkillBar = true
 }: Props, ref) {
   // Group session → `@` mentions employees (to direct a turn) instead of the rich
   // picker (images / 服务器 / 上下文).
@@ -453,8 +456,10 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   return (
     <div className="px-4 pb-4 pt-1 shrink-0">
 
-      {/* 技能快捷条 — 一键填入引子并「装备」技能（含自主学习到的技能 ✨，让用户强感知自学习能力）。 */}
-      <SkillQuickBar scenario="chat" onPick={handlePickSkill} disabled={isRunning} className="mb-2 px-0.5" />
+      {/* 技能快捷条 — 一键填入引子并「装备」技能。新对话首页态隐藏（首页卡片已铺出同一批技能，避免重复一行）。 */}
+      {showSkillBar && (
+        <SkillQuickBar scenario="chat" onPick={handlePickSkill} disabled={isRunning} className="mb-2 px-0.5" />
+      )}
 
       {/* 本轮已「装备」的技能（可移除）——发送时强制加载并使用它们。 */}
       {armedSkills.length > 0 && (
@@ -462,9 +467,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
           <span className="text-[11px] text-muted-foreground select-none">本轮使用：</span>
           {armedSkills.map(s => (
             <span key={s.id} className="inline-flex items-center gap-1 h-6 pl-1.5 pr-1 rounded-md text-xs border border-primary/30 bg-primary/10 text-primary">
-              {s.origin === 'auto'
-                ? <Sparkles size={11} className="shrink-0" />
-                : s.icon ? <span className="text-[11px] leading-none shrink-0">{s.icon}</span> : <Wrench size={11} className="shrink-0" />}
+              <SkillIcon skill={s} size={11} />
               <span className="max-w-[140px] truncate font-medium">{s.name}</span>
               <button type="button" onClick={() => setArmedSkills(prev => prev.filter(x => x.id !== s.id))}
                 title="移除（本轮不再强制使用）" className="opacity-60 hover:opacity-100"><X size={11} /></button>

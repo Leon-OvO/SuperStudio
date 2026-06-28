@@ -607,6 +607,8 @@ export function ChatPage() {
     ? (activeSession!.groupEmployeeIds!.map(id => employees.find(e => e.id === id)).filter(Boolean) as typeof employees)
     : []
   const currentImageParams = activeSessionId ? (imageParamsMap[activeSessionId] || defaultImageRules) : defaultImageRules
+  // 空会话 → 显示新对话首页（卡片引导）；此时底部技能快捷条隐藏，避免与首页技能卡重复。
+  const showHome = currentMessages.length === 0 && !isRunning && !activeIsGroup
 
   return (
     <div className="flex h-full">
@@ -647,7 +649,7 @@ export function ChatPage() {
           onRemoveGroupMember={activeIsGroup ? handleRemoveGroupMember : undefined}
         />
         {/* 空会话（新对话）→ 首页卡片引导；有消息 → 正常消息流。群聊不走首页。 */}
-        {currentMessages.length === 0 && !isRunning && !activeIsGroup ? (
+        {showHome ? (
           <NewChatHome
             onPickSkill={(s) => chatInputRef.current?.pickSkill(s, defaultPrimer(s))}
             onPickText={(t) => chatInputRef.current?.fillText(t)}
@@ -690,6 +692,7 @@ export function ChatPage() {
         <AgentProgress />
         <ChatInput
           ref={chatInputRef}
+          showSkillBar={!showHome}
           onSend={handleSend}
           onStop={handleStop}
           isRunning={isRunning}

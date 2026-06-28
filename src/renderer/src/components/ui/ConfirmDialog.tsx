@@ -14,6 +14,12 @@ import { AlertTriangle } from 'lucide-react'
 interface ConfirmOptions {
   title?: string
   message: string
+  /** Optional verbatim snippet (e.g. a shell command) shown in a dedicated
+   *  monospace, wrapping, scrollable block — far more readable than cramming a
+   *  long command into the prose message. Widens the dialog when present. */
+  code?: string
+  /** Small muted label above the code block (e.g. "将执行的命令"). */
+  codeLabel?: string
   confirmLabel?: string
   cancelLabel?: string
   tone?: 'default' | 'danger'
@@ -52,7 +58,10 @@ export function useConfirmDialog() {
       }}
     >
       <div
-        className="bg-popover border border-border rounded-xl shadow-2xl w-[420px] max-w-full animate-dialog-in"
+        className={
+          'bg-popover border border-border rounded-xl shadow-2xl max-w-full animate-dialog-in ' +
+          (state.code ? 'w-[560px]' : 'w-[420px]')
+        }
         onClick={e => e.stopPropagation()}
       >
         <div className="p-5 flex items-start gap-3">
@@ -63,9 +72,17 @@ export function useConfirmDialog() {
             {state.title && (
               <h3 className="font-semibold text-sm mb-2">{state.title}</h3>
             )}
-            <p className="text-sm text-foreground/85 whitespace-pre-wrap break-words leading-relaxed max-h-[50vh] overflow-y-auto overflow-x-hidden">
+            <p className="text-sm text-foreground/85 whitespace-pre-wrap break-words leading-relaxed max-h-[40vh] overflow-y-auto overflow-x-hidden">
               {state.message}
             </p>
+            {state.code && (
+              <div className="mt-3">
+                {state.codeLabel && (
+                  <div className="text-[11px] text-muted-foreground mb-1">{state.codeLabel}</div>
+                )}
+                <pre className="text-xs font-mono bg-muted/70 border border-border rounded-lg px-3 py-2.5 whitespace-pre-wrap break-all max-h-[34vh] overflow-y-auto leading-relaxed text-foreground/90 select-text">{state.code}</pre>
+              </div>
+            )}
           </div>
         </div>
         <div className="flex justify-end gap-2 p-4 border-t border-border">

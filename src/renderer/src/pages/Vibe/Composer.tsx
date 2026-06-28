@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Send, Square, Paperclip, ImagePlus, X, FileText, ImageOff, MessageSquare, Search, Bug, Wrench, Wand2, Sparkles } from 'lucide-react'
+import { Send, Square, Paperclip, ImagePlus, X, FileText, ImageOff, MessageSquare, Search, Bug, Wrench, Wand2 } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { Select } from '../../components/ui/Select'
 import { ThinkingModePicker, type ThinkingMode } from '../../components/ThinkingModePicker'
-import { SkillQuickBar } from '../../components/SkillQuickBar'
+import { SkillQuickBar, SkillIcon } from '../../components/SkillQuickBar'
 import { toast } from '../../components/ui/Toast'
 import { type ComposerAttachment, getMimeType, toLocalFileUrl, blobToBase64, isImageMime } from '../../lib/attachments'
 import type { VibeIntent, InstalledSkillInfo } from '../../../../shared/ipc-types'
@@ -205,9 +205,7 @@ export function VibeComposer({
           <span className="text-[11px] text-muted-foreground select-none">本轮使用：</span>
           {armedSkills.map(s => (
             <span key={s.id} className="inline-flex items-center gap-1 h-6 pl-1.5 pr-1 rounded-md text-xs border border-primary/30 bg-primary/10 text-primary">
-              {s.origin === 'auto'
-                ? <Sparkles size={11} className="shrink-0" />
-                : s.icon ? <span className="text-[11px] leading-none shrink-0">{s.icon}</span> : <Wrench size={11} className="shrink-0" />}
+              <SkillIcon skill={s} size={11} />
               <span className="max-w-[140px] truncate font-medium">{s.name}</span>
               <button type="button" onClick={() => setArmedSkills(prev => prev.filter(x => x.id !== s.id))}
                 title="移除（本轮不再强制使用）" className="opacity-60 hover:opacity-100"><X size={11} /></button>

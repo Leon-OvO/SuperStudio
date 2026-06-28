@@ -1,5 +1,6 @@
-import { Sparkles, Wrench } from 'lucide-react'
+import { Sparkles } from 'lucide-react'
 import { cn } from '../../lib/utils'
+import { SkillIcon } from '../../components/SkillQuickBar'
 import { useSkills } from '../../hooks/useSkills'
 import type { InstalledSkillInfo } from '../../../../shared/ipc-types'
 
@@ -34,12 +35,13 @@ export function NewChatHome({ onPickSkill, onPickText }: {
 
   return (
     <div className="flex-1 overflow-y-auto">
-      <div className="max-w-2xl mx-auto px-6 py-[7vh] flex flex-col">
-        <h2 className="text-[26px] font-bold text-center tracking-tight">{greeting()}</h2>
-        <p className="text-center text-muted-foreground mt-2 text-sm">直接在下面说需求，或点一张卡片快速开始</p>
+      <div className="min-h-full flex flex-col">
+        <div className="w-full max-w-xl mx-auto px-6 py-10 my-auto">
+        <h2 className="text-[22px] font-bold text-center tracking-tight">{greeting()}</h2>
+        <p className="text-center text-muted-foreground mt-1.5 text-[13px]">直接在下面说需求，或点一张卡片快速开始</p>
 
         {skills.length > 0 && (
-          <div className="mt-9">
+          <div className="mt-7">
             <div className="text-xs font-medium text-muted-foreground mb-3 flex items-center gap-1.5">
               <Sparkles size={13} className="text-primary" /> 我能帮你做的事
             </div>
@@ -56,7 +58,7 @@ export function NewChatHome({ onPickSkill, onPickText }: {
                       'w-8 h-8 rounded-lg flex items-center justify-center shrink-0 text-base',
                       isAuto ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground'
                     )}>
-                      {isAuto ? <Sparkles size={15} /> : s.icon ? s.icon : <Wrench size={15} />}
+                      <SkillIcon skill={s} size={15} />
                     </span>
                     <span className="min-w-0 flex-1">
                       <span className="block text-sm font-medium truncate">{s.name}</span>
@@ -85,6 +87,7 @@ export function NewChatHome({ onPickSkill, onPickText }: {
               </button>
             ))}
           </div>
+        </div>
         </div>
       </div>
     </div>

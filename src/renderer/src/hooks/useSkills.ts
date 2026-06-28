@@ -13,7 +13,7 @@ import type { InstalledSkillInfo, SkillScenario } from '../../../shared/ipc-type
  * itself — making "it's getting smarter" visible right where the user works.
  */
 
-const MANUAL_CAP = 4
+const MANUAL_CAP = 3
 const AUTO_CAP = 2
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000
 

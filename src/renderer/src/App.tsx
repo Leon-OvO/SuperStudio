@@ -78,9 +78,11 @@ export default function App() {
       sshConfirmQueue.current = sshConfirmQueue.current.then(async () => {
         const ok = await cuConfirm.confirm({
           title: '允许 Agent 在远程服务器执行命令？',
-          message: `主机：${req.host}\n命令：${req.command}\n\n` + (req.write
+          message: `主机：${req.host}\n\n` + (req.write
             ? '⚠️ 这是会修改/删除的写操作，将在远程服务器真实执行。只读命令已自动放行，写操作需逐次确认。'
             : '将在远程服务器真实执行，仅在你信任该任务时允许。批准后本次运行内该连接的后续命令自动放行。'),
+          code: req.command,
+          codeLabel: '将在远程执行的命令',
           tone: 'danger',
           confirmLabel: '允许执行',
           cancelLabel: '取消',
@@ -97,7 +99,9 @@ export default function App() {
     const off = window.api.onLocalScriptConfirm?.(async (req) => {
       const ok = await cuConfirm.confirm({
         title: '允许 AI 在本机执行脚本 / 命令？',
-        message: `命令：${req.command}\n目录：${req.cwd}\n\n这会在你的电脑上真实执行，仅在你信任该任务时允许。`,
+        message: `目录：${req.cwd}\n\n这会在你的电脑上真实执行，仅在你信任该任务时允许。`,
+        code: req.command,
+        codeLabel: '将在本机执行的命令',
         tone: 'danger',
         confirmLabel: '允许执行',
         cancelLabel: '取消',

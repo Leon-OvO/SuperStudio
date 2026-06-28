@@ -27,30 +27,46 @@ interface Props {
   className?: string
 }
 
+/** 技能图标可能是 emoji，也可能是技能仓库的远程 URL —— URL 必须按 <img> 渲染，
+ *  否则整条 URL 会被当文字铺出来撑爆芯片/弹层（截图里的排版 bug）。 */
+export function isUrlIcon(icon?: string): boolean {
+  return !!icon && /^(https?:)?\/\//i.test(icon.trim())
+}
+
+export function SkillIcon({ skill, size = 12, className }: { skill: InstalledSkillInfo; size?: number; className?: string }) {
+  if (skill.origin === 'auto') return <Sparkles size={size} className={cn('text-primary shrink-0', className)} />
+  if (isUrlIcon(skill.icon)) {
+    return (
+      <img
+        src={skill.icon}
+        alt=""
+        className={cn('rounded object-cover shrink-0', className)}
+        style={{ width: size + 3, height: size + 3 }}
+        onError={e => { (e.currentTarget as HTMLImageElement).style.display = 'none' }}
+      />
+    )
+  }
+  if (skill.icon) return <span className={cn('leading-none shrink-0', className)} style={{ fontSize: size + 1 }}>{skill.icon}</span>
+  return <Wrench size={size} className={cn('text-muted-foreground shrink-0', className)} />
+}
+
 export function SkillQuickBar({ scenario, onPick, disabled, className }: Props) {
-  const { manual, auto, overflow, newlyLearnedIds, learnedSkills, weeklyAutoCount } = useSkills(scenario)
-  if (!manual.length && !auto.length && !overflow.length) return null
+  const { manual, overflow, newlyLearnedIds, learnedSkills, weeklyAutoCount } = useSkills(scenario)
+  if (!manual.length && !overflow.length && !learnedSkills.length) return null
 
   return (
-    <div className={cn('flex items-center gap-1.5 flex-wrap', className)}>
+    // 单行不换行：超出横向滚动（隐藏滚动条），避免换行成两行挤占输入框上方空间。
+    <div className={cn('flex items-center gap-1.5 flex-nowrap overflow-x-auto [&::-webkit-scrollbar]:hidden', className)}>
       {/* 你导入的技能（顺序固定，不乱跳） */}
       {manual.map(s => (
         <SkillChip key={s.id} skill={s} newly={false} disabled={disabled} onPick={onPick} />
       ))}
       {overflow.length > 0 && <MoreMenu skills={overflow} disabled={disabled} onPick={onPick} />}
 
-      {/* ✨ 软件自己学会的 —— 浅底容器圈成一区，和左边「你导入的」一眼分开 */}
-      {auto.length > 0 && (
-        <div className="inline-flex items-center gap-1.5 rounded-lg border border-primary/15 bg-primary/[0.06] py-0.5 pl-2 pr-1">
-          <span className="inline-flex items-center gap-0.5 text-[10px] font-medium text-primary/80 select-none shrink-0"
-            title="软件从你的对话里自动学会的技能">
-            <Sparkles size={11} /> 我学会的
-          </span>
-          {auto.map(s => (
-            <SkillChip key={s.id} skill={s} newly={newlyLearnedIds.has(s.id)} disabled={disabled} onPick={onPick} />
-          ))}
-          <LearnedRecap learned={learnedSkills} weekly={weeklyAutoCount} disabled={disabled} onPick={onPick} />
-        </div>
+      {/* ✨ 软件自己学会的 —— 收成一个紧凑药丸：点开看全部自学技能并直接用。
+          （之前内联铺开会被长技能名撑爆整条；药丸里名字在菜单中截断。） */}
+      {learnedSkills.length > 0 && (
+        <LearnedRecap learned={learnedSkills} weekly={weeklyAutoCount} newlyLearnedIds={newlyLearnedIds} disabled={disabled} onPick={onPick} />
       )}
     </div>
   )
@@ -58,7 +74,7 @@ export function SkillQuickBar({ scenario, onPick, disabled, className }: Props) 
 
 function chipClasses(opts: { isAuto: boolean; newly: boolean; dimmed: boolean; disabled?: boolean }): string {
   return cn(
-    'inline-flex items-center gap-1 h-7 px-2 rounded-md text-xs border transition-colors max-w-[180px]',
+    'shrink-0 inline-flex items-center gap-1 h-7 px-2 rounded-md text-xs border transition-colors max-w-[180px]',
     opts.isAuto
       ? 'border-primary/30 bg-card hover:bg-primary/10 text-foreground' // 站在浅底容器上要够清楚
       : 'border-border/60 bg-card hover:bg-muted/60 text-foreground/90',
@@ -74,11 +90,7 @@ function ChipFace({ skill, newly }: { skill: InstalledSkillInfo; newly: boolean 
   const multi = !isAuto && (skill.starterPrompts?.length ?? 0) > 1
   return (
     <>
-      {isAuto
-        ? <Sparkles size={11} className="text-primary shrink-0" />
-        : skill.icon
-          ? <span className="shrink-0 text-[12px] leading-none">{skill.icon}</span>
-          : <Wrench size={11} className="text-muted-foreground shrink-0" />}
+      <SkillIcon skill={skill} size={11} />
       <span className="truncate">{skill.name}</span>
       {isAuto && <span className="shrink-0 text-[9px] leading-none px-1 py-0.5 rounded bg-primary/15 text-primary">自学</span>}
       {newly && <span className="shrink-0 text-[9px] leading-none px-1 py-0.5 rounded bg-primary text-primary-foreground">刚学会</span>}
@@ -133,11 +145,7 @@ function MoreMenu({ skills, disabled, onPick }: {
   const options = ordered.map(s => ({
     value: s.id,
     label: s.name,
-    icon: s.origin === 'auto'
-      ? <Sparkles size={12} className="text-primary" />
-      : s.icon
-        ? <span className="text-[12px] leading-none">{s.icon}</span>
-        : <Wrench size={12} />,
+    icon: <SkillIcon skill={s} size={12} />,
     hint: s.origin === 'auto' ? '自学' : undefined,
     groupLabel: s.origin === 'auto' ? '✨ 软件自己学会的' : '你导入的技能'
   }))
@@ -152,7 +160,7 @@ function MoreMenu({ skills, disabled, onPick }: {
       searchable={skills.length > 8}
       searchPlaceholder="搜索技能…"
       trigger={({ open }) => (
-        <span className="inline-flex items-center gap-1 h-7 px-2 rounded-md text-xs border border-border/60 bg-card hover:bg-muted/60 text-muted-foreground">
+        <span className="shrink-0 inline-flex items-center gap-1 h-7 px-2 rounded-md text-xs border border-border/60 bg-card hover:bg-muted/60 text-muted-foreground">
           更多 <ChevronDown size={10} className={cn('transition-transform', open && 'rotate-180')} />
         </span>
       )}
@@ -171,18 +179,20 @@ function recapHint(s: InstalledSkillInfo): string {
 
 /** Clickable 「回看」pill: list everything the app auto-learned (recent-first);
  *  pick a row to use it. Makes accumulating intelligence tangible & actionable. */
-function LearnedRecap({ learned, weekly, disabled, onPick }: {
+function LearnedRecap({ learned, weekly, newlyLearnedIds, disabled, onPick }: {
   learned: InstalledSkillInfo[]
   weekly: number
+  newlyLearnedIds: Set<string>
   disabled?: boolean
   onPick: Props['onPick']
 }) {
-  // 容器已带「✨ 我学会的」前缀，这里只用计数标识 freshness/总量，避免重复。
-  const label = weekly > 0 ? `本周 +${weekly}` : `全部 ${learned.length}`
+  const hasNew = learned.some(s => newlyLearnedIds.has(s.id))
+  // 紧凑药丸：刚学会用「本周新学会 N」凸显成长，否则「我学会的 N」。
+  const label = weekly > 0 ? `本周新学会 ${weekly}` : `我学会的 ${learned.length}`
   const options = learned.map(s => ({
     value: s.id,
     label: s.name,
-    icon: <Sparkles size={12} className="text-primary" />,
+    icon: <SkillIcon skill={s} size={12} />,
     hint: recapHint(s),
     groupLabel: '✨ 软件帮你学会的技能（点一条就用）'
   }))
@@ -193,17 +203,18 @@ function LearnedRecap({ learned, weekly, disabled, onPick }: {
       options={options}
       disabled={disabled}
       placement="top"
-      popoverWidth={280}
+      popoverWidth={300}
       searchable={learned.length > 10}
       searchPlaceholder="搜索学会的技能…"
-      title="点开回看软件帮你学会的技能（学会时间·用量），点一条直接用"
+      title="软件从你的对话里自动学会的技能 — 点开回看（学会时间·用量），点一条直接用"
       trigger={({ open }) => (
         <span className={cn(
-          'inline-flex items-center gap-1 h-6 px-1.5 rounded text-[11px] text-primary/90 transition-colors hover:bg-primary/10',
+          'shrink-0 inline-flex items-center gap-1 h-7 px-2 rounded-md text-[11.5px] border border-primary/30 bg-primary/5 text-primary transition-colors hover:bg-primary/10',
+          hasNew && 'ring-1 ring-primary/50 animate-skill-pop motion-reduce:animate-none',
           open && 'bg-primary/10'
         )}>
-          {label}
-          <ChevronDown size={10} className={cn('transition-transform', open && 'rotate-180')} />
+          <Sparkles size={11} className="shrink-0" /> {label}
+          <ChevronDown size={10} className={cn('shrink-0 transition-transform', open && 'rotate-180')} />
         </span>
       )}
     />
