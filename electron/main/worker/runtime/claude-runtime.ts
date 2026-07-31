@@ -61,6 +61,10 @@ export function buildClaudeEnv(baseUrl: string | undefined, apiKey: string): Nod
   return env
 }
 
+/** MCP 工具超时上限：出图/视频动辄几分钟（实测一次出图 178s），远超 CLI 默认值。
+ *  与 opencode 适配器的 mcp.timeout 取同一数值，避免两端行为漂移。 */
+const MCP_TIMEOUT_MS = 300_000
+
 /** 一条 stream-json 行解析出的归一事件（多个 content block → 多个事件）。纯函数，便于单测。 */
 export interface ClaudeMappedEvent {
   kind: 'delta' | 'thinking' | 'tool' | 'session' | 'retry' | 'mcp' | 'result' | 'control' | 'ignore'
@@ -225,6 +229,12 @@ export class ClaudeRuntime implements AgentRuntime {
               : {}),
             ANTHROPIC_API_KEY: upstream.apiKey,
             ANTHROPIC_AUTH_TOKEN: '', // 压掉用户 settings 里的 bearer，避免与 x-api-key 打架
+            // 生图这类工具远超 claude 的 MCP 默认超时（实测一次出图 178s，逼近 generateImage
+            // 自身 180s 上限）。不放宽的话 claude 会在工具还没返回时判超时、甚至重发一次，
+            // 白烧一次三分钟的出图。数值与 opencode 侧的 mcp.timeout 保持一致。
+            // 必须写在 settings 层：进程 env 会被用户 ~/.claude/settings.json 的 env 块盖掉。
+            MCP_TOOL_TIMEOUT: String(MCP_TIMEOUT_MS),
+            MCP_TIMEOUT: String(MCP_TIMEOUT_MS),
           },
         }),
         'utf8'

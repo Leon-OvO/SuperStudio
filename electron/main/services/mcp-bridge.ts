@@ -142,12 +142,15 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     sessionIdGenerator: undefined,
     enableJsonResponse: true,
   })
-  res.once('close', () => {
+  // 拆卸只在 handleRequest 落定之后做。生图这类工具会把响应挂住好几分钟（实测一次出图 178s），
+  // 若在 res 'close' 上立刻 close 掉 transport，客户端中途断线就会在处理中途拆掉底座。
+  try {
+    await mcp.connect(transport)
+    await transport.handleRequest(req, res, body)
+  } finally {
     void transport.close().catch(() => {})
     void mcp.close().catch(() => {})
-  })
-  await mcp.connect(transport)
-  await transport.handleRequest(req, res, body)
+  }
 }
 
 /** 惰性启动（首个运行时 run 之前调用），返回 MCP 端点 URL。重复调用返回同一个。 */
@@ -161,6 +164,13 @@ export async function ensureBridgeStarted(): Promise<string> {
       else res.end()
     })
   })
+  // 长工具调用必须能把请求挂住：出图实测 178s，而 Node 默认 requestTimeout 只有 300s、
+  // headersTimeout 60s——一旦被掐断，用户等了几分钟只换来一个静默失败。这里全部放开，
+  // 真正的时长上限交给工具自身（generateImage 有 180s 上限）与 CLI 侧的 MCP 超时。
+  srv.requestTimeout = 0
+  srv.headersTimeout = 0
+  srv.timeout = 0
+  srv.keepAliveTimeout = 65_000
   srv.on('connection', (s) => {
     sockets.add(s)
     s.once('close', () => sockets.delete(s))

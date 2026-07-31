@@ -179,6 +179,10 @@ describe('ClaudeRuntime.run', () => {
     expect(cfg.env.ANTHROPIC_BASE_URL).toBe('https://api.supercode.help') // /vN 已剥
     expect(cfg.env.ANTHROPIC_API_KEY).toBe('sk-real')
     expect(cfg.env.ANTHROPIC_AUTH_TOKEN).toBe('') // 压掉用户 settings 里的 bearer
+    // 生图实测 178s，远超 claude 的 MCP 默认超时；不放宽会在工具未返回时判超时甚至重发，
+    // 白烧一次几分钟的出图。同样必须写在 settings 层，否则被用户 settings.json 盖掉。
+    expect(Number(cfg.env.MCP_TOOL_TIMEOUT)).toBeGreaterThanOrEqual(300_000)
+    expect(Number(cfg.env.MCP_TIMEOUT)).toBeGreaterThanOrEqual(300_000)
 
     child.emit('close', 0)
     await p
