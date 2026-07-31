@@ -19,15 +19,16 @@ class FakeStream extends EventEmitter {
 function makeChild(): {
   stdout: FakeStream
   stderr: FakeStream
-  stdin: { write: ReturnType<typeof vi.fn>; on: ReturnType<typeof vi.fn> }
+  stdin: { write: ReturnType<typeof vi.fn>; on: ReturnType<typeof vi.fn>; end: ReturnType<typeof vi.fn> }
   kill: ReturnType<typeof vi.fn>
   emit: EventEmitter['emit']
 } {
   const child = new EventEmitter() as EventEmitter & Record<string, unknown>
   child.stdout = new FakeStream()
   child.stderr = new FakeStream()
-  // 生产代码给 stdin 挂 error 吞噬监听(14d30e8);mock 需支持 .on。claude 保持 stdin 开、不 end()。
-  child.stdin = { write: vi.fn(), on: vi.fn() }
+  // 生产代码给 stdin 挂 error 吞噬监听(14d30e8);mock 需支持 .on。
+  // claude turn 进行中保持 stdin 开(回写 control_response)，收到 result 才 end() 投 EOF 收工。
+  child.stdin = { write: vi.fn(), on: vi.fn(), end: vi.fn() }
   child.kill = vi.fn()
   return child as never
 }
@@ -164,6 +165,22 @@ describe('ClaudeRuntime.run', () => {
     expect(sent.some((s) => s[0] === IPC.AGENT_DONE)).toBe(false)
   })
 
+  it('收到 result 后必须投 stdin EOF —— 否则 claude 会一直等下一条输入，进程不退、界面永远转圈', async () => {
+    const child = makeChild()
+    mSpawn.mockReturnValue(child as never)
+    const p = new ClaudeRuntime().run(task as never, { send: () => {} } as never)
+
+    // 实测行为：--input-format stream-json 下 claude 把 stdin 当消息流，result 已发出仍继续等，
+    // 不投 EOF 就永不退出 → close 不触发 → run() 永久挂起。
+    expect(child.stdin.end).not.toHaveBeenCalled() // turn 进行中不能关(要回写 control_response)
+    child.stdout.emit('data', JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'hi' }] } }) + '\n')
+    child.stdout.emit('data', JSON.stringify({ type: 'result', is_error: false, result: 'hi' }) + '\n')
+    expect(child.stdin.end).toHaveBeenCalled() // result = 终帧 → 收工
+
+    child.emit('close', 0)
+    expect(await p).toMatchObject({ text: 'hi' })
+  })
+
   it('注入 MCP 桥：--mcp-config 走临时文件(Windows shell 会啃坏内联 JSON)，schema 是 type:"http"，用完即删', async () => {
     const child = makeChild()
     mSpawn.mockReturnValue(child as never)
@@ -175,9 +192,13 @@ describe('ClaudeRuntime.run', () => {
     const args = mSpawn.mock.calls[0]![1] as string[]
     const i = args.indexOf('--mcp-config')
     expect(i).toBeGreaterThan(-1)
-    const cfgPath = args[i + 1]
-    // 传的是路径而非内联 JSON——否则 Windows 上 shell:true 会把引号啃坏
-    expect(cfgPath.startsWith('{')).toBe(false)
+    const raw = args[i + 1]
+    // 传的是路径而非内联 JSON——否则 Windows 上 shell:true 会把 JSON 的引号啃坏
+    expect(raw.startsWith('{')).toBe(false)
+    // Windows 走 shell:true，Node 对参数只拼接不转义(DEP0190)：路径必须自带引号，
+    // 否则 TEMP 一含空格就被劈成两个参数(实测 claude 会报 config file not found)。
+    if (process.platform === 'win32') expect(raw.startsWith('"') && raw.endsWith('"')).toBe(true)
+    const cfgPath = raw.replace(/^"|"$/g, '')
 
     const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8')) as {
       mcpServers: { superstudio: { type: string; url: string; headers: Record<string, string> } }

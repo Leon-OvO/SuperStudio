@@ -164,7 +164,10 @@ export class ClaudeRuntime implements AgentRuntime {
           }),
           'utf8'
         )
-        args.push('--mcp-config', mcpConfigPath)
+        // Windows 上本适配器 shell:true，而 Node 对 shell 模式的参数**只拼接不转义**（见 DEP0190）：
+        // 临时目录一旦含空格（"C:\Users\Foo Bar\..."）路径就会被拆成两个参数 → claude 起不来。
+        // 自己加引号，cmd.exe 解析时会剥掉。
+        args.push('--mcp-config', isWin ? `"${mcpConfigPath}"` : mcpConfigPath)
       } catch (e) {
         // 写不出配置不该让整轮对话失败——降级成没有独有工具的纯 CLI 会话。
         console.warn('[claude-runtime] MCP 配置写入失败，本轮无生图/技能：', (e as Error).message)
@@ -210,6 +213,23 @@ export class ClaudeRuntime implements AgentRuntime {
       else signal.addEventListener('abort', onAbort, { once: true })
     }
 
+    // 本轮收工：投 EOF 让 claude 自己退出。
+    //
+    // 关键(实测)：`--input-format stream-json` 下 claude 把 stdin 当消息流，**即使本轮 result 已发出
+    // 也会继续等下一条消息**——不投 EOF 就永不退出 → close 不触发 → run() 永久挂起 → 界面一直转圈。
+    // (对照实验：stdin 保持打开时它在 result 后又活了 25s，直到 EOF 才立刻退出。)
+    // 不能一开始就 end()：turn 进行中要靠 stdin 回写 control_response 放行工具。
+    // 看门狗兜底：EOF 后仍不退(卡在清理/子进程持管道)就杀进程树，绝不留僵尸吊死执行槽。
+    let finished = false
+    let exitWatchdog: ReturnType<typeof setTimeout> | null = null
+    const finishTurn = (): void => {
+      if (finished) return
+      finished = true
+      try { child.stdin.end() } catch { /* 进程已退，close 会兜底 */ }
+      exitWatchdog = setTimeout(() => killProcessTree(child), 5000)
+      exitWatchdog.unref?.()
+    }
+
     const applyLine = (line: string): void => {
       for (const ev of mapClaudeLine(line)) {
         switch (ev.kind) {
@@ -231,6 +251,7 @@ export class ClaudeRuntime implements AgentRuntime {
             break
           case 'result':
             if (ev.isError) resultErr = ev.text || '运行时返回错误'
+            finishTurn() // result = 本轮终帧，投 EOF 收工（否则 claude 会一直等下一条输入）
             break
           case 'control':
             // 无人值守自动放行：回写 control_response（best-effort，具体协议以真机验证为准）。
@@ -276,6 +297,7 @@ export class ClaudeRuntime implements AgentRuntime {
         resolve()
       })
       child.on('close', (code: number | null) => {
+        if (exitWatchdog) { clearTimeout(exitWatchdog); exitWatchdog = null } // 已干净退出，别再杀
         if (buf.trim()) applyLine(buf) // 冲刷残留
         if (!resultErr && stderrTail.trim() && !full) resultErr = stderrTail.trim().slice(-500)
         // 非 0 退出且无正文无错：视为异常退出，不误报空的成功。
