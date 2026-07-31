@@ -63,12 +63,18 @@ export function buildClaudeEnv(baseUrl: string | undefined, apiKey: string): Nod
 
 /** 一条 stream-json 行解析出的归一事件（多个 content block → 多个事件）。纯函数，便于单测。 */
 export interface ClaudeMappedEvent {
-  kind: 'delta' | 'thinking' | 'tool' | 'session' | 'result' | 'control' | 'ignore'
+  kind: 'delta' | 'thinking' | 'tool' | 'session' | 'retry' | 'mcp' | 'result' | 'control' | 'ignore'
   text?: string
   toolName?: string
   sessionId?: string
   isError?: boolean
   controlRequestId?: string
+  /** retry：第几次重试 / 上限 / 上游状态码——必须让用户看见，否则退避期像死机。 */
+  attempt?: number
+  maxRetries?: number
+  errorStatus?: number
+  /** mcp：init 行里连接失败的 MCP server 名（桥挂了却静默＝「有桥没工具」那类坑）。 */
+  failedMcpServers?: string[]
 }
 
 interface ClaudeContentBlock {
@@ -78,10 +84,16 @@ interface ClaudeContentBlock {
 }
 interface ClaudeSDKMessage {
   type?: string
+  subtype?: string
   session_id?: string
   is_error?: boolean
   result?: string
   request_id?: string
+  attempt?: number
+  max_retries?: number
+  error_status?: number
+  error?: string
+  mcp_servers?: Array<{ name?: string; status?: string }>
   message?: { content?: ClaudeContentBlock[] }
 }
 
@@ -109,8 +121,27 @@ export function mapClaudeLine(line: string): ClaudeMappedEvent[] {
       }
       return out
     }
-    case 'system':
-      return obj.session_id ? [{ kind: 'session', sessionId: obj.session_id }] : []
+    case 'system': {
+      // 别再把所有 system 行压成一个被忽略的 session 事件 —— 上游 401/5xx 时 claude 不退出，
+      // 而是走 10 次指数退避重试，期间**只**发 system/api_retry(实测间隔可达 37s)。全吞掉的话
+      // 界面就永远停在「启动运行时…」，看着像死机，实际是在静默重试(用户实测 40s+ 正是此)。
+      if (obj.subtype === 'api_retry') {
+        return [{
+          kind: 'retry',
+          attempt: obj.attempt,
+          maxRetries: obj.max_retries,
+          errorStatus: obj.error_status,
+          text: obj.error,
+        }]
+      }
+      const out: ClaudeMappedEvent[] = []
+      // init 行带 MCP 连接结果：桥挂了要说出来，否则就是「有桥却没有生图/技能」的静默失能。
+      const failed = (obj.mcp_servers ?? []).filter(s => s.status && s.status !== 'connected')
+        .map(s => s.name || '?')
+      if (failed.length) out.push({ kind: 'mcp', failedMcpServers: failed })
+      if (obj.session_id) out.push({ kind: 'session', sessionId: obj.session_id })
+      return out
+    }
     case 'result':
       return [{ kind: 'result', isError: !!obj.is_error, text: obj.result, sessionId: obj.session_id }]
     case 'control_request':
@@ -175,6 +206,35 @@ export class ClaudeRuntime implements AgentRuntime {
       }
     }
 
+    // 用 settings 层钉死模型出口 —— **只靠 env 注入是不够的**（实测）。
+    // claude 会把 `~/.claude/settings.json` 的 `env` 块**盖在**继承的进程 env 之上：用户那份
+    // settings 里若写了自己的 ANTHROPIC_BASE_URL/AUTH_TOKEN，我们注入的 baseUrl 会被整个丢弃，
+    // 而 apiKey 仍以 x-api-key 发出 → 端点与凭据错配 → 401 → claude 进 10 次退避重试而不退出。
+    // A/B 实证：仅改 CLAUDE_CONFIG_DIR，真实配置目录下我们注入的端点收到 0 个请求；干净目录下正常命中。
+    // `--settings` 是附加且最高优先级，用户自己的 hooks/权限/MCP 等其余设置照常生效（比
+    // `--setting-sources` 或换 CLAUDE_CONFIG_DIR 更克制，那两者会把用户整层设置一并丢掉）。
+    let settingsPath: string | null = null
+    try {
+      settingsPath = path.join(os.tmpdir(), `ss-claude-settings-${randomUUID()}.json`)
+      fs.writeFileSync(
+        settingsPath,
+        JSON.stringify({
+          env: {
+            ...(upstream.baseUrl
+              ? { ANTHROPIC_BASE_URL: upstream.baseUrl.replace(/\/+$/, '').replace(/\/v\d+$/, '') }
+              : {}),
+            ANTHROPIC_API_KEY: upstream.apiKey,
+            ANTHROPIC_AUTH_TOKEN: '', // 压掉用户 settings 里的 bearer，避免与 x-api-key 打架
+          },
+        }),
+        'utf8'
+      )
+      args.push('--settings', isWin ? `"${settingsPath}"` : settingsPath) // 引号理由同 --mcp-config
+    } catch (e) {
+      console.warn('[claude-runtime] settings 写入失败，回退纯 env 注入：', (e as Error).message)
+      settingsPath = null
+    }
+
     phase('connecting', '启动运行时…')
     const child = spawn('claude', args, {
       cwd,
@@ -220,6 +280,9 @@ export class ClaudeRuntime implements AgentRuntime {
     // (对照实验：stdin 保持打开时它在 result 后又活了 25s，直到 EOF 才立刻退出。)
     // 不能一开始就 end()：turn 进行中要靠 stdin 回写 control_response 放行工具。
     // 看门狗兜底：EOF 后仍不退(卡在清理/子进程持管道)就杀进程树，绝不留僵尸吊死执行槽。
+    let lastRetry: string | null = null // 最后一次重试的上游错误，重试耗尽时用它报真因
+    let retryCount = 0
+    let mcpFailed: string[] = []
     let finished = false
     let exitWatchdog: ReturnType<typeof setTimeout> | null = null
     const finishTurn = (): void => {
@@ -248,6 +311,21 @@ export class ClaudeRuntime implements AgentRuntime {
             break
           case 'tool':
             phase('tool', `执行 ${ev.toolName ?? '工具'}…`, ev.toolName)
+            break
+          case 'retry': {
+            // 让退避期可见：否则用户面对的是几十秒无任何反馈的「假死」。
+            const n = ev.attempt ?? 0
+            const max = ev.maxRetries ?? 0
+            const code = ev.errorStatus ? `${ev.errorStatus} ` : ''
+            lastRetry = `${code}${ev.text || '上游错误'}`.trim()
+            retryCount = n || retryCount + 1
+            phase('connecting', `上游${code}错误，正在重试（第 ${n}/${max} 次）…`)
+            break
+          }
+          case 'mcp':
+            // 桥没连上就明说，别让「没有生图工具」以「模型不肯画」的样子呈现。
+            console.warn(`[claude-runtime] MCP 未连接: ${ev.failedMcpServers?.join(', ')}`)
+            mcpFailed = ev.failedMcpServers ?? []
             break
           case 'result':
             if (ev.isError) resultErr = ev.text || '运行时返回错误'
@@ -300,17 +378,25 @@ export class ClaudeRuntime implements AgentRuntime {
         if (exitWatchdog) { clearTimeout(exitWatchdog); exitWatchdog = null } // 已干净退出，别再杀
         if (buf.trim()) applyLine(buf) // 冲刷残留
         if (!resultErr && stderrTail.trim() && !full) resultErr = stderrTail.trim().slice(-500)
+        // 重试打光后如实报真因，别把上游 401/5xx 说成「异常退出（code N）」。
+        if (!resultErr && !full && lastRetry) {
+          resultErr = `上游请求失败（已重试 ${retryCount} 次仍未成功）：${lastRetry}`
+        }
         // 非 0 退出且无正文无错：视为异常退出，不误报空的成功。
         if (!resultErr && !full && code != null && code !== 0) resultErr = `运行时异常退出（code ${code}）`
+        // 桥没连上时补一句：否则「不会生图/技能」会被误当成模型不听话。
+        if (resultErr && mcpFailed.length) {
+          resultErr += `（另：本机工具服务未连接：${mcpFailed.join(', ')}，本轮无生图/技能）`
+        }
         resolve()
       })
     })
 
     if (signal) signal.removeEventListener('abort', onAbort)
 
-    // 配置文件里有本次 run 的 token，用完立刻删（token 本身也已随 run 结束失效）。
-    if (mcpConfigPath) {
-      try { fs.unlinkSync(mcpConfigPath) } catch { /* 已不在/占用中，无妨 */ }
+    // 两个临时文件都含凭据（MCP 的 run token / 上游 apiKey），用完立刻删。
+    for (const p of [mcpConfigPath, settingsPath]) {
+      if (p) { try { fs.unlinkSync(p) } catch { /* 已不在/占用中，无妨 */ } }
     }
 
     // 用户取消:onAbort→killProcessTree 强杀→Windows taskkill /F 令非0退出(code=1、signal=null),POSIX SIGTERM→code=null。

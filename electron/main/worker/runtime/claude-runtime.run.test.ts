@@ -165,6 +165,50 @@ describe('ClaudeRuntime.run', () => {
     expect(sent.some((s) => s[0] === IPC.AGENT_DONE)).toBe(false)
   })
 
+  it('用 --settings 钉死模型出口 —— 只靠 env 注入会被用户 ~/.claude/settings.json 的 env 块盖掉', async () => {
+    const child = makeChild()
+    mSpawn.mockReturnValue(child as never)
+    const p = new ClaudeRuntime().run(task as never, { send: () => {} } as never)
+
+    const args = mSpawn.mock.calls[0]![1] as string[]
+    const i = args.indexOf('--settings')
+    expect(i).toBeGreaterThan(-1)
+    const cfgPath = args[i + 1].replace(/^"|"$/g, '')
+    const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8')) as { env: Record<string, string> }
+    // settings 层优先级最高，端点/凭据必须写在这里才真正生效（实测：仅 env 注入时端点收到 0 请求）
+    expect(cfg.env.ANTHROPIC_BASE_URL).toBe('https://api.supercode.help') // /vN 已剥
+    expect(cfg.env.ANTHROPIC_API_KEY).toBe('sk-real')
+    expect(cfg.env.ANTHROPIC_AUTH_TOKEN).toBe('') // 压掉用户 settings 里的 bearer
+
+    child.emit('close', 0)
+    await p
+    expect(fs.existsSync(cfgPath)).toBe(false) // 含凭据，用完即删
+  })
+
+  it('上游重试必须可见，且重试打光后如实报真因（而非静默或「异常退出」）', async () => {
+    const child = makeChild()
+    mSpawn.mockReturnValue(child as never)
+    const sent: Array<[string, Record<string, unknown>]> = []
+    const sink = { send: (c: string, p: unknown) => sent.push([c, p as Record<string, unknown>]) }
+    const p = new ClaudeRuntime().run(task as never, sink as never)
+
+    child.stdout.emit('data', JSON.stringify({
+      type: 'system', subtype: 'api_retry', attempt: 2, max_retries: 10,
+      error_status: 401, error: 'authentication_failed',
+    }) + '\n')
+
+    // 退避期必须有反馈，否则几十秒无声＝用户眼里的死机
+    const retryPhase = sent.filter(s => s[0] === IPC.AGENT_PHASE).pop()
+    expect(String(retryPhase?.[1].label)).toContain('重试')
+    expect(String(retryPhase?.[1].label)).toContain('401')
+
+    child.emit('close', 1)
+    await p
+    const err = String(sent.find(s => s[0] === IPC.AGENT_ERROR)?.[1].error ?? '')
+    expect(err).toContain('authentication_failed') // 报真因
+    expect(err).not.toContain('code 1')            // 不再糊弄成「异常退出」
+  })
+
   it('收到 result 后必须投 stdin EOF —— 否则 claude 会一直等下一条输入，进程不退、界面永远转圈', async () => {
     const child = makeChild()
     mSpawn.mockReturnValue(child as never)
