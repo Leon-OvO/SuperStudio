@@ -17,7 +17,7 @@ import { AgentProgress } from './AgentProgress'
 import { ChatHeader, computeImageSize, DEFAULT_IMAGE_PARAMS } from './ChatHeader'
 import type { ImageParams } from './ChatHeader'
 import { extractGeneratedImages } from './extractGeneratedImages'
-import type { AgentProgressEvent, AgentPhaseEvent, Message, ContextRef, SessionRuntime } from '../../../../shared/ipc-types'
+import type { AgentProgressEvent, AgentPhaseEvent, Message, ContextRef, SessionRuntime, RuntimeKind } from '../../../../shared/ipc-types'
 
 /** Per-turn @-mentioned references sent alongside text + attachments. */
 interface MentionPayload { sshDefaultConnIds?: string[]; contextRefs?: ContextRef[]; forceSkillIds?: string[] }
@@ -150,12 +150,14 @@ export function ChatPage() {
       if (d?.sessionId && d?.messageId) appendStreamDelta(d.sessionId, d.messageId, d.delta, d.speakerEmployeeId)
     })
     const u2 = window.api.onAgentDone((data: unknown) => {
-      const d = data as { sessionId: string; content: string; messageId: string; toolCallLog?: Array<{ toolName: string; args: unknown; result: unknown }>; cancelled?: boolean; sessionTitle?: string; meta?: { model?: string; providerId?: string; providerName?: string; durationMs?: number; phases?: Array<{ phase: string; ms: number }> }; more?: boolean; speakerEmployeeId?: string }
+      const d = data as { sessionId: string; content: string; messageId: string; toolCallLog?: Array<{ toolName: string; args: unknown; result: unknown }>; cancelled?: boolean; sessionTitle?: string; meta?: { model?: string; providerId?: string; providerName?: string; durationMs?: number; runtime?: RuntimeKind; phases?: Array<{ phase: string; ms: number }> }; more?: boolean; speakerEmployeeId?: string }
       // Group chat fires one DONE per speaker; only the final speaker (more===false)
       // clears the running state, so the spinner stays up through the whole round.
       if (!d.more) stopRun(d.sessionId)
       if (d.sessionTitle) updateSessionTitle(d.sessionId, d.sessionTitle)
-      if (d.content) {
+      // 有正文**或**有工具产物就出气泡：纯出图轮模型可能一个字都不说，只按正文判会把
+      // 整条(连同已生成的图)丢掉——用户实测「画只猫」图已落盘却什么都没显示，就是这里。
+      if (d.content || d.toolCallLog?.length) {
         const autoRoute = pendingAutoRouteRef.current[d.sessionId]
         delete pendingAutoRouteRef.current[d.sessionId]
         // upsert (not add): replaces the streamed placeholder of the same id, or
