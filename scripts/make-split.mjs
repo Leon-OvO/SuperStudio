@@ -51,6 +51,10 @@ const NEVER_SHIP = [
   'mobile-backend/', // mobile BFF (references supercode) — must NOT ship to the DWork core
   'mobile-admin/',   // separate admin-console workstream (imports pages/Login + pages/Dashboard) — not part of the DWork desktop deliverable
   '.github/', // GitHub Actions CI — belongs to the SuperStudio build, useless on the DWork (Gogs) repo
+  'mobile-rn/',      // React-Native mobile workstream — android package is com.tokeng.superstudio (brand in the PATH)
+  '.claude/',        // internal agent skills (build-package/SKILL.md spells out the SuperStudio↔DWork flavor split)
+  'AndroidManifest.xml', // stray root copy from the mobile workstream
+  'logB2.txt',       // stray debug log
   // talent-crypto + the packed resources/talent-pool.enc SHIP to entitled DWork
   // customers (paid content), so they are NOT excluded here.
 ]
@@ -267,6 +271,10 @@ for (const file of tracked) {
   // objects straight into the deliverable. (Prefer moving such backups OUTSIDE the
   // repo, but guard here too.)
   if (file.startsWith('.tmp-dwork-')) continue
+  // Build artifacts are never part of a source deliverable. They also arrive
+  // brand-named at repo root (SuperStudio-*.apk), which NEVER_SHIP's prefix
+  // matching can't express. Drop them outright — not even to the overlay.
+  if (/\.(apk|aab|exe|dmg|zip|7z)$/i.test(file)) continue
   // Stubs first: core gets a no-op, overlay gets the real file to overwrite it.
   if (STUBS[file]) {
     writeFile(CORE, file, STUBS[file])
@@ -351,6 +359,30 @@ const LEAK_DIRS = ['sources', 'bp', 'demo', 'docs', 'openspec',
 const leaked = LEAK_DIRS.filter((d) => fs.existsSync(path.join(CORE, d)))
 if (leaked.length) {
   console.error(`\n❌ LEAK — proprietary paths present in core/: ${leaked.join(', ')}`)
+  process.exit(1)
+}
+
+// Path-shaped leak assertion. NEVER_SHIP is a *denylist*, so every new untracked
+// workstream at repo root silently rides along via `git ls-files --others` until
+// someone remembers to add it (that is exactly how mobile-rn/ + 5 SuperStudio APKs
+// once reached a staged delivery). These two rules catch the whole class without
+// needing the list to stay complete:
+//   1. no build artifacts — a shipped .apk/.exe is never part of a source deliverable
+//   2. no brand in any PATH — verify-core-clean only scans text, not filenames
+const pathOffenders = []
+;(function scan(dir, rel = '') {
+  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (e.name === '.git') continue
+    const r = rel ? `${rel}/${e.name}` : e.name
+    if (e.isDirectory()) scan(path.join(dir, e.name), r)
+    else if (/\.(apk|exe|dmg|aab)$/i.test(e.name) || /superstudio|tokeng|xizim/i.test(r)) pathOffenders.push(r)
+  }
+})(CORE)
+if (pathOffenders.length) {
+  console.error(`\n❌ LEAK — build artifacts / brand-in-path present in core/:`)
+  for (const p of pathOffenders.slice(0, 20)) console.error(`   ${p}`)
+  if (pathOffenders.length > 20) console.error(`   …and ${pathOffenders.length - 20} more`)
+  console.error(`\nAdd the owning directory to NEVER_SHIP.`)
   process.exit(1)
 }
 
