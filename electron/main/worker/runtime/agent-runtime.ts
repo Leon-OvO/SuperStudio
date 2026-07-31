@@ -7,7 +7,7 @@ import type { AgentSink } from '../../agent/sink'
  * 跑「硬活」（代码/多步工程/文件重构）能力弱。方案：让用户在本机选一款专业 code CLI
  * （Claude Code / OpenCode）当对话引擎，跑硬活时把这条会话派给它执行。
  *
- * **模型出口 = 直连 supercode**（与 master `createLLMClient` 同一凭据来源）：invoker 从
+ * **模型出口 = 直连上游**（与 master `createLLMClient` 同一凭据来源）：invoker 从
  * provider 记录解析 `{baseUrl, apiKey, protocol, model}`，经子进程 env 注入 CLI——**不经 BFF**。
  *
  * 事件统一映射到既有 `AGENT_DELTA/PHASE/DONE/ERROR`（走传入的 {@link AgentSink}），

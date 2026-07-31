@@ -13,7 +13,7 @@ import { killProcessTree } from './proc'
  * 更轻、无生命周期负担、与 ClaudeRuntime 同构（spawn + 行解析）。真实事件格式(v1.17.17)：
  *   step_start / text(part.text 全量) / step_finish(tokens) / error。
  *
- * **模型出口 = 直连 supercode**：经 `OPENCODE_CONFIG_CONTENT` env 内联注入 provider ss，baseURL 直指
+ * **模型出口 = 直连上游**：经 `OPENCODE_CONFIG_CONTENT` env 内联注入 provider ss，baseURL 直指
  * `withApiVersion(provider.baseUrl)`（openai 兼容，保留 `/v1`——`@ai-sdk/openai-compatible` 自己补 `/chat/completions`），
  * 鉴权用真实 key。真实模型经 `-m ss/<model>` 直传，不经 BFF。
  *
@@ -104,7 +104,7 @@ function describeError(err: unknown): string {
  *  取 300s：generateImage 自身上限 180s，留足往返与重试余量。 */
 const MCP_TIMEOUT_MS = 300_000
 
-/** provider ss 内联配置（直连 supercode，openai 兼容端点）+ 进程内 MCP 桥——经 OPENCODE_CONFIG_CONTENT 注入。
+/** provider ss 内联配置（直连上游，openai 兼容端点）+ 进程内 MCP 桥——经 OPENCODE_CONFIG_CONTENT 注入。
  *  baseUrl 保留 `/v1`（invoker 传 withApiVersion 的结果，@ai-sdk/openai-compatible 自补 `/chat/completions`）。
  *
  *  mcp 段把自研独有能力（生图/技能）接进 opencode 自带的工具循环——否则它只有一个聊天出口，

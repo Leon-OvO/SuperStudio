@@ -64,9 +64,9 @@ const task = {
   cwd: '/tmp/ws',
   messageId: 'm1',
   model: 'gpt-4o',
-  providerId: 'supercode',
-  providerName: 'SuperCode',
-  upstream: { baseUrl: 'https://api.supercode.help/v1', apiKey: 'sk-real', protocol: 'openai' as const },
+  providerId: 'up1',
+  providerName: 'Upstream',
+  upstream: { baseUrl: 'https://api.example.com/v1', apiKey: 'sk-real', protocol: 'openai' as const },
   message: '把图片转白底',
 }
 
@@ -93,15 +93,15 @@ describe('OpenCodeRuntime.run', () => {
     const opts = mSpawn.mock.calls[0]![2] as { env: Record<string, string>; shell: boolean }
     expect(opts.shell).toBe(false) // 安全不变量：message 绝不经 shell
     expect(opts.env.PWD).toBe('/tmp/ws')
-    // 直连 supercode：baseURL 保留 /v1（openai-compat 自补 /chat/completions）、真实 key，无 /m/relay
-    expect(opts.env.OPENCODE_CONFIG_CONTENT).toContain('https://api.supercode.help/v1')
+    // 直连上游：baseURL 保留 /v1（openai-compat 自补 /chat/completions）、真实 key，无 /m/relay
+    expect(opts.env.OPENCODE_CONFIG_CONTENT).toContain('https://api.example.com/v1')
     expect(opts.env.OPENCODE_CONFIG_CONTENT).not.toContain('/m/relay')
     expect(opts.env.OPENCODE_CONFIG_CONTENT).toContain('"apiKey":"sk-real"')
     const delta = sent.find((s) => s[0] === IPC.AGENT_DELTA)
     expect(delta?.[1]).toMatchObject({ delta: 'Hi', messageId: 'm1' })
     expect(sent.find((s) => s[0] === IPC.AGENT_DONE)?.[1]).toMatchObject({
       content: 'Hi',
-      meta: expect.objectContaining({ model: 'gpt-4o', providerId: 'supercode', providerName: 'SuperCode' }),
+      meta: expect.objectContaining({ model: 'gpt-4o', providerId: 'up1', providerName: 'Upstream' }),
     })
   })
 

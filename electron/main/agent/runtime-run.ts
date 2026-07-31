@@ -17,7 +17,7 @@ import { dbRun, dbGet } from '../db/sqlite'
  * 本地 Agent 运行时入口（PRD 第四部分·Agent 运行时底层升级，去 BFF 版）。
  *
  * 用户在设置里选了一款本机 code CLI（Claude Code / OpenCode）当对话引擎后，普通文本/代码会话经此
- * 派给该 CLI 执行——**直连 supercode**（凭据来源同 master `createLLMClient`：从 provider 记录解析
+ * 派给该 CLI 执行——**直连上游**（凭据来源同 master `createLLMClient`：从 provider 记录解析
  * baseUrl/apiKey/protocol/真实模型，经子进程 env 注入），不经 BFF/云 worker/配对。
  *
  * 与自研 `runAgent` 的分工：运行时**只接管硬活文本/代码**；显式媒体轮（forceImage）+ Computer Use 仍走

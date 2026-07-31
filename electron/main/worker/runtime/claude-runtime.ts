@@ -14,7 +14,7 @@ import { killProcessTree } from './proc'
  * spawn 平台原生 `claude` CLI，走双向 stream-json 协议驱动，映射到既有 `AGENT_DELTA/PHASE/DONE/ERROR`。
  *   claude -p --output-format stream-json --input-format stream-json --verbose --permission-mode bypassPermissions
  *
- * **模型出口 = 直连 supercode**（镜像 master `createAnthropic`）：不 patch CLI，只注入 env——
+ * **模型出口 = 直连上游**（镜像 master `createAnthropic`）：不 patch CLI，只注入 env——
  *   ANTHROPIC_BASE_URL=<baseUrl 剥 /vN>、ANTHROPIC_API_KEY=<真实 key>（发 `x-api-key`）、ANTHROPIC_AUTH_TOKEN=''。
  *   claude CLI 会对 ANTHROPIC_BASE_URL 再补 `/v1/messages`，故必须剥掉 invoker 传入的 `/vN` 尾段
  *   （否则打成 `.../v1/v1/messages`）。真实模型经 `--model` 直传。
@@ -34,14 +34,14 @@ const STRIP_ENV = new Set([
   'CLAUDE_CODE_EXECPATH',
   'CLAUDE_CODE_SESSION_ID',
   'CLAUDE_CODE_SSE_PORT',
-  // 直连不变量：若继承用户本地这些开关，claude 会走 Bedrock/Vertex 绕过我们注入的 supercode 端点。
+  // 直连不变量：若继承用户本地这些开关，claude 会走 Bedrock/Vertex 绕过我们注入的上游端点。
   // 强制剥离，只认注入的 ANTHROPIC_BASE_URL / ANTHROPIC_API_KEY。
   'CLAUDE_CODE_USE_BEDROCK',
   'CLAUDE_CODE_USE_VERTEX',
 ])
 
 /**
- * 构造子进程环境：继承 + 剥内部标记 + 注入直连 supercode 的 env（镜像 master `createAnthropic`）。
+ * 构造子进程环境：继承 + 剥内部标记 + 注入直连上游 的 env（镜像 master `createAnthropic`）。
  * - `baseUrl`：invoker 传 `withApiVersion(provider.baseUrl)`（带 `/v1`）。claude CLI 自己会补 `/v1/messages`，
  *   故这里剥掉尾部 `/vN`（否则 `.../v1/v1/messages`）；`baseUrl` 为空则不设，打官方 api.anthropic.com。
  * - `apiKey` → `ANTHROPIC_API_KEY`，且强制 `ANTHROPIC_AUTH_TOKEN=''`：claude 在 API_KEY 存在时发 `x-api-key`
@@ -177,7 +177,7 @@ export class ClaudeRuntime implements AgentRuntime {
       '--input-format', 'stream-json',
       '--verbose',
       '--permission-mode', 'bypassPermissions',
-      '--model', model, // 真实模型 id（直连 supercode）
+      '--model', model, // 真实模型 id（直连上游）
     ]
 
     // 进程内 MCP 桥（生图/技能）。schema 按 Claude Code 2.x 实测：

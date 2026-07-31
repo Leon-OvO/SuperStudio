@@ -83,15 +83,15 @@ describe('mapClaudeLine', () => {
 
 describe('buildClaudeEnv', () => {
   it('直连注入：剥 /vN、发 x-api-key、清空 AUTH_TOKEN', () => {
-    const env = buildClaudeEnv('https://api.supercode.help/v1', 'sk-real')
+    const env = buildClaudeEnv('https://api.example.com/v1', 'sk-real')
     // claude CLI 自补 /v1/messages，故必须剥掉传入的 /vN，否则 .../v1/v1/messages
-    expect(env.ANTHROPIC_BASE_URL).toBe('https://api.supercode.help')
+    expect(env.ANTHROPIC_BASE_URL).toBe('https://api.example.com')
     expect(env.ANTHROPIC_API_KEY).toBe('sk-real') // 发 x-api-key（镜像 master）
     expect(env.ANTHROPIC_AUTH_TOKEN).toBe('') // 挡住继承来的 bearer
   })
 
   it('尾斜杠 + /vN 一并规范化', () => {
-    expect(buildClaudeEnv('https://api.supercode.help/v1/', 'k').ANTHROPIC_BASE_URL).toBe('https://api.supercode.help')
+    expect(buildClaudeEnv('https://api.example.com/v1/', 'k').ANTHROPIC_BASE_URL).toBe('https://api.example.com')
     expect(buildClaudeEnv('https://host/v2', 'k').ANTHROPIC_BASE_URL).toBe('https://host')
   })
 
@@ -111,11 +111,11 @@ describe('buildClaudeEnv', () => {
     process.env.CLAUDE_CODE_USE_VERTEX = '1'
     process.env.CLAUDE_CODE_GIT_BASH_PATH = 'C:/bash.exe'
     try {
-      const env = buildClaudeEnv('https://api.supercode.help/v1', 'sk-real')
+      const env = buildClaudeEnv('https://api.example.com/v1', 'sk-real')
       expect(env.CLAUDECODE).toBeUndefined()
       expect(env.CLAUDE_CODE_ENTRYPOINT).toBeUndefined()
       expect(env.CLAUDE_CODE_SSE_PORT).toBeUndefined()
-      // 直连：Bedrock/Vertex 开关剥离，强制走注入的 supercode 端点
+      // 直连：Bedrock/Vertex 开关剥离，强制走注入的上游端点
       expect(env.CLAUDE_CODE_USE_BEDROCK).toBeUndefined()
       expect(env.CLAUDE_CODE_USE_VERTEX).toBeUndefined()
       expect(env.CLAUDE_CODE_GIT_BASH_PATH).toBe('C:/bash.exe')

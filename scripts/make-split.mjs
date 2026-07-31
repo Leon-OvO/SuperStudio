@@ -57,6 +57,14 @@ const NEVER_SHIP = [
 
 // Injection-point files: core ships a no-op STUB; overlay carries the real one.
 const STUBS = {
+  // The scrub list spells out internal codenames / vendor names verbatim — shipping
+  // it IS the leak it exists to prevent (verify-core-clean flags it). Core gets an
+  // empty table; the real one lives in the overlay. brandScrub() itself ships.
+  'electron/main/services/brand-scrub-list.ts':
+    `// Core stub — the proprietary overlay overwrites this with the real table.
+// Empty = no brand substitution beyond the flavor rename in brandScrub().
+export const BRAND_SCRUB: Array<[RegExp, string]> = []
+`,
   'electron/main/services/providers/register-proprietary.ts':
     `// Core stub — the proprietary overlay overwrites this file. With no overlay,
 // the app runs on the seam defaults (BYOK auth, empty talent, no remote control).

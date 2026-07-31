@@ -14,6 +14,7 @@ import {
 import { setMemoryStatus, type MemoryRow } from './memory'
 import { IPC } from '../../../src/shared/ipc-types'
 import { FLAVOR } from '../../../src/shared/flavor'
+import { BRAND_SCRUB } from './brand-scrub-list'
 
 /**
  * Auto-learn skills from conversations — the bridge memory→SKILL.md.
@@ -163,9 +164,11 @@ function stripJsonFences(text: string): string {
 }
 
 function authoringSystem(manual: boolean): string {
+  // 刻意不在提示词里罗列具体代号：这段文本会随源码交付，逐字写出内部代号本身就是泄漏
+  // （品牌洁净守卫会拦）。真正的兜底是产出后的 brandScrub 程序化替换，词表在 brand-scrub-list.ts。
   const brandRule = FLAVOR === 'dwork'
-    ? '【品牌】严禁出现 SuperStudio / sub2api / xizim 等字样；以「员工给自家公司自建自用」的内部口吻书写，不要卖货口吻。'
-    : '【品牌】不要出现 sub2api / xizim 等内部代号。'
+    ? '【品牌】不要出现任何产品名、厂商名或内部代号；以「员工给自家公司自建自用」的内部口吻书写，不要卖货口吻。'
+    : '【品牌】不要出现产品名或内部代号。'
   // Manual = the user explicitly asked to turn THIS chat into a skill → bias toward
   // producing one; only bail on pure smalltalk. Auto = stay conservative.
   const bailRule = manual
@@ -222,9 +225,11 @@ function redactSecrets(s: string): string {
 }
 
 /** Always-scrub internal infra codenames; DWork additionally scrubs SuperStudio
- *  (including spaced/underscored/hyphenated variants the model might paraphrase to). */
+ *  (including spaced/underscored/hyphenated variants the model might paraphrase to).
+ *  词表在 brand-scrub-list.ts —— 那份清单本身不随源码交付（拆分时换成空表）。 */
 function brandScrub(s: string): string {
-  let out = s.replace(/sub2api/gi, '中转').replace(/xizim/gi, '').replace(/supercode/gi, '')
+  let out = s
+  for (const [re, to] of BRAND_SCRUB) out = out.replace(re, to)
   if (FLAVOR === 'dwork') out = out.replace(/super[\s_-]*studio/gi, 'DWork')
   return out
 }

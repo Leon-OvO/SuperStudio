@@ -39,16 +39,16 @@ const task = {
   cwd: '/tmp/ws',
   messageId: 'm1',
   model: 'claude-sonnet-4-5',
-  providerId: 'supercode',
-  providerName: 'SuperCode',
-  upstream: { baseUrl: 'https://api.supercode.help/v1', apiKey: 'sk-real', protocol: 'anthropic' as const },
+  providerId: 'up1',
+  providerName: 'Upstream',
+  upstream: { baseUrl: 'https://api.example.com/v1', apiKey: 'sk-real', protocol: 'anthropic' as const },
   message: 'hi',
 }
 
 beforeEach(() => vi.clearAllMocks())
 
 describe('ClaudeRuntime.run', () => {
-  it('stream-json → AGENT_DELTA + AGENT_DONE，直连 supercode env，喂 user 消息', async () => {
+  it('stream-json → AGENT_DELTA + AGENT_DONE，直连上游 env，喂 user 消息', async () => {
     const child = makeChild()
     mSpawn.mockReturnValue(child as never)
     const sent: Array<[string, Record<string, unknown>]> = []
@@ -73,7 +73,7 @@ describe('ClaudeRuntime.run', () => {
     )
     // env 直连注入：剥 /vN、x-api-key、清空 AUTH_TOKEN
     const opts = mSpawn.mock.calls[0]![2] as { env: Record<string, string> }
-    expect(opts.env.ANTHROPIC_BASE_URL).toBe('https://api.supercode.help') // /v1 已剥
+    expect(opts.env.ANTHROPIC_BASE_URL).toBe('https://api.example.com') // /v1 已剥
     expect(opts.env.ANTHROPIC_API_KEY).toBe('sk-real')
     expect(opts.env.ANTHROPIC_AUTH_TOKEN).toBe('')
     // stdin 喂 user 消息
@@ -85,7 +85,7 @@ describe('ClaudeRuntime.run', () => {
     expect(done?.[1]).toMatchObject({
       content: '你好',
       messageId: 'm1',
-      meta: expect.objectContaining({ model: 'claude-sonnet-4-5', providerId: 'supercode', providerName: 'SuperCode' }),
+      meta: expect.objectContaining({ model: 'claude-sonnet-4-5', providerId: 'up1', providerName: 'Upstream' }),
     })
     expect(sent.some((s) => s[0] === IPC.AGENT_ERROR)).toBe(false)
   })
@@ -176,7 +176,7 @@ describe('ClaudeRuntime.run', () => {
     const cfgPath = args[i + 1].replace(/^"|"$/g, '')
     const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8')) as { env: Record<string, string> }
     // settings 层优先级最高，端点/凭据必须写在这里才真正生效（实测：仅 env 注入时端点收到 0 请求）
-    expect(cfg.env.ANTHROPIC_BASE_URL).toBe('https://api.supercode.help') // /vN 已剥
+    expect(cfg.env.ANTHROPIC_BASE_URL).toBe('https://api.example.com') // /vN 已剥
     expect(cfg.env.ANTHROPIC_API_KEY).toBe('sk-real')
     expect(cfg.env.ANTHROPIC_AUTH_TOKEN).toBe('') // 压掉用户 settings 里的 bearer
     // 生图实测 178s，远超 claude 的 MCP 默认超时；不放宽会在工具未返回时判超时甚至重发，

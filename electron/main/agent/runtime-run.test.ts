@@ -4,7 +4,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
  * 本地 Agent 运行时 invoker（runtime-run.ts）单测。
  *
  * mock 掉 store/llm/engine/db + 两个运行时类（不真 spawn CLI），断言 invoker 的接线：
- *   (a) supercode 记录 → task.upstream 直连（baseUrl 带 /v1、真实 key、protocol=anthropic）+ 真实模型/provider。
+ *   (a) 上游 provider 记录 → task.upstream 直连（baseUrl 带 /v1、真实 key、protocol=anthropic）+ 真实模型/provider。
  *   (b) claude 运行时 + 非 anthropic 协议 → AGENT_ERROR 硬门控，不 spawn 运行时。
  *   (c) 落库：run 前 user 行、run 后 assistant 行（与流式共用同一 messageId）。
  *   (d) stopRuntimeRun 能 abort 进行中 run 已注册的 controller。
@@ -83,8 +83,8 @@ const win = {
 } as never
 
 beforeEach(() => {
-  H.settings = { defaultRuntime: 'claude', defaultChatProviderId: 'supercode', defaultChatModel: 'claude-sonnet-4-5' }
-  H.providers = [{ id: 'supercode', name: 'SuperCode', baseUrl: 'https://api.supercode.help', apiKey: 'sk-real' }]
+  H.settings = { defaultRuntime: 'claude', defaultChatProviderId: 'up1', defaultChatModel: 'claude-sonnet-4-5' }
+  H.providers = [{ id: 'up1', name: 'Upstream', baseUrl: 'https://api.example.com', apiKey: 'sk-real' }]
   H.protocol = 'anthropic'
   H.sessionWorkingDir = '/tmp/ws'
   H.claudeResult = { text: 'hello from claude' }
@@ -112,18 +112,18 @@ describe('runtimeEnabled', () => {
 })
 
 describe('runViaRuntime', () => {
-  it('(a) supercode 记录 → task.upstream 直连（baseUrl 带 /v1、真实 key、protocol=anthropic）', async () => {
+  it('(a) 上游 provider 记录 → task.upstream 直连（baseUrl 带 /v1、真实 key、protocol=anthropic）', async () => {
     await runViaRuntime({ sessionId: 's1', message: 'hi' }, win)
     expect(H.claudeTasks).toHaveLength(1)
     const t = H.claudeTasks[0]
     expect(t.upstream).toMatchObject({
-      baseUrl: 'https://api.supercode.help/v1', // withApiVersion 补 /v1（claude 适配器再剥）
+      baseUrl: 'https://api.example.com/v1', // withApiVersion 补 /v1（claude 适配器再剥）
       apiKey: 'sk-real',
       protocol: 'anthropic',
     })
     expect(t.model).toBe('claude-sonnet-4-5')
-    expect(t.providerId).toBe('supercode')
-    expect(t.providerName).toBe('SuperCode')
+    expect(t.providerId).toBe('up1')
+    expect(t.providerName).toBe('Upstream')
     expect(t.cwd).toBe('/tmp/ws')
     expect(sent.some((s) => s[0] === IPC.AGENT_ERROR)).toBe(false)
   })
@@ -191,7 +191,7 @@ describe('runViaRuntime', () => {
     expect(asstIns!.sql).toContain('meta')
     expect(JSON.parse(asstIns!.params[4] as string)).toMatchObject({
       runtime: 'claude',
-      providerName: 'SuperCode',
+      providerName: 'Upstream',
     })
   })
 
