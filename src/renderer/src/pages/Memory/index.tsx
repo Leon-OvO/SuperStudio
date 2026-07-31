@@ -1,7 +1,8 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import {
   Plus, Trash2, Pin, PinOff, Archive, ArchiveRestore, Search, Eye, Edit3,
-  User, FolderGit2, History, Sparkles, Brain, X, ShieldCheck, Upload, Download, Loader2
+  User, FolderGit2, History, Sparkles, Brain, X, ShieldCheck, Upload, Download, Loader2,
+  ListChecks, CheckSquare, Square, Wand2
 } from 'lucide-react'
 import { cn, formatDate } from '../../lib/utils'
 import { renderMarkdown } from '../../lib/markdown'
@@ -40,7 +41,12 @@ export function MemoryPage() {
   const [query, setQuery] = useState('')
   const [active, setActive] = useState<Memory | null>(null)
   const [autoCapture, setAutoCapture] = useState(true)
+  const [autoCleanup, setAutoCleanup] = useState(true)
   const [importing, setImporting] = useState(false)
+  const [pruning, setPruning] = useState(false)
+  // 多选批量删除
+  const [selectMode, setSelectMode] = useState(false)
+  const [selected, setSelected] = useState<Set<string>>(new Set())
   const dlg = useConfirmDialog()
 
   const load = useCallback(async () => {
@@ -53,12 +59,20 @@ export function MemoryPage() {
   useEffect(() => { load() }, [load])
 
   useEffect(() => {
-    window.api.getSettings().then(s => setAutoCapture(s.memoryAutoCapture !== false)).catch(() => {})
-    const off = window.api.onMemoryCaptured?.((info) => {
+    window.api.getSettings().then(s => {
+      setAutoCapture(s.memoryAutoCapture !== false)
+      setAutoCleanup(s.memoryAutoCleanup !== false)
+    }).catch(() => {})
+    const offCaptured = window.api.onMemoryCaptured?.((info) => {
       if (info.count > 0) load()  // global toast is shown app-wide in App.tsx
     })
-    return () => { off?.() }
+    // 后台自动清理改动了记忆 → 静默刷新列表（无 toast）
+    const offChanged = window.api.onMemoryChanged?.(() => { load() })
+    return () => { offCaptured?.(); offChanged?.() }
   }, [load])
+
+  // 切 kind / 切归档视图时退出多选，避免选中项跨视图残留
+  useEffect(() => { setSelectMode(false); setSelected(new Set()) }, [activeKind, showArchived])
 
   const counts = KINDS.reduce((acc, k) => {
     acc[k.id] = memories.filter(m => m.kind === k.id).length
@@ -81,6 +95,59 @@ export function MemoryPage() {
     const next = !autoCapture
     setAutoCapture(next)
     await window.api.setSettings({ memoryAutoCapture: next })
+  }
+
+  async function toggleAutoCleanup() {
+    const next = !autoCleanup
+    setAutoCleanup(next)
+    await window.api.setSettings({ memoryAutoCleanup: next })
+  }
+
+  // 手动「整理」：立即跑一次两段式清理（久未用→归档，归档超期→删）。
+  async function pruneNow() {
+    setPruning(true)
+    try {
+      const r = await window.api.pruneMemories()
+      if (r.archived || r.deleted) {
+        toast.success(`整理完成：归档 ${r.archived} 条${r.deleted ? `、删除 ${r.deleted} 条` : ''}`)
+        await load()
+      } else {
+        toast.success('记忆已很干净，无需整理')
+      }
+    } catch (e) {
+      toast.error('整理失败：' + (e as Error).message)
+    } finally {
+      setPruning(false)
+    }
+  }
+
+  const activeKindLabel = KINDS.find(k => k.id === activeKind)?.label ?? '记忆'
+
+  function toggleSel(id: string) {
+    setSelected(prev => {
+      const n = new Set(prev)
+      if (n.has(id)) n.delete(id); else n.add(id)
+      return n
+    })
+  }
+
+  // 批量硬删（多选，无豁免——用户显式勾选的就删）。
+  async function deleteSelected() {
+    if (!selected.size) return
+    if (!(await dlg.confirm({ message: `确定删除选中的 ${selected.size} 条记忆？此操作不可恢复。`, tone: 'danger', confirmLabel: '删除' }))) return
+    const r = await window.api.deleteMemories([...selected])
+    toast.success(`已删除 ${r.deleted} 条记忆`)
+    setSelected(new Set()); setSelectMode(false); setActive(null)
+    await load()
+  }
+
+  // 清空当前分类下的已归档记忆（豁免置顶/画像/交付标准/手动条）。
+  async function emptyArchived() {
+    if (!(await dlg.confirm({ message: `确定清空「${activeKindLabel}」下的已归档记忆？此操作不可恢复（置顶 / 用户画像 / 交付标准 / 手动创建的记忆会保留）。`, tone: 'danger', confirmLabel: '清空' }))) return
+    const r = await window.api.deleteArchivedMemories(activeKind)
+    toast.success(r.deleted ? `已清空 ${r.deleted} 条归档记忆` : '没有可清空的归档记忆')
+    setActive(null)
+    await load()
   }
 
   // Import external memory assets (.json / .jsonl / .md). Multi-select supported.
@@ -148,6 +215,10 @@ export function MemoryPage() {
             <input type="checkbox" checked={autoCapture} onChange={toggleAutoCapture} />
             自动从对话/公司提炼记忆
           </label>
+          <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground cursor-pointer" title="久未召回的经历/技能先自动归档（退出召回、可恢复），归档满 30 天再清除。置顶 / 用户画像 / 交付标准 / 手动创建的记忆永不自动清理。">
+            <input type="checkbox" checked={autoCleanup} onChange={toggleAutoCleanup} />
+            自动清理久未使用的记忆
+          </label>
           <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground cursor-pointer">
             <input type="checkbox" checked={showArchived} onChange={e => { setShowArchived(e.target.checked); setActive(null) }} />
             显示已归档
@@ -189,29 +260,82 @@ export function MemoryPage() {
               <Download size={12} /> 导出
             </button>
           </div>
+
+          {/* 次级动作：多选批量删 · 手动整理 · 清空已归档 */}
+          <div className="flex gap-1.5">
+            <button
+              onClick={() => { setSelectMode(v => !v); setSelected(new Set()) }}
+              title="多选批量删除"
+              className={cn('flex items-center justify-center gap-1 px-2 py-1 rounded text-xs border border-border hover:bg-accent', selectMode && 'bg-accent')}
+            >
+              <ListChecks size={12} /> {selectMode ? '完成' : '多选'}
+            </button>
+            <button
+              onClick={pruneNow}
+              disabled={pruning}
+              title="立即整理：把久未使用的记忆归档、超期归档的清除（豁免置顶 / 画像 / 交付标准 / 手动条）"
+              className="flex-1 flex items-center justify-center gap-1 px-2 py-1 rounded text-xs border border-border hover:bg-accent disabled:opacity-50"
+            >
+              {pruning ? <Loader2 size={12} className="animate-spin" /> : <Wand2 size={12} />} 整理
+            </button>
+            {showArchived && (
+              <button
+                onClick={emptyArchived}
+                title="清空当前分类下的已归档记忆"
+                className="flex items-center justify-center gap-1 px-2 py-1 rounded text-xs border border-border text-destructive hover:bg-destructive/10"
+              >
+                <Trash2 size={12} /> 清空归档
+              </button>
+            )}
+          </div>
+
+          {/* 多选模式下的批量操作栏 */}
+          {selectMode && (
+            <div className="flex items-center gap-1.5 text-xs">
+              <button onClick={() => setSelected(new Set(visible.map(m => m.id)))} className="px-2 py-1 rounded border border-border hover:bg-accent">全选</button>
+              <button onClick={() => setSelected(new Set())} className="px-2 py-1 rounded border border-border hover:bg-accent">清空</button>
+              <button
+                onClick={deleteSelected}
+                disabled={!selected.size}
+                className="flex-1 flex items-center justify-center gap-1 px-2 py-1 rounded border border-destructive/40 text-destructive hover:bg-destructive/10 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                <Trash2 size={12} /> 删除所选（{selected.size}）
+              </button>
+            </div>
+          )}
         </div>
         <div className="flex-1 overflow-y-auto p-2 space-y-1">
           {visible.length === 0 ? (
             <p className="text-xs text-muted-foreground/60 p-2">
               {showArchived ? '没有已归档的记忆。' : `还没有${KINDS.find(k => k.id === activeKind)?.label}。用得越多，这里会自动积累。`}
             </p>
-          ) : visible.map(m => (
+          ) : visible.map(m => {
+            const isSel = selected.has(m.id)
+            return (
             <button
               key={m.id}
-              onClick={() => setActive(m)}
+              onClick={() => selectMode ? toggleSel(m.id) : setActive(m)}
               className={cn(
-                'w-full text-left p-2 rounded-md border transition-colors',
-                active?.id === m.id ? 'border-primary/40 bg-accent' : 'border-border hover:bg-accent/50'
+                'w-full text-left p-2 rounded-md border transition-colors flex items-start gap-2',
+                (selectMode ? isSel : active?.id === m.id) ? 'border-primary/40 bg-accent' : 'border-border hover:bg-accent/50'
               )}
             >
-              <div className="flex items-center gap-1.5">
-                {m.pinned === 1 && <Pin size={10} className="text-primary shrink-0" />}
-                <span className="text-xs font-medium truncate flex-1">{m.title || '未命名'}</span>
+              {selectMode && (
+                isSel
+                  ? <CheckSquare size={14} className="text-primary shrink-0 mt-0.5" />
+                  : <Square size={14} className="text-muted-foreground/50 shrink-0 mt-0.5" />
+              )}
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-1.5">
+                  {m.pinned === 1 && <Pin size={10} className="text-primary shrink-0" />}
+                  <span className="text-xs font-medium truncate flex-1">{m.title || '未命名'}</span>
+                </div>
+                <p className="text-[11px] text-muted-foreground line-clamp-2 mt-0.5 leading-snug">{m.content}</p>
+                <div className="text-[10px] text-muted-foreground/50 mt-1">{formatDate(m.updated_at)}</div>
               </div>
-              <p className="text-[11px] text-muted-foreground line-clamp-2 mt-0.5 leading-snug">{m.content}</p>
-              <div className="text-[10px] text-muted-foreground/50 mt-1">{formatDate(m.updated_at)}</div>
             </button>
-          ))}
+            )
+          })}
         </div>
       </aside>
 

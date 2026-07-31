@@ -17,7 +17,7 @@ import { AgentProgress } from './AgentProgress'
 import { ChatHeader, computeImageSize, DEFAULT_IMAGE_PARAMS } from './ChatHeader'
 import type { ImageParams } from './ChatHeader'
 import { extractGeneratedImages } from './extractGeneratedImages'
-import type { AgentProgressEvent, AgentPhaseEvent, Message, ContextRef } from '../../../../shared/ipc-types'
+import type { AgentProgressEvent, AgentPhaseEvent, Message, ContextRef, SessionRuntime } from '../../../../shared/ipc-types'
 
 /** Per-turn @-mentioned references sent alongside text + attachments. */
 interface MentionPayload { sshDefaultConnIds?: string[]; contextRefs?: ContextRef[]; forceSkillIds?: string[] }
@@ -36,7 +36,7 @@ export function ChatPage() {
     setSessions, setActiveSession, addSession, removeSession, updateSessionTitle,
     setMessages, addMessage, upsertMessage, appendStreamDelta, removeMessage, removeMessagesFrom, updateMessageContent,
     startRun, stopRun, updateStep, setPhase,
-    setSessionModel, setComputerMode, setSessionWorkingDir, setSessionAssignee, setSessionGroupEmployees, setSessionPinned, setSessionHostMode
+    setSessionModel, setComputerMode, setSessionWorkingDir, setSessionAssignee, setSessionRuntime, setSessionGroupEmployees, setSessionPinned, setSessionHostMode
   } = useChatStore()
 
   // Hired employees — for the ChatHeader "与员工单独对话" picker + session badges.
@@ -312,6 +312,14 @@ export function ChatPage() {
     const emp = employeeId ? employees.find(e => e.id === employeeId) : null
     if (emp?.providerId && emp?.modelId) setSessionModel(sid, emp.providerId, emp.modelId)
     else if (defaultModelRef.current) setSessionModel(sid, defaultModelRef.current.providerId, defaultModelRef.current.model)
+  }
+
+  /** 切本会话的 Agent 引擎（null = 跟随全局默认）。落库后镜像进 store；下一轮生效
+   *  —— 主进程每轮实时读会话行，无需重启或通知。 */
+  async function handleSessionRuntimeChange(runtime: SessionRuntime | null) {
+    const sid = await ensureSession()
+    const r = await window.api.setSessionRuntime(sid, runtime)
+    setSessionRuntime(sid, r.ok ? r.runtime : runtime)
   }
 
   /** Open a brand-new conversation already bound to an employee (used by the
@@ -716,6 +724,8 @@ export function ChatPage() {
           onModelChange={(p, m) => activeSessionId && setSessionModel(activeSessionId, p, m)}
           thinkingMode={(activeSessionId && sessionThinkingMode[activeSessionId]) || 'auto'}
           onThinkingModeChange={m => activeSessionId && setSessionThinkingMode(prev => ({ ...prev, [activeSessionId]: m }))}
+          sessionRuntime={activeSession?.runtime ?? null}
+          onSessionRuntimeChange={handleSessionRuntimeChange}
           imageParams={currentImageParams}
           onImageParamsChange={params => activeSessionId && setImageParamsMap(prev => ({ ...prev, [activeSessionId]: params }))}
           onEditImage={setEditorSrc}

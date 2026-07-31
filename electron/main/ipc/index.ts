@@ -27,6 +27,7 @@ import { employeeHandlers } from './employees'
 import { schedulerHandlers } from './scheduler'
 import { sshHandlers } from './ssh'
 import { usageHandlers } from './usage'
+import { runtimeHandlers } from './runtime'
 import { logEntry, getEntriesFromDisk, clearEntries } from '../services/error-log'
 
 export function registerIpcHandlers(): void {
@@ -68,6 +69,7 @@ export function registerIpcHandlers(): void {
     ['scheduler', schedulerHandlers],
     ['ssh', sshHandlers],
     ['usage', usageHandlers],
+    ['runtime', runtimeHandlers],
   ]
   for (const [name, register] of groups) {
     try {

@@ -9,6 +9,12 @@ export const IPC = {
   PROVIDERS_DELETE: 'providers:delete',
   PROVIDERS_FETCH_MODELS: 'providers:fetch-models',
 
+  // Agent 运行时探测/选择（本机装了哪些 code CLI，选一个作对话引擎；见 pc-runtime-discovery）
+  RUNTIME_LIST: 'runtime:list',               // 探测本机 agent 运行时
+  RUNTIME_REFRESH: 'runtime:refresh',         // 重探（用户点「刷新」）
+  RUNTIME_GET_DEFAULT: 'runtime:get-default', // 取默认运行时（null = 内置自研引擎，无 CLI 兜底）
+  RUNTIME_SET_DEFAULT: 'runtime:set-default', // 设默认运行时（null = 切回内置自研引擎）
+
   // Sessions
   SESSIONS_LIST: 'sessions:list',
   SESSIONS_CREATE: 'sessions:create',
@@ -17,6 +23,7 @@ export const IPC = {
   SESSIONS_ARCHIVE: 'sessions:archive',
   SESSIONS_SET_WORKING_DIR: 'sessions:set-working-dir', // pin a per-conversation working directory (opt-in)
   SESSIONS_SET_ASSIGNEE: 'sessions:set-assignee', // bind/unbind a hired employee to a conversation
+  SESSIONS_SET_RUNTIME: 'sessions:set-runtime', // pick the Agent engine for this conversation (overrides the global default)
   SESSIONS_SET_PINNED: 'sessions:set-pinned',     // pin/unpin a conversation (top section + skip auto-archive)
   SESSIONS_SET_HOST_MODE: 'sessions:set-host-mode', // group chat: toggle 主持人 continuous-execution mode
   SESSIONS_CHANGED: 'sessions:changed',           // main → renderer: list changed in the background (auto-tidy) → reload
@@ -83,10 +90,14 @@ export const IPC = {
   MEMORY_LIST: 'memory:list',
   MEMORY_SAVE: 'memory:save',
   MEMORY_DELETE: 'memory:delete',
+  MEMORY_DELETE_MANY: 'memory:delete-many',          // renderer → main: 批量硬删(多选,无豁免)
+  MEMORY_DELETE_ARCHIVED: 'memory:delete-archived',  // renderer → main: 清空已归档(豁免 pinned/manual/import)
+  MEMORY_PRUNE: 'memory:prune',                      // renderer → main: 手动跑一次两段式清理,返回计数
   MEMORY_SET_PINNED: 'memory:set-pinned',
   MEMORY_ARCHIVE: 'memory:archive',
   MEMORY_CAPTURE_SESSION: 'memory:capture-session', // renderer → main: 手动从一个会话提炼记忆
   MEMORY_CAPTURED: 'memory:captured',               // main → renderer (event): 自动/手动捕获产出
+  MEMORY_CHANGED: 'memory:changed',                 // main → renderer (event): 后台清理改动了记忆,让页面刷新(无 toast)
   MEMORY_IMPORT: 'memory:import',                    // renderer → main: 导入外部记忆资产(.json/.jsonl/.md)
   MEMORY_EXPORT: 'memory:export',                    // renderer → main: 导出全部活跃记忆为 JSON(可再导入)
 
@@ -520,10 +531,36 @@ export interface TokenPlanInfo {
 export type AutoModelIntent = 'vision' | 'code' | 'math' | 'creative' | 'quick' | 'default'
 export type AutoModelRoutes = Record<AutoModelIntent, string>  // intent → "providerId::modelId"
 
+// Agent 运行时（本机的 code CLI）——探测/选择用，主进程与渲染层共享
+export type RuntimeKind = 'claude' | 'codex' | 'opencode'
+
+/** 已具备可执行适配器、能真正被 runViaRuntime 起的运行时。探测到但不在此集合的
+ *  （如 codex）在选择器里标「即将支持」不可选，避免选了静默回退自研 runAgent。
+ *  claude / opencode 已接线；codex 待后续。 */
+export const RUNTIME_ADAPTERS_READY: RuntimeKind[] = ['claude', 'opencode']
+
+export interface DetectedRuntime {
+  kind: RuntimeKind
+  /** 展示名（UI 卡片标题）。 */
+  displayName: string
+  /** 可执行文件路径（Windows opencode 命中 shim 时指向推导出的原生 exe）；未找到为 null。 */
+  execPath: string | null
+  /** 解析出的版本号（semver），取不到为 null。 */
+  version: string | null
+  /** 是否可用（能定位即 true）。 */
+  available: boolean
+  /** 不可用/降级原因（UI 可展示）。 */
+  reason?: string
+}
+
 // Global app settings
 export interface AppSettings {
   defaultChatModel: string
   defaultChatProviderId: string
+  /** 默认 agent 运行时。null = 内置自研引擎（技能/记忆/MCP 全在，默认）；
+   *  设为某本机 CLI（claude/opencode）才 opt-in 改由它执行。绝不做 flavor 兜底自动
+   *  激活某个 CLI（那会静默绕过内置技能系统）。见 pc-runtime-discovery。 */
+  defaultRuntime?: RuntimeKind | null
   defaultImageModel: string
   defaultImageProviderId: string
   /** Default image-generation rules, applied to every image turn (per-turn row can
@@ -550,6 +587,8 @@ export interface AppSettings {
   kbGlobalSpaceIds: string[]
   /** Auto-capture long-term memories from conversations / company work. */
   memoryAutoCapture?: boolean
+  /** 自动清理久未使用的记忆（两段式：久未召回→归档，归档超期→删）。默认 true。 */
+  memoryAutoCleanup?: boolean
   /** 对话自动学习：从对话蒸馏可装载的 SKILL 技能并持续进化。默认 true。 */
   skillInductionEnabled?: boolean
   /** 激进模式：诱导出的技能通过校验即自动启用（否则进「待审」）。默认 true。 */
@@ -1024,7 +1063,15 @@ export interface Session {
   /** Group chat: ids of the employees participating. Non-empty ⇒ this is a
    *  multi-agent group conversation (employees take turns, see each other). */
   groupEmployeeIds?: string[] | null
+  /** 本会话使用的 Agent 引擎，覆盖全局 `settings.defaultRuntime`：
+   *  `'builtin'` = 显式钉住内置自研引擎；`'claude'|'opencode'` = 该 CLI 运行时；
+   *  null/undefined = 未设，跟随全局默认。
+   *  （写代码的会话想用 Claude Code、聊天/出图的会话想用内置——所以按会话记而非全局一刀切。） */
+  runtime?: SessionRuntime | null
 }
+
+/** 会话级引擎选择。`'builtin'` 是一个显式档位，与「未设(跟随全局)」不同。 */
+export type SessionRuntime = RuntimeKind | 'builtin'
 
 // Scheduled prompts
 export type ScheduleKind = 'daily' | 'weekly' | 'monthly' | 'interval' | 'once'
@@ -1121,6 +1168,9 @@ export interface MessageMeta {
   providerId?: string
   providerName?: string
   durationMs?: number
+  /** 产出这条回复的引擎。缺省 = 内置自研引擎；有值表示走了某个本机 CLI 运行时。
+   *  事后能回溯「这条是哪个引擎答的」（各引擎能力不同，排查时很关键）。 */
+  runtime?: RuntimeKind
   autoRoutedModel?: boolean
   autoRoutedIntent?: string
   inputTokens?: number

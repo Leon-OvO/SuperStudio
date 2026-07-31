@@ -3,7 +3,7 @@ import fs from 'fs'
 import path from 'path'
 import { parse as parseYaml } from 'yaml'
 import { generateText } from 'ai'
-import { dbAll, dbRun } from '../db/sqlite'
+import { dbAll, dbGet, dbRun } from '../db/sqlite'
 import { getSettings } from './store'
 import { createLLMClient } from './llm'
 import { IPC } from '../../../src/shared/ipc-types'
@@ -107,6 +107,17 @@ export function saveMemory(input: MemoryInput): { id: string } {
 
 export function deleteMemory(id: string): void {
   dbRun(`DELETE FROM memories WHERE id = ?`, [id])
+}
+
+/** Hard-delete many memories by id — an explicit, deliberate user action (multi-
+ *  select in the UI), so NO exemption applies: delete exactly what was picked.
+ *  Returns how many ids were requested. */
+export function deleteMemories(ids: string[]): number {
+  const clean = (ids || []).filter(Boolean)
+  if (!clean.length) return 0
+  const ph = clean.map(() => '?').join(',')
+  dbRun(`DELETE FROM memories WHERE id IN (${ph})`, clean)
+  return clean.length
 }
 
 export function setMemoryPinned(id: string, pinned: boolean): void {
@@ -246,11 +257,14 @@ function capToBudget(rows: MemoryRow[]): MemoryRow[] {
   return picked
 }
 
-/** Bump use_count/last_used_at for the skill-kind memories actually surfaced this
- *  recall — a single write. Drives "promote-from-memory" (a skill-memory recalled
- *  enough graduates to a loadable SKILL.md). */
-function bumpSkillMemoryUse(rows: MemoryRow[]): void {
-  const ids = rows.filter(r => r.kind === 'skill').map(r => r.id)
+/** Bump use_count/last_used_at for EVERY memory surfaced in a recall — a single
+ *  write. Gives all kinds a "recently useful" signal (this is what lets auto-
+ *  cleanup archive the least-useful episodes, not just the oldest); for skill-kind
+ *  it additionally powers "promote-from-memory" (a skill recalled enough graduates
+ *  to a loadable SKILL.md). Only touches use_count/last_used_at, never updated_at,
+ *  so recall ordering (by updated_at) is undisturbed. */
+function bumpMemoryUse(rows: MemoryRow[]): void {
+  const ids = rows.map(r => r.id)
   if (!ids.length) return
   try {
     const ph = ids.map(() => '?').join(',')
@@ -284,7 +298,7 @@ export function recallForChat(message: string): string {
     .map(x => x.r)
   // profile first (always), then matched delivery-standards, then relevant recalls
   const ordered = capToBudget([...profile, ...corrections, ...scored])
-  bumpSkillMemoryUse(ordered)
+  bumpMemoryUse(ordered)
   return formatPicked(ordered)
 }
 
@@ -302,7 +316,7 @@ export function recallForProject(message: string, projectPath: string): string {
     .sort((a, b) => b.s - a.s || b.r.updated_at - a.r.updated_at)
     .map(x => x.r)
   const ordered = capToBudget([...profile, ...project, ...scoredSkills])
-  bumpSkillMemoryUse(ordered)
+  bumpMemoryUse(ordered)
   return formatPicked(ordered)
 }
 
@@ -547,5 +561,114 @@ async function runIdleCapture(sessionId: string): Promise<void> {
     }
   } catch (e) {
     console.warn('[memory] idle capture failed:', (e as Error).message)
+  }
+}
+
+// --- Auto-cleanup (two-stage decay) -------------------------------------
+//
+// Memories only ever grew: idle capture mines episodes/skills every session with
+// only coarse title-dedup and no pruning, so the recall pool bloated forever and
+// diluted every turn. Two-stage decay keeps it bounded WITHOUT destroying anything
+// the user values:
+//   stage 1  active   → archived   (idle episodes / never-used old skills + per-kind
+//                                    soft cap; reversible, and archived rows leave
+//                                    recall immediately since recall is status='active')
+//   stage 2  archived → deleted    (only after a long grace — the auto "empty trash")
+// FOUR CLASSES ARE PERMANENTLY EXEMPT from both stages (see EXEMPT): pinned,
+// profile, correction, and manually created / imported memories. Rule-based, no LLM.
+
+const DAY = 86_400_000
+const EPISODE_IDLE_DAYS = 45      // episode not recalled this long → archive
+const SKILL_UNUSED_DAYS = 90      // skill never recalled + older than this → archive
+const ARCHIVED_GRACE_DAYS = 30    // archived this long → hard delete
+const MAX_ACTIVE: Record<MemoryKind, number> = {
+  episode: 80, skill: 120, project: 200, profile: 100, correction: 100,
+}
+
+// SQL predicate for rows auto-cleanup must never archive or delete. `source='manual'`
+// = user-created; `import:%` = user-imported. profile/correction are durable by kind.
+const EXEMPT = `(pinned = 1 OR kind IN ('profile','correction') OR source = 'manual' OR source LIKE 'import:%')`
+
+/**
+ * Delete archived memories in bulk — the auto/manual "empty trash". Optional kind
+ * filter. Spares the four exempt classes even here (they shouldn't be archived, but
+ * if one was, don't nuke it). Returns rows deleted. Explicit multi-select deletion
+ * uses deleteMemories() instead, which honours no exemption.
+ */
+export function deleteArchived(kind?: MemoryKind): number {
+  const where = [`status = 'archived'`, `NOT ${EXEMPT}`]
+  const params: unknown[] = []
+  if (kind) { where.push('kind = ?'); params.push(kind) }
+  const clause = where.join(' AND ')
+  const n = dbGet<{ n: number }>(`SELECT COUNT(*) AS n FROM memories WHERE ${clause}`, params)?.n ?? 0
+  if (n > 0) dbRun(`DELETE FROM memories WHERE ${clause}`, params)
+  return n
+}
+
+/**
+ * One two-stage decay pass (see block comment). Pure SQL, synchronous, best-effort.
+ * Returns how many rows were archived / hard-deleted this pass. Safe to call on
+ * startup and periodically — idempotent-ish (already-archived rows aren't re-archived).
+ */
+export function pruneMemories(): { archived: number; deleted: number } {
+  const now = Date.now()
+  const toArchive = new Set<string>()
+  let deleted = 0
+  try {
+    // stage 1a — TTL: idle episodes, never-recalled old skills.
+    for (const { id } of dbAll<{ id: string }>(
+      `SELECT id FROM memories WHERE status='active' AND kind='episode' AND NOT ${EXEMPT}
+       AND COALESCE(last_used_at, created_at) < ?`, [now - EPISODE_IDLE_DAYS * DAY]
+    )) toArchive.add(id)
+    for (const { id } of dbAll<{ id: string }>(
+      `SELECT id FROM memories WHERE status='active' AND kind='skill' AND NOT ${EXEMPT}
+       AND use_count = 0 AND created_at < ?`, [now - SKILL_UNUSED_DAYS * DAY]
+    )) toArchive.add(id)
+
+    // stage 1b — per-kind soft cap: archive the lowest-value overflow (least used,
+    // least recently useful, lowest confidence first). Exempt rows still count toward
+    // the total (they ARE active) but are never the ones archived.
+    const capOverflow = (kind: MemoryKind, scopeClause: string, scopeParams: unknown[], cap: number): void => {
+      const total = dbGet<{ n: number }>(
+        `SELECT COUNT(*) AS n FROM memories WHERE status='active' AND kind=? ${scopeClause}`, [kind, ...scopeParams]
+      )?.n ?? 0
+      const over = total - cap
+      if (over <= 0) return
+      for (const { id } of dbAll<{ id: string }>(
+        `SELECT id FROM memories WHERE status='active' AND kind=? ${scopeClause} AND NOT ${EXEMPT}
+         ORDER BY use_count ASC, COALESCE(last_used_at, updated_at) ASC, (confidence IS NULL) DESC, confidence ASC
+         LIMIT ?`, [kind, ...scopeParams, over]
+      )) toArchive.add(id)
+    }
+    capOverflow('episode', '', [], MAX_ACTIVE.episode)
+    capOverflow('skill', '', [], MAX_ACTIVE.skill)
+    // project cap is per scope (each company/project keeps its own quota).
+    for (const { scope_key } of dbAll<{ scope_key: string | null }>(
+      `SELECT DISTINCT scope_key FROM memories WHERE status='active' AND kind='project'`
+    )) {
+      if (scope_key === null) capOverflow('project', 'AND scope_key IS NULL', [], MAX_ACTIVE.project)
+      else capOverflow('project', 'AND scope_key = ?', [scope_key], MAX_ACTIVE.project)
+    }
+
+    // apply stage 1 in one write.
+    const ids = [...toArchive]
+    if (ids.length) {
+      const ph = ids.map(() => '?').join(',')
+      dbRun(`UPDATE memories SET status='archived', updated_at=? WHERE id IN (${ph})`, [now, ...ids])
+    }
+
+    // stage 2 — hard-delete archived rows past the grace window (still exempt-guarded).
+    // updated_at doubles as "archived at" (set by stage 1 and by manual archive).
+    const graceCut = now - ARCHIVED_GRACE_DAYS * DAY
+    deleted = dbGet<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM memories WHERE status='archived' AND NOT ${EXEMPT} AND updated_at < ?`, [graceCut]
+    )?.n ?? 0
+    if (deleted > 0) {
+      dbRun(`DELETE FROM memories WHERE status='archived' AND NOT ${EXEMPT} AND updated_at < ?`, [graceCut])
+    }
+    return { archived: ids.length, deleted }
+  } catch (e) {
+    console.warn('[memory] prune failed:', (e as Error).message)
+    return { archived: toArchive.size, deleted }
   }
 }

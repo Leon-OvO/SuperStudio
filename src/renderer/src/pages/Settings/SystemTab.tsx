@@ -11,6 +11,7 @@ import { useUIStore } from '../../stores/ui'
 import { type SkinOption, VISIBLE_SKINS } from '../../lib/skins'
 import { GlobalSettings } from './GlobalSettings'
 import { AutoModelTab } from './AutoModelTab'
+import { RuntimePanel } from './RuntimePanel'
 
 interface SystemState {
   autoLaunch: boolean
@@ -20,7 +21,7 @@ interface SystemState {
   storedShellIntegration: boolean
 }
 
-type SubTab = 'system' | 'defaults' | 'auto-model' | 'build' | 'skin' | 'browser'
+type SubTab = 'system' | 'defaults' | 'auto-model' | 'runtime' | 'build' | 'skin' | 'browser'
 
 interface Props {
   settings: AppSettings | null
@@ -51,6 +52,7 @@ export function SystemTab({ settings, providers, onSave, onProvidersRefresh }: P
         <SubTabPill active={subTab === 'system'} onClick={() => setSubTab('system')}>系统</SubTabPill>
         <SubTabPill active={subTab === 'defaults'} onClick={() => setSubTab('defaults')}>模型</SubTabPill>
         <SubTabPill active={subTab === 'auto-model'} onClick={() => setSubTab('auto-model')}>自动切换模型</SubTabPill>
+        <SubTabPill active={subTab === 'runtime'} onClick={() => setSubTab('runtime')}>Agent 运行时</SubTabPill>
         <SubTabPill active={subTab === 'build'} onClick={() => setSubTab('build')}>公司</SubTabPill>
         <SubTabPill active={subTab === 'browser'} onClick={() => setSubTab('browser')}>浏览器</SubTabPill>
         <SubTabPill active={subTab === 'skin'} onClick={() => setSubTab('skin')}>皮肤</SubTabPill>
@@ -71,6 +73,7 @@ export function SystemTab({ settings, providers, onSave, onProvidersRefresh }: P
       {subTab === 'auto-model' && settings && (
         <AutoModelTab settings={settings} providers={providers} onSave={onSave} />
       )}
+      {subTab === 'runtime' && <RuntimePanel />}
       {subTab === 'build' && settings && (
         <GlobalSettings
           tab="build"

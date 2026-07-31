@@ -4,8 +4,9 @@ import { IPC } from '../../../src/shared/ipc-types'
 import { dbAll } from '../db/sqlite'
 import { getMainWindow } from '../index'
 import {
-  listMemories, saveMemory, deleteMemory, setMemoryPinned, setMemoryStatus,
-  captureFromTranscript, importMemories, type MemoryInput, type MemoryKind
+  listMemories, saveMemory, deleteMemory, deleteMemories, deleteArchived, pruneMemories,
+  setMemoryPinned, setMemoryStatus, captureFromTranscript, importMemories,
+  type MemoryInput, type MemoryKind
 } from '../services/memory'
 
 /** Build a compact transcript from a chat session's messages for capture. */
@@ -28,6 +29,19 @@ export function memoryHandlers(): void {
   ipcMain.handle(IPC.MEMORY_SAVE, (_e, input: MemoryInput) => saveMemory(input))
 
   ipcMain.handle(IPC.MEMORY_DELETE, (_e, id: string) => { deleteMemory(id); return { ok: true } })
+
+  // Batch hard-delete (multi-select). Explicit user action → no exemption.
+  ipcMain.handle(IPC.MEMORY_DELETE_MANY, (_e, ids: string[]) => ({ ok: true, deleted: deleteMemories(ids || []) }))
+
+  // Empty the archive ("回收站"). Optional kind filter; spares the exempt classes.
+  ipcMain.handle(IPC.MEMORY_DELETE_ARCHIVED, (_e, kind?: MemoryKind) => ({ ok: true, deleted: deleteArchived(kind) }))
+
+  // Manual「整理」: run one two-stage decay pass now (unthrottled) and report counts.
+  ipcMain.handle(IPC.MEMORY_PRUNE, () => {
+    const res = pruneMemories()
+    if (res.archived || res.deleted) getMainWindow()?.webContents.send(IPC.MEMORY_CHANGED)
+    return { ok: true, ...res }
+  })
 
   // Import external memory assets (.json/.jsonl/.md). Paths come from
   // openFileDialog (already session-approved); we read them in-process.

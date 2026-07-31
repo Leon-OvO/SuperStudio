@@ -641,6 +641,14 @@ app.whenReady().then(async () => {
     console.warn('[startup] session tidy start failed:', (e as Error).message)
   }
 
+  // 记忆自动清理：开机先跑一次两段式衰减（久未用→归档，归档超期→删），之后每 ~3h 一次。
+  try {
+    const { startMemoryTidy } = await import('./services/memory-tidy')
+    startMemoryTidy()
+  } catch (e) {
+    console.warn('[startup] memory tidy start failed:', (e as Error).message)
+  }
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
@@ -711,6 +719,13 @@ app.on('before-quit', async () => {
   try {
     const { closePublishBrowsers } = await import('./services/web-publish-playwright')
     await closePublishBrowsers()
+  } catch { /* best-effort */ }
+  // Close the in-process MCP bridge (the local server that exposes 生图/技能 to CLI
+  // runtimes). CLIs hold keep-alive sockets, so this destroys them explicitly —
+  // otherwise the listener keeps the event loop alive until the watchdog fires.
+  try {
+    const { stopMcpBridge } = await import('./services/mcp-bridge')
+    await stopMcpBridge()
   } catch { /* best-effort */ }
   // Shut down any spawned MCP subprocesses cleanly
   const { mcpManager } = await import('./services/mcp')

@@ -12,6 +12,8 @@ import { Send, Square, Paperclip, X, ImagePlus, FileText, ImageOff, Monitor, Fol
 import { cn } from '../../lib/utils'
 import { ModelPicker } from './ModelPicker'
 import { ThinkingModePicker, type ThinkingMode } from '../../components/ThinkingModePicker'
+import { RuntimePicker } from '../../components/RuntimePicker'
+import type { SessionRuntime } from '../../../../shared/ipc-types'
 import { Select } from '../../components/ui/Select'
 import { useImageContextMenu } from '../../components/ui/ImageContextMenu'
 import { toast } from '../../components/ui/Toast'
@@ -61,6 +63,9 @@ interface Props {
    *  support extended thinking. 'auto' = follow the global setting. */
   thinkingMode: ThinkingMode
   onThinkingModeChange: (mode: ThinkingMode) => void
+  /** 本会话的引擎覆盖（null = 跟随全局默认）。让「这轮谁来答」可见可换。 */
+  sessionRuntime: SessionRuntime | null | undefined
+  onSessionRuntimeChange: (runtime: SessionRuntime | null) => void
   /** Image params shown when imageMode is true. */
   imageParams: ImageParams
   onImageParamsChange: (params: ImageParams) => void
@@ -103,6 +108,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   attachments, setAttachments, generatedImages, recentMessages,
   providerId, model, onModelChange,
   thinkingMode, onThinkingModeChange,
+  sessionRuntime, onSessionRuntimeChange,
   imageParams, onImageParamsChange,
   onEditImage, mentionEmployees, showSkillBar = true
 }: Props, ref) {
@@ -741,6 +747,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
           <div className="flex items-center gap-1.5 flex-1 min-w-0">
             <ModelPicker providerId={providerId} model={model} onChange={onModelChange} />
             <ThinkingModePicker providerId={providerId} model={model} value={thinkingMode} onChange={onThinkingModeChange} />
+            <RuntimePicker value={sessionRuntime} onChange={onSessionRuntimeChange} />
           </div>
           {isRunning ? (
             <button

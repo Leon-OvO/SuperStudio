@@ -421,6 +421,10 @@ function applyMigrations(): void {
     )`)
   } catch { /* already exists */ }
   try { db.run(`CREATE INDEX IF NOT EXISTS idx_skill_events_skill ON skill_events(skill_id, ts)`) } catch { /* already exists */ }
+  // v24: 会话级 Agent 引擎 —— 每条对话可自选引擎，覆盖全局 defaultRuntime。
+  // 'builtin' = 显式钉住内置自研引擎；'claude'/'opencode' = 该本机 CLI；NULL = 跟随全局。
+  // （写代码的会话想用 Claude Code、聊天/出图的会话想用内置，全局一刀切不够用。）
+  try { db.run(`ALTER TABLE sessions ADD COLUMN runtime TEXT`) } catch { /* already exists */ }
 }
 
 // Helper: run a query and save

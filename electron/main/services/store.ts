@@ -30,6 +30,7 @@ const defaults: StoreSchema = {
   settings: {
     defaultChatModel: BUILTIN_MODEL_DEFAULTS.defaultChatModel,
     defaultChatProviderId: '',
+    defaultRuntime: null,
     defaultImageModel: BUILTIN_MODEL_DEFAULTS.defaultImageModel,
     defaultImageProviderId: '',
     defaultVideoModel: BUILTIN_MODEL_DEFAULTS.defaultVideoModel,
@@ -43,6 +44,7 @@ const defaults: StoreSchema = {
     kbGlobalEnabled: false,
     kbGlobalSpaceIds: [],
     memoryAutoCapture: true,
+    memoryAutoCleanup: true,
     skillInductionEnabled: true,
     skillAutoEnable: true,
     skillMaxAutoActive: 12,

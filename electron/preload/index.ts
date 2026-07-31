@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
-import { IPC, type ScheduledTask, type ScheduledTaskRun, type ScheduledTaskInput, type ScheduledRunCompletedEvent, type VideoGenerateRequest, type VideoGenerateResult, type VideoProgressEvent, type UsageRange, type UsageCustomRange, type UsageStats } from '../../src/shared/ipc-types'
+import { IPC, type ScheduledTask, type ScheduledTaskRun, type ScheduledTaskInput, type ScheduledRunCompletedEvent, type VideoGenerateRequest, type VideoGenerateResult, type VideoProgressEvent, type UsageRange, type UsageCustomRange, type UsageStats, type RuntimeKind, type DetectedRuntime, type SessionRuntime } from '../../src/shared/ipc-types'
 
 // Whether the OS will composite a vibrancy/acrylic backdrop behind the window —
 // macOS always, Windows only on 11+ (build ≥ 22000). MUST mirror the gating in
@@ -131,6 +131,9 @@ const api = {
     ipcRenderer.invoke(IPC.SESSIONS_SET_WORKING_DIR, id, dir) as Promise<{ ok: boolean; error?: string; workingDir?: string }>,
   setSessionAssignee: (id: string, employeeId: string | null) =>
     ipcRenderer.invoke(IPC.SESSIONS_SET_ASSIGNEE, id, employeeId) as Promise<{ ok: boolean }>,
+  /** 选本会话的 Agent 引擎；null = 跟随全局默认，'builtin' = 钉住内置自研引擎。 */
+  setSessionRuntime: (id: string, runtime: SessionRuntime | null) =>
+    ipcRenderer.invoke(IPC.SESSIONS_SET_RUNTIME, id, runtime) as Promise<{ ok: boolean; runtime: SessionRuntime | null }>,
   setSessionPinned: (id: string, pinned: boolean) =>
     ipcRenderer.invoke(IPC.SESSIONS_SET_PINNED, id, pinned) as Promise<{ ok: boolean }>,
   setSessionHostMode: (id: string, on: boolean) =>
@@ -268,6 +271,12 @@ const api = {
     ipcRenderer.invoke(IPC.MEMORY_LIST, filter),
   saveMemory: (input: unknown) => ipcRenderer.invoke(IPC.MEMORY_SAVE, input),
   deleteMemory: (id: string) => ipcRenderer.invoke(IPC.MEMORY_DELETE, id),
+  deleteMemories: (ids: string[]) =>
+    ipcRenderer.invoke(IPC.MEMORY_DELETE_MANY, ids) as Promise<{ ok: boolean; deleted: number }>,
+  deleteArchivedMemories: (kind?: string) =>
+    ipcRenderer.invoke(IPC.MEMORY_DELETE_ARCHIVED, kind) as Promise<{ ok: boolean; deleted: number }>,
+  pruneMemories: () =>
+    ipcRenderer.invoke(IPC.MEMORY_PRUNE) as Promise<{ ok: boolean; archived: number; deleted: number }>,
   setMemoryPinned: (id: string, pinned: boolean) => ipcRenderer.invoke(IPC.MEMORY_SET_PINNED, { id, pinned }),
   archiveMemory: (id: string, archived: boolean) => ipcRenderer.invoke(IPC.MEMORY_ARCHIVE, { id, archived }),
   captureSessionMemory: (sessionId: string) => ipcRenderer.invoke(IPC.MEMORY_CAPTURE_SESSION, sessionId),
@@ -279,6 +288,11 @@ const api = {
     const listener = (_e: unknown, info: { count: number; memories: unknown[] }) => cb(info)
     ipcRenderer.on(IPC.MEMORY_CAPTURED, listener)
     return () => ipcRenderer.removeListener(IPC.MEMORY_CAPTURED, listener)
+  },
+  onMemoryChanged: (cb: () => void) => {
+    const listener = (): void => cb()
+    ipcRenderer.on(IPC.MEMORY_CHANGED, listener)
+    return () => ipcRenderer.removeListener(IPC.MEMORY_CHANGED, listener)
   },
 
   // --- Computer Use arming confirmation (styled in-app dialog) ---
@@ -519,6 +533,25 @@ const api = {
   deleteMcpServer: (id: string) => ipcRenderer.invoke(IPC.MCP_SERVERS_DELETE, id),
   testMcpServer: (server: unknown) => ipcRenderer.invoke(IPC.MCP_SERVERS_TEST, server),
   listMcpTools: () => ipcRenderer.invoke(IPC.MCP_TOOLS_LIST),
+
+  // --- Agent 运行时探测/选择（选一台本机 code CLI 作对话引擎）---
+  runtimeList: () =>
+    ipcRenderer.invoke(IPC.RUNTIME_LIST) as Promise<{
+      ok: boolean; runtimes?: DetectedRuntime[]; supported: { kind: RuntimeKind; displayName: string }[]; error?: string
+    }>,
+  runtimeRefresh: () =>
+    ipcRenderer.invoke(IPC.RUNTIME_REFRESH) as Promise<{
+      ok: boolean; runtimes?: DetectedRuntime[]; supported: { kind: RuntimeKind; displayName: string }[]; error?: string
+    }>,
+  // chosen = null 表示用内置自研引擎（无 CLI 兜底默认）。
+  runtimeGetDefault: () =>
+    ipcRenderer.invoke(IPC.RUNTIME_GET_DEFAULT) as Promise<{
+      ok: boolean; chosen: RuntimeKind | null
+    }>,
+  runtimeSetDefault: (kind: RuntimeKind | null) =>
+    ipcRenderer.invoke(IPC.RUNTIME_SET_DEFAULT, kind) as Promise<{
+      ok: boolean; chosen?: RuntimeKind | null; error?: string
+    }>,
 }
 
 contextBridge.exposeInMainWorld('api', api)

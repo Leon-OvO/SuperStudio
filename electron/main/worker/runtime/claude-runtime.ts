@@ -1,0 +1,321 @@
+import { spawn } from 'node:child_process'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { randomUUID } from 'node:crypto'
+import { IPC } from '../../../../src/shared/ipc-types'
+import type { AgentSink } from '../../agent/sink'
+import type { AgentRuntime, RuntimeTask, RuntimeResult } from './agent-runtime'
+import { killProcessTree } from './proc'
+
+/**
+ * Claude Code 运行时（pc-agent-runtime / PRD 第四部分 §9）。
+ *
+ * spawn 平台原生 `claude` CLI，走双向 stream-json 协议驱动，映射到既有 `AGENT_DELTA/PHASE/DONE/ERROR`。
+ *   claude -p --output-format stream-json --input-format stream-json --verbose --permission-mode bypassPermissions
+ *
+ * **模型出口 = 直连 supercode**（镜像 master `createAnthropic`）：不 patch CLI，只注入 env——
+ *   ANTHROPIC_BASE_URL=<baseUrl 剥 /vN>、ANTHROPIC_API_KEY=<真实 key>（发 `x-api-key`）、ANTHROPIC_AUTH_TOKEN=''。
+ *   claude CLI 会对 ANTHROPIC_BASE_URL 再补 `/v1/messages`，故必须剥掉 invoker 传入的 `/vN` 尾段
+ *   （否则打成 `.../v1/v1/messages`）。真实模型经 `--model` 直传。
+ *
+ * 关键坑（multica 实证，见 reference-multica-runtime）：
+ * - 写 stdin 必须独立于 stdout 读（Node 天然异步，直接 write 即可）；首条消息后**不关 stdin**，
+ *   以便回应运行时中途发来的 control_request。
+ * - env 剥离内部会话标记 CLAUDECODE/CLAUDE_CODE_ENTRYPOINT/EXECPATH/SESSION_ID/SSE_PORT，
+ *   但**保留 CLAUDE_CODE_GIT_BASH_PATH**（Windows 删了 CLI 找不到 bash 直接崩）。
+ */
+
+/** 剥离的 env：内部会话标记（防子进程误判自己在嵌套/续接会话）+ 会绕过直连注入的模型出口开关。
+ *  CLAUDE_CODE_GIT_BASH_PATH 不在此列，保留（Windows 删了 claude 找不到 bash 会崩）。 */
+const STRIP_ENV = new Set([
+  'CLAUDECODE',
+  'CLAUDE_CODE_ENTRYPOINT',
+  'CLAUDE_CODE_EXECPATH',
+  'CLAUDE_CODE_SESSION_ID',
+  'CLAUDE_CODE_SSE_PORT',
+  // 直连不变量：若继承用户本地这些开关，claude 会走 Bedrock/Vertex 绕过我们注入的 supercode 端点。
+  // 强制剥离，只认注入的 ANTHROPIC_BASE_URL / ANTHROPIC_API_KEY。
+  'CLAUDE_CODE_USE_BEDROCK',
+  'CLAUDE_CODE_USE_VERTEX',
+])
+
+/**
+ * 构造子进程环境：继承 + 剥内部标记 + 注入直连 supercode 的 env（镜像 master `createAnthropic`）。
+ * - `baseUrl`：invoker 传 `withApiVersion(provider.baseUrl)`（带 `/v1`）。claude CLI 自己会补 `/v1/messages`，
+ *   故这里剥掉尾部 `/vN`（否则 `.../v1/v1/messages`）；`baseUrl` 为空则不设，打官方 api.anthropic.com。
+ * - `apiKey` → `ANTHROPIC_API_KEY`，且强制 `ANTHROPIC_AUTH_TOKEN=''`：claude 在 API_KEY 存在时发 `x-api-key`
+ *   （与 master 一致）；清空 AUTH_TOKEN 挡住继承来的 bearer 覆盖。
+ */
+export function buildClaudeEnv(baseUrl: string | undefined, apiKey: string): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {}
+  for (const [k, v] of Object.entries(process.env)) {
+    if (STRIP_ENV.has(k)) continue
+    env[k] = v
+  }
+  // 端点完全由 provider 记录决定，别让继承自用户 shell 的 ANTHROPIC_BASE_URL 劫持直连（同 Bedrock/Vertex 剥离哲学）。
+  if (baseUrl) env.ANTHROPIC_BASE_URL = baseUrl.replace(/\/+$/, '').replace(/\/v\d+$/, '') // 剥 /vN，见文件头注释
+  else delete env.ANTHROPIC_BASE_URL // 无 baseUrl → 打官方 api.anthropic.com
+  env.ANTHROPIC_API_KEY = apiKey // 发 x-api-key（镜像 master buildAnthropicModel）
+  env.ANTHROPIC_AUTH_TOKEN = '' // 挡住继承来的 bearer，避免覆盖 x-api-key
+  return env
+}
+
+/** 一条 stream-json 行解析出的归一事件（多个 content block → 多个事件）。纯函数，便于单测。 */
+export interface ClaudeMappedEvent {
+  kind: 'delta' | 'thinking' | 'tool' | 'session' | 'result' | 'control' | 'ignore'
+  text?: string
+  toolName?: string
+  sessionId?: string
+  isError?: boolean
+  controlRequestId?: string
+}
+
+interface ClaudeContentBlock {
+  type?: string
+  text?: string
+  name?: string
+}
+interface ClaudeSDKMessage {
+  type?: string
+  session_id?: string
+  is_error?: boolean
+  result?: string
+  request_id?: string
+  message?: { content?: ClaudeContentBlock[] }
+}
+
+/**
+ * 解析单行 stream-json → 归一事件数组。无法 JSON.parse 的行返回 []（跳过，不崩）。
+ * 事件类型分派：assistant(遍历 content)、system(session_id)、result(终局)、control_request(需回应)。
+ */
+export function mapClaudeLine(line: string): ClaudeMappedEvent[] {
+  const t = line.trim()
+  if (!t) return []
+  let obj: ClaudeSDKMessage
+  try {
+    obj = JSON.parse(t) as ClaudeSDKMessage
+  } catch {
+    return []
+  }
+  switch (obj.type) {
+    case 'assistant': {
+      const blocks = obj.message?.content ?? []
+      const out: ClaudeMappedEvent[] = []
+      for (const b of blocks) {
+        if (b.type === 'text' && b.text) out.push({ kind: 'delta', text: b.text })
+        else if (b.type === 'thinking') out.push({ kind: 'thinking' })
+        else if (b.type === 'tool_use') out.push({ kind: 'tool', toolName: b.name })
+      }
+      return out
+    }
+    case 'system':
+      return obj.session_id ? [{ kind: 'session', sessionId: obj.session_id }] : []
+    case 'result':
+      return [{ kind: 'result', isError: !!obj.is_error, text: obj.result, sessionId: obj.session_id }]
+    case 'control_request':
+      return obj.request_id ? [{ kind: 'control', controlRequestId: obj.request_id }] : []
+    default:
+      return [{ kind: 'ignore' }]
+  }
+}
+
+export class ClaudeRuntime implements AgentRuntime {
+  readonly name = 'claude'
+
+  async run(task: RuntimeTask, sink: AgentSink): Promise<RuntimeResult> {
+    const { sessionId, cwd, model, providerId, providerName, upstream, message, signal, messageId, mcp } = task
+    const runStart = Date.now()
+    const phase = (p: 'connecting' | 'thinking' | 'responding' | 'tool', label: string, toolName?: string): void =>
+      sink.send(IPC.AGENT_PHASE, { sessionId, phase: p, label, startedAt: Date.now(), ...(toolName ? { toolName } : {}) })
+
+    // 协议门控（belt-and-suspenders，主门控在 invoker）：claude CLI 只说 Anthropic 协议。
+    if (upstream.protocol !== 'anthropic') {
+      sink.send(IPC.AGENT_ERROR, { sessionId, error: 'Claude Code 运行时只支持 Anthropic 协议模型，请切换 OpenCode 或改用 Claude 系模型' })
+      return { text: '' }
+    }
+
+    const isWin = process.platform === 'win32'
+    const args = [
+      '-p',
+      '--output-format', 'stream-json',
+      '--input-format', 'stream-json',
+      '--verbose',
+      '--permission-mode', 'bypassPermissions',
+      '--model', model, // 真实模型 id（直连 supercode）
+    ]
+
+    // 进程内 MCP 桥（生图/技能）。schema 按 Claude Code 2.x 实测：
+    // `{"mcpServers":{name:{type:"http",url,headers}}}`——注意与 opencode 的 `type:"remote"` 不同名。
+    //
+    // `--mcp-config` 也收 JSON 字符串，但这里**必须走临时文件**：Windows 上本适配器 shell:true
+    // （claude 是 .cmd shim），一坨带引号的 JSON 过 cmd.exe 会被引号规则啃坏；文件路径没这问题。
+    // 刻意不加 `--strict-mcp-config`：那会把用户自己配的 MCP server 一并屏蔽掉。
+    let mcpConfigPath: string | null = null
+    if (mcp) {
+      try {
+        mcpConfigPath = path.join(os.tmpdir(), `ss-mcp-${randomUUID()}.json`)
+        fs.writeFileSync(
+          mcpConfigPath,
+          JSON.stringify({
+            mcpServers: {
+              superstudio: { type: 'http', url: mcp.url, headers: { Authorization: `Bearer ${mcp.token}` } },
+            },
+          }),
+          'utf8'
+        )
+        args.push('--mcp-config', mcpConfigPath)
+      } catch (e) {
+        // 写不出配置不该让整轮对话失败——降级成没有独有工具的纯 CLI 会话。
+        console.warn('[claude-runtime] MCP 配置写入失败，本轮无生图/技能：', (e as Error).message)
+        mcpConfigPath = null
+      }
+    }
+
+    phase('connecting', '启动运行时…')
+    const child = spawn('claude', args, {
+      cwd,
+      env: buildClaudeEnv(upstream.baseUrl, upstream.apiKey),
+      shell: isWin, // Windows 上 claude 是 .cmd/npm shim，需 shell 解析
+      windowsHide: true,
+    })
+
+    // 管道错误吞噬（关键：防主进程崩溃）：进程已退出/被 killProcessTree 强杀时，向 stdin 写(初始 prompt 或
+    // control_response)会异步发 EPIPE、stdout/stderr 会 ECONNRESET；无监听器则冒泡成 Electron 主进程未捕获异常。
+    // 这些失败一律由下面的 close/error 兜底，管道错误静默即可。try/catch 只兜同步抛出，兜不住这些异步事件。
+    child.stdin.on('error', () => {})
+    child.stdout.on('error', () => {})
+    child.stderr.on('error', () => {})
+
+    let full = ''
+    let started = false
+    let resultErr: string | null = null
+
+    // 喂 prompt：单行 JSON user 消息 + 换行；发完**不关 stdin**（留着回 control_request）。
+    const userMsg = JSON.stringify({
+      type: 'user',
+      message: { role: 'user', content: [{ type: 'text', text: message }] },
+    })
+    try {
+      child.stdin.write(userMsg + '\n')
+    } catch {
+      /* 写失败由 close/error 兜底 */
+    }
+
+    // Windows 上 shell:true 的直接子进程是 cmd.exe，claude(node) 是其孙进程；只 kill 父会留孤儿继续烧
+    // token/操控电脑，且孙进程持 stdout 管道会让 close 不触发、槽不释放 → 用进程树 kill。
+    const onAbort = (): void => killProcessTree(child)
+    if (signal) {
+      if (signal.aborted) onAbort()
+      else signal.addEventListener('abort', onAbort, { once: true })
+    }
+
+    const applyLine = (line: string): void => {
+      for (const ev of mapClaudeLine(line)) {
+        switch (ev.kind) {
+          case 'delta':
+            if (!started) {
+              started = true
+              phase('responding', '输出中…')
+            }
+            if (ev.text) {
+              full += ev.text
+              sink.send(IPC.AGENT_DELTA, { sessionId, messageId, delta: ev.text })
+            }
+            break
+          case 'thinking':
+            if (!started) phase('thinking', '思考中…')
+            break
+          case 'tool':
+            phase('tool', `执行 ${ev.toolName ?? '工具'}…`, ev.toolName)
+            break
+          case 'result':
+            if (ev.isError) resultErr = ev.text || '运行时返回错误'
+            break
+          case 'control':
+            // 无人值守自动放行：回写 control_response（best-effort，具体协议以真机验证为准）。
+            if (ev.controlRequestId) {
+              try {
+                child.stdin.write(
+                  JSON.stringify({
+                    type: 'control_response',
+                    response: { subtype: 'success', request_id: ev.controlRequestId, response: { behavior: 'allow' } },
+                  }) + '\n'
+                )
+              } catch {
+                /* ignore */
+              }
+            }
+            break
+          default:
+            break
+        }
+      }
+    }
+
+    // 逐行读 stdout（stream-json 单行可能很大，靠换行切）。
+    await new Promise<void>((resolve) => {
+      let buf = ''
+      let stderrTail = ''
+      child.stdout.setEncoding('utf8')
+      child.stdout.on('data', (chunk: string) => {
+        buf += chunk
+        let nl: number
+        while ((nl = buf.indexOf('\n')) >= 0) {
+          const line = buf.slice(0, nl)
+          buf = buf.slice(nl + 1)
+          applyLine(line)
+        }
+      })
+      child.stderr.setEncoding('utf8')
+      child.stderr.on('data', (chunk: string) => {
+        stderrTail = (stderrTail + chunk).slice(-2000) // 保留尾部供报错拼接
+      })
+      child.on('error', (err) => {
+        resultErr = resultErr || err.message
+        resolve()
+      })
+      child.on('close', (code: number | null) => {
+        if (buf.trim()) applyLine(buf) // 冲刷残留
+        if (!resultErr && stderrTail.trim() && !full) resultErr = stderrTail.trim().slice(-500)
+        // 非 0 退出且无正文无错：视为异常退出，不误报空的成功。
+        if (!resultErr && !full && code != null && code !== 0) resultErr = `运行时异常退出（code ${code}）`
+        resolve()
+      })
+    })
+
+    if (signal) signal.removeEventListener('abort', onAbort)
+
+    // 配置文件里有本次 run 的 token，用完立刻删（token 本身也已随 run 结束失效）。
+    if (mcpConfigPath) {
+      try { fs.unlinkSync(mcpConfigPath) } catch { /* 已不在/占用中，无妨 */ }
+    }
+
+    // 用户取消:onAbort→killProcessTree 强杀→Windows taskkill /F 令非0退出(code=1、signal=null),POSIX SIGTERM→code=null。
+    // 前者会命中上面「非0退出→运行时异常退出」误报成崩溃、后者会发出空 AGENT_DONE——两者都是取消后不该发的终帧,
+    // 取消的终态归上层 invoker(AGENT_STOP),运行时 abort 后静默退出、不 emit。
+    if (signal?.aborted) return { text: full }
+
+    // MCP 桥采集到的工具流水（Claude Code 的 stream-json 里 tool_result 走 `user` 行、当前被忽略，
+    // 产物同样只能由进程内的桥提供）。有产物就不算失败，否则报错会把已生成的图一起丢掉。
+    const toolCallLog = task.collectToolCalls?.() ?? []
+
+    if (resultErr && !full && !toolCallLog.length) {
+      sink.send(IPC.AGENT_ERROR, { sessionId, error: resultErr })
+      return { text: '' }
+    }
+
+    sink.send(IPC.AGENT_DONE, {
+      sessionId,
+      messageId,
+      content: full,
+      ...(toolCallLog.length ? { toolCallLog } : {}),
+      meta: { model, providerId, providerName, durationMs: Date.now() - runStart, runtime: this.name },
+    })
+    return { text: full, ...(toolCallLog.length ? { toolCallLog } : {}) }
+  }
+
+  async dispose(): Promise<void> {
+    // 每 run 独立起停子进程，无常驻资源。
+  }
+}

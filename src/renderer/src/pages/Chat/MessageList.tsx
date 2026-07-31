@@ -10,7 +10,7 @@ import { copyImageToClipboard } from '../../lib/clipboard'
 import { useImageContextMenu } from '../../components/ui/ImageContextMenu'
 import { toast } from '../../components/ui/Toast'
 import { Markdown } from '../../lib/markdown'
-import { Play, X, RotateCcw, Clock, Cpu, Copy, Check, Download, Wand2, Brain, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Pencil, Trash2, RefreshCw, Coins, ImagePlus, Wrench, CheckCircle2, XCircle, Loader2, Quote, Server, MessagesSquare, FileText } from 'lucide-react'
+import { Play, X, RotateCcw, Clock, Cpu, Copy, Check, Download, Wand2, Brain, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Pencil, Trash2, RefreshCw, Coins, ImagePlus, Wrench, CheckCircle2, XCircle, Loader2, Quote, Server, MessagesSquare, FileText, Terminal } from 'lucide-react'
 import { formatUsageLine } from '../../lib/format-cost'
 import { scrubAddresses } from '../../../../shared/scrub'
 
@@ -18,6 +18,11 @@ function toFileUrl(p: string): string {
   // Three slashes: local-file:///F:/path — empty authority avoids Chromium treating "F:" as host
   const fwd = p.replace(/\\/g, '/').replace(/^\//, '')
   return `local-file:///${fwd}`
+}
+
+/** 引擎名（meta.runtime）。缺省 = 内置自研引擎，气泡上不标注。 */
+const RUNTIME_LABEL: Record<string, string> = {
+  claude: 'Claude Code', opencode: 'OpenCode', codex: 'Codex'
 }
 
 /** Short Chinese labels for the per-phase timing footnote (meta.phases). */
@@ -793,6 +798,16 @@ function MessageBubble({
             )}
             {meta.providerName && meta.providerName !== meta.model && (
               <span className="text-muted-foreground/75">{meta.providerName}</span>
+            )}
+            {/* 哪个引擎答的。没有 = 内置自研引擎（绝大多数消息），不显示以免噪声。 */}
+            {meta.runtime && (
+              <span
+                className="flex items-center gap-1 text-primary/80"
+                title="这条由本机 CLI 运行时生成（非内置引擎）"
+              >
+                <Terminal size={10} />
+                {RUNTIME_LABEL[meta.runtime] ?? meta.runtime}
+              </span>
             )}
             {meta.durationMs != null && (
               <span className="flex items-center gap-1 text-muted-foreground/75">

@@ -58,7 +58,7 @@ describe('parseSizeFromMessage', () => {
 describe('friendlyError', () => {
   it('maps known status families', () => {
     expect(friendlyError('Error 429 too many requests')).toContain('429')
-    expect(friendlyError('invalid api key')).toContain('401')
+    expect(friendlyError('invalid api key')).toContain('API Key')
     expect(friendlyError('model not found')).toContain('404')
     expect(friendlyError('maximum context length exceeded')).toContain('上下文')
   })

@@ -133,7 +133,7 @@ function tryAutoTitle(sessionId: string, userMessage: string, isImage: boolean, 
  *  stored path no longer exists / isn't a directory (stale after a move/delete)
  *  — callers then fall back to the desktop default. When non-empty, the agent
  *  default-saves there, registers it as an approved root, and can list_dir it. */
-function readSessionWorkingDir(sessionId: string): string {
+export function readSessionWorkingDir(sessionId: string): string {
   try {
     const row = dbGet<{ working_dir: string | null }>(`SELECT working_dir FROM sessions WHERE id = ?`, [sessionId])
     const dir = (row?.working_dir || '').trim()

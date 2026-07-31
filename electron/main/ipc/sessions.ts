@@ -1,7 +1,7 @@
 import { ipcMain, dialog, BrowserWindow } from 'electron'
 import fs from 'fs'
 import path from 'path'
-import { IPC } from '../../../src/shared/ipc-types'
+import { IPC, RUNTIME_ADAPTERS_READY, type SessionRuntime } from '../../../src/shared/ipc-types'
 import { BRAND } from '../../../src/shared/brand'
 import { dbRun, dbAll, dbGet } from '../db/sqlite'
 import { randomUUID } from 'crypto'
@@ -48,6 +48,7 @@ export function sessionHandlers(): void {
              COALESCE(s.host_mode, 0) AS hostMode,
              s.working_dir AS workingDir,
              s.employee_id AS employeeId,
+             s.runtime AS runtime,
              s.group_employee_ids AS groupEmployeeIdsJson,
              COALESCE((SELECT SUM(cost_usd)      FROM messages WHERE session_id = s.id), 0) AS totalCostUsd,
              COALESCE((SELECT SUM(input_tokens)  FROM messages WHERE session_id = s.id), 0) AS totalInputTokens,
@@ -81,6 +82,15 @@ export function sessionHandlers(): void {
   ipcMain.handle(IPC.SESSIONS_SET_ASSIGNEE, (_e, id: string, employeeId: string | null) => {
     dbRun(`UPDATE sessions SET employee_id = ? WHERE id = ?`, [employeeId || null, id])
     return { ok: true }
+  })
+
+  // 选择本会话的 Agent 引擎（覆盖全局默认）。null = 清除覆盖、跟随全局。
+  // 'builtin' 是显式档位（钉住内置自研引擎），与「未设」不同。下一轮生效（运行时实时读会话行）。
+  ipcMain.handle(IPC.SESSIONS_SET_RUNTIME, (_e, id: string, runtime: SessionRuntime | null) => {
+    const allowed: SessionRuntime[] = ['builtin', ...RUNTIME_ADAPTERS_READY]
+    const next = runtime && allowed.includes(runtime) ? runtime : null
+    dbRun(`UPDATE sessions SET runtime = ? WHERE id = ?`, [next, id])
+    return { ok: true, runtime: next }
   })
 
   // Group chat membership — pull an employee in (拉人进群) or remove one. Mutates

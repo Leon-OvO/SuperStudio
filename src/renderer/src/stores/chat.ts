@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { Session, Message, AgentProgressEvent, AgentPhaseEvent } from '../../../shared/ipc-types'
+import type { Session, Message, AgentProgressEvent, AgentPhaseEvent, SessionRuntime } from '../../../shared/ipc-types'
 
 interface AgentStep {
   index: number
@@ -67,6 +67,8 @@ interface ChatState {
   /** Update a session's bound employee in the local list (after the main process
    *  has persisted it via setSessionAssignee IPC). null = unbound. */
   setSessionAssignee: (sessionId: string, employeeId: string | null) => void
+  /** Update a session's Agent 引擎 locally (after setSessionRuntime IPC). null = 跟随全局。 */
+  setSessionRuntime: (sessionId: string, runtime: SessionRuntime | null) => void
   /** Update a session's pinned flag locally (after setSessionPinned IPC). */
   setSessionPinned: (sessionId: string, pinned: boolean) => void
   /** Update a group session's 主持人持续推进 flag locally (after setSessionHostMode IPC). */
@@ -179,6 +181,9 @@ export const useChatStore = create<ChatState>((set) => ({
   })),
   setSessionAssignee: (sessionId, employeeId) => set(s => ({
     sessions: s.sessions.map(sess => sess.id === sessionId ? { ...sess, employeeId } : sess)
+  })),
+  setSessionRuntime: (sessionId, runtime) => set(s => ({
+    sessions: s.sessions.map(sess => sess.id === sessionId ? { ...sess, runtime } : sess)
   })),
   setSessionPinned: (sessionId, pinned) => set(s => ({
     sessions: s.sessions.map(sess => sess.id === sessionId ? { ...sess, pinned: pinned ? 1 : 0 } : sess)
