@@ -128,6 +128,15 @@ export function registerBridgeTools(mcp: McpServer, ctx: BridgeRunContext): void
         status: 'running',
         message: `正在生成 ${actualN} 张图片（${actualSize}）…`,
       })
+      // 同时推进顶部阶段文案：出图动辄两三分钟，期间 CLI 一声不吭，若还挂着「启动运行时…」
+      // 用户只会以为死机（实测就发生过）。这里如实说明正在干什么。
+      ctx.sink.send(IPC.AGENT_PHASE, {
+        sessionId: ctx.sessionId,
+        phase: 'tool',
+        label: `正在生成图片（可能需要 1-3 分钟）…`,
+        startedAt: Date.now(),
+        toolName: 'image_generate',
+      })
 
       try {
         const result = await generateImage({

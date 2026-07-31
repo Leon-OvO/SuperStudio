@@ -67,9 +67,24 @@ export interface RuntimeRunArgs {
 
 /** 把一条会话派给本机运行时执行。全程事件经 win.webContents 出（AGENT_DELTA/PHASE/DONE/ERROR），
  *  与自研 runAgent 一致，渲染层无感。落库（user + assistant 行）由本函数负责，否则重开对话历史丢。 */
+/** 整条事件流静默多久算「卡死」。出图实测单次可达 178s（期间 CLI 一声不吭），
+ *  故取 6 分钟——足够容纳最慢的一次工具，又不至于让用户无限干等。 */
+const STALL_TIMEOUT_MS = 6 * 60_000
+
 export async function runViaRuntime(args: RuntimeRunArgs, win: BrowserWindow): Promise<void> {
   const { sessionId, message } = args
-  const sink = makeWindowSink(win)
+  const rawSink = makeWindowSink(win)
+  // 看门狗必须盯**整条**事件流（delta/phase/progress/工具都算活着），只盯文本会把长工具误判成卡死
+  // ——这是自研引擎那边早就吃过的教训。运行时这条路此前完全没有看门狗：CLI 静默重试或吊死时
+  // AGENT_ERROR 只能等进程 close，而它可能永远不来，界面就一直转圈。
+  let lastActivity = Date.now()
+  const sink = {
+    send(channel: string, payload: unknown): void {
+      lastActivity = Date.now()
+      rawSink.send(channel, payload)
+    },
+    get win() { return rawSink.win },
+  }
   const fail = (error: string): void => sink.send(IPC.AGENT_ERROR, { sessionId, error })
 
   const kind = args.kind ?? runtimeForSession(sessionId)
@@ -157,6 +172,22 @@ export async function runViaRuntime(args: RuntimeRunArgs, win: BrowserWindow): P
   }
 
   const runtime: AgentRuntime = kind === 'opencode' ? new OpenCodeRuntime() : new ClaudeRuntime()
+
+  // 静默看门狗：整条事件流超时无动静就中止并如实报错，绝不让界面无限转圈。
+  let stalled = false
+  const stallTimer = setInterval(() => {
+    if (Date.now() - lastActivity < STALL_TIMEOUT_MS || abort.signal.aborted) return
+    stalled = true
+    clearInterval(stallTimer)
+    const mins = Math.round(STALL_TIMEOUT_MS / 60_000)
+    rawSink.send(IPC.AGENT_ERROR, {
+      sessionId,
+      error: `运行时超过 ${mins} 分钟没有任何输出，已中止。可能是上游无响应或该 CLI 卡住；可改用内置引擎重试。`,
+    })
+    abort.abort() // 触发适配器 killProcessTree，不留孤儿进程
+  }, 30_000)
+  stallTimer.unref?.()
+
   try {
     const result = await runtime.run(task, sink)
     const toolCallLog = result.toolCallLog ?? []
@@ -164,7 +195,8 @@ export async function runViaRuntime(args: RuntimeRunArgs, win: BrowserWindow): P
     // 判据是「有正文**或**有工具产物」：纯出图轮模型可能一个字都不说，只按正文判会把整条(连同图)丢掉。
     // 运行时已自行发 AGENT_DONE；invoker 只负责持久化，不重复发终帧。
     const worthSaving = !!result.text.trim() || toolCallLog.length > 0
-    if (!abort.signal.aborted && runtimeRuns.get(sessionId) === abort && worthSaving) {
+    // 被看门狗中止的轮次不落库（终帧已由看门狗发出，内容也不完整）。
+    if (!stalled && !abort.signal.aborted && runtimeRuns.get(sessionId) === abort && worthSaving) {
       try {
         // meta 一并落库：否则重开对话时「这条是哪个引擎答的」「耗时/服务商」全丢
         // （DONE 里带了，但那是一次性事件，不进历史）。
@@ -194,6 +226,7 @@ export async function runViaRuntime(args: RuntimeRunArgs, win: BrowserWindow): P
   } catch (e) {
     if (!abort.signal.aborted) fail((e as Error).message || String(e))
   } finally {
+    clearInterval(stallTimer)
     unregisterRun(mcpToken) // token 一次性：run 结束立刻失效
     try {
       await runtime.dispose()

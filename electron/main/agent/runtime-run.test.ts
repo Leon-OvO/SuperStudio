@@ -195,6 +195,36 @@ describe('runViaRuntime', () => {
     })
   })
 
+  it('(f) 静默看门狗：整条事件流长时间无动静 → 中止并报错，不再无限转圈', async () => {
+    vi.useFakeTimers()
+    try {
+      let sig: AbortSignal | undefined
+      H.claudeRunImpl = (task) =>
+        new Promise((resolve) => {
+          sig = task.signal as AbortSignal
+          sig.addEventListener('abort', () => resolve({ text: '' }))
+        })
+      const done = runViaRuntime({ sessionId: 's7', message: 'hi' }, win)
+      await vi.waitFor(() => expect(sig).toBeDefined())
+
+      // 5 分钟内不该误杀（一次出图实测就要 178s，误杀比不杀更糟）
+      await vi.advanceTimersByTimeAsync(5 * 60_000)
+      expect(sig!.aborted).toBe(false)
+      expect(sent.some((s) => s[0] === IPC.AGENT_ERROR)).toBe(false)
+
+      // 超过阈值后中止并如实报错
+      await vi.advanceTimersByTimeAsync(2 * 60_000)
+      expect(sig!.aborted).toBe(true)
+      const err = String(sent.find((s) => s[0] === IPC.AGENT_ERROR)?.[1].error ?? '')
+      expect(err).toContain('没有任何输出')
+      await done
+      // 被看门狗中止的轮次不落 assistant 行
+      expect(H.dbCalls.some((c) => c.sql.includes("'assistant'"))).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('(e) MCP 桥：task 带 url+token，run 结束 token 立刻失效', async () => {
     await runViaRuntime({ sessionId: 's6', message: 'hi' }, win)
     expect(H.claudeTasks[0].mcp).toEqual({ url: 'http://127.0.0.1:1/mcp', token: 'tok-test' })
