@@ -4,6 +4,7 @@ import type { AgentSink } from '../../agent/sink'
 import type { AgentRuntime, RuntimeTask, RuntimeResult } from './agent-runtime'
 import { resolveRuntimeExecPath } from './discovery'
 import { killProcessTree } from './proc'
+import { MCP_TOOL_CALL_TIMEOUT_MS } from '../../agent/timeouts'
 
 /**
  * OpenCode 运行时（run 模式，pc-agent-runtime / PRD 第四部分 §9）。
@@ -100,9 +101,9 @@ function describeError(err: unknown): string {
   return e.data?.message || e.message || e.name || '运行时出错'
 }
 
-/** 生图这类工具远超 opencode 的 MCP 默认超时（5s！），必须显式放宽，否则必然超时失败。
- *  取 300s：generateImage 自身上限 180s，留足往返与重试余量。 */
-const MCP_TIMEOUT_MS = 300_000
+/** 生图这类工具远超该 CLI 的 MCP 默认超时（5s！），必须显式放宽，否则必然超时失败。
+ *  数值来自 agent/timeouts.ts：generateImage 自身上限 180s，留足往返与重试余量。 */
+const MCP_TIMEOUT_MS = MCP_TOOL_CALL_TIMEOUT_MS
 
 /** provider ss 内联配置（直连上游，openai 兼容端点）+ 进程内 MCP 桥——经 OPENCODE_CONFIG_CONTENT 注入。
  *  baseUrl 保留 `/v1`（invoker 传 withApiVersion 的结果，@ai-sdk/openai-compatible 自补 `/chat/completions`）。

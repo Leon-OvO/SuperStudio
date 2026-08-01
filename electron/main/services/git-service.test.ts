@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { splitFileDiff, buildHunkPatch, countHunks } from './git-service'
+import { splitFileDiff, buildHunkPatch, countHunks, hunkFingerprint, hunkFingerprints } from './git-service'
 
 const TWO_HUNK_DIFF = `diff --git a/foo.txt b/foo.txt
 index 0000001..0000002 100644
@@ -70,5 +70,31 @@ describe('buildHunkPatch', () => {
     expect(buildHunkPatch(TWO_HUNK_DIFF, 2)).toBe(null)
     expect(buildHunkPatch(TWO_HUNK_DIFF, -1)).toBe(null)
     expect(buildHunkPatch('', 0)).toBe(null)
+  })
+})
+
+describe('hunkFingerprint', () => {
+  const HUNK = '@@ -10,2 +10,3 @@\n line10\n+inserted\n line11'
+
+  it('同一块整体位移后仍是同一个指纹', () => {
+    // 前面的块变长/变短只会改起始行号，本块内容没变，必须还认得出来。
+    const moved = HUNK.replace('@@ -10,2 +10,3 @@', '@@ -37,2 +41,3 @@')
+    expect(hunkFingerprint(moved)).toBe(hunkFingerprint(HUNK))
+  })
+
+  it('正文改一个字符就是另一个指纹', () => {
+    expect(hunkFingerprint(HUNK.replace('+inserted', '+inserted!'))).not.toBe(hunkFingerprint(HUNK))
+    // 行数（不是行号）变了也算另一块。
+    expect(hunkFingerprint(HUNK.replace('@@ -10,2 +10,3 @@', '@@ -10,2 +10,4 @@'))).not.toBe(hunkFingerprint(HUNK))
+    // `@@` 后面的函数上下文变了同样算另一块。
+    expect(hunkFingerprint(`${HUNK.split('\n')[0]} func foo()`)).not.toBe(hunkFingerprint(HUNK.split('\n')[0]))
+  })
+
+  it('两个内容不同的块指纹不同，且长度稳定', () => {
+    const fps = hunkFingerprints(TWO_HUNK_DIFF)
+    expect(fps).toHaveLength(2)
+    expect(fps[0]).not.toBe(fps[1])
+    expect(fps[0]).toMatch(/^[0-9a-f]{12}$/)
+    expect(hunkFingerprints('')).toEqual([])
   })
 })

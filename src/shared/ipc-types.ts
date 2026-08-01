@@ -640,6 +640,10 @@ export interface AppSettings {
   localScriptsConfirmEachRun?: boolean
   /** Timeout (ms) for `run_script`. Default 300_000 (5 min). */
   localScriptsTimeoutMs?: number
+  /** Windows 专用：执行本机命令前先切到 UTF-8 代码页，避免中文输出变乱码。
+   *  默认开（字段缺省即视为 true）。极少数依赖本地代码页的老 .bat 可关掉；
+   *  应急也可用环境变量 SS_SHELL_NO_CHCP=1。非 Windows 上该项无效。 */
+  shellForceUtf8?: boolean
   /** SSH gate: when true (default), READ-ONLY remote commands run without a confirm
    *  popup and only WRITE/dangerous commands are confirmed (each time). When false,
    *  use trust-on-first-use (first command per connection confirms, then trusted). */

@@ -1,6 +1,7 @@
 import { app } from 'electron'
 import fs from 'fs'
 import path from 'path'
+import { redactSecrets } from './redact'
 
 /**
  * Lightweight local error log. Keeps the most recent N entries in memory and
@@ -45,7 +46,13 @@ function rolloverIfNeeded(file: string): void {
 }
 
 export function logEntry(entry: Omit<LogEntry, 'ts'>): void {
-  const full: LogEntry = { ts: Date.now(), ...entry }
+  // 落盘前脱敏——message/stack 里可能带着刚失败请求的 URL/token/密钥。
+  const redacted: Omit<LogEntry, 'ts'> = {
+    ...entry,
+    message: redactSecrets(entry.message),
+    stack: entry.stack ? redactSecrets(entry.stack) : entry.stack,
+  }
+  const full: LogEntry = { ts: Date.now(), ...redacted }
   buffer.push(full)
   if (buffer.length > MAX_IN_MEMORY) buffer = buffer.slice(-MAX_IN_MEMORY)
   try {

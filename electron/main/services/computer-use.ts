@@ -3,6 +3,7 @@ import fs from 'fs'
 import os from 'os'
 import type * as NutType from '@nut-tree-fork/nut-js'
 import { runShell } from './shell'
+import { shellDiagnosticFields } from '../agent/pure'
 import { isApproved, registerApproved } from './path-allow'
 
 /**
@@ -338,8 +339,15 @@ export async function runBashTool(command: string, signal?: AbortSignal): Promis
   if (signal) signal.addEventListener('abort', () => ctl.abort(), { once: true })
   const r = await runShell(command, os.homedir(), ctl.signal, 60_000)
   const out = [r.stdout, r.stderr].filter(Boolean).join('\n').trim()
-  if (r.timedOut) return (out ? out + '\n' : '') + '[命令超时已终止]'
-  return out || `[exit ${r.code}]`
+  // 这个工具只能回纯文本，所以把 shell 层算好的诊断（成因/截断/全量日志路径）拼成
+  // 尾注附上去，否则超时就只剩「[命令超时已终止]」一句，模型无从判断下一步。
+  const extra = shellDiagnosticFields(r)
+  const notes = Object.entries(extra)
+    .map(([k, v]) => `${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`)
+    .join('\n')
+  const tail = notes ? `\n[诊断]\n${notes}` : ''
+  if (r.timedOut) return (out ? out + '\n' : '') + '[命令超时已终止]' + tail
+  return (out || `[exit ${r.code}]`) + tail
 }
 
 // --- text_editor tool (fs + path-allow) -----------------------------------

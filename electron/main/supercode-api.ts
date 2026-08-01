@@ -108,6 +108,55 @@ async function rawFetch(url: string, init?: RequestInit): Promise<Response> {
   }
 }
 
+// --- Refresh single-flight ----------------------------------------------
+//
+// 服务端对 refresh_token 做轮转（每次刷新都下发新 refresh_token 且旧的失效）。
+// 并发打多个接口同时收到 401 时，若各自独立发起 refresh，第 2..N 个请求会拿着
+// 已经被第 1 个请求"消费掉"的旧 refresh_token 去刷新，必然失败，各自退到用明文
+// 密码重登；若服务端把重复使用判定为"家族重放"甚至会吊销整族 refresh_token，
+// 导致用户莫名其妙被强制登出。用一个模块级 in-flight promise 把并发 401 收拢成
+// 一次真实的刷新（含兜底重登），其余调用者只是等这同一个 promise。
+let refreshInFlight: Promise<boolean> | null = null
+
+async function doRefresh(): Promise<boolean> {
+  // 1) 优先走 refresh-token 流程（便宜，不用走一遍密码）
+  let recovered = false
+  const refreshToken = _getRefreshToken?.() ?? ''
+  if (refreshToken) {
+    try {
+      const refreshRes = await fetch(`${BASE}/api/v1/auth/refresh`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: refreshToken })
+      })
+      if (refreshRes.ok) {
+        const refreshData = await refreshRes.json() as LoginResponse
+        _storeTokens?.(refreshData.access_token, refreshData.refresh_token)
+        recovered = true
+      }
+    } catch { /* fall through to re-login */ }
+  }
+
+  // 2) refresh 失败/缺失时，兜底用已保存的凭据静默重登——必须在同一个
+  //    in-flight 里执行，否则并发调用者各自触发兜底重登，等于没修。
+  if (!recovered && _tryReLogin) {
+    try {
+      recovered = await _tryReLogin()
+    } catch { recovered = false }
+  }
+  return recovered
+}
+
+/** 确保拿到一份新鲜会话；并发调用者共享同一次刷新（含兜底重登）。 */
+function ensureFreshSession(): Promise<boolean> {
+  if (!refreshInFlight) {
+    refreshInFlight = doRefresh().finally(() => {
+      refreshInFlight = null
+    })
+  }
+  return refreshInFlight
+}
+
 /**
  * Fetch with auto-refresh on 401. Retries once after refreshing.
  * On refresh failure, clears tokens and emits AUTH_STATE_CHANGED to renderer.
@@ -116,30 +165,7 @@ export async function superCodeFetch(url: string, init?: RequestInit): Promise<R
   let res = await rawFetch(url, init)
 
   if (res.status === 401) {
-    // 1) Try refresh-token flow first (cheap, no password roundtrip)
-    let recovered = false
-    const refreshToken = _getRefreshToken?.() ?? ''
-    if (refreshToken) {
-      try {
-        const refreshRes = await fetch(`${BASE}/api/v1/auth/refresh`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ refresh_token: refreshToken })
-        })
-        if (refreshRes.ok) {
-          const refreshData = await refreshRes.json() as LoginResponse
-          _storeTokens?.(refreshData.access_token, refreshData.refresh_token)
-          recovered = true
-        }
-      } catch { /* fall through to re-login */ }
-    }
-
-    // 2) If refresh failed/missing, silently re-login with stored credentials
-    if (!recovered && _tryReLogin) {
-      try {
-        recovered = await _tryReLogin()
-      } catch { recovered = false }
-    }
+    const recovered = await ensureFreshSession()
 
     if (!recovered) {
       handleAuthFailure()

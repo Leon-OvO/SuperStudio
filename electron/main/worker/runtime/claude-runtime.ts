@@ -7,6 +7,7 @@ import { IPC } from '../../../../src/shared/ipc-types'
 import type { AgentSink } from '../../agent/sink'
 import type { AgentRuntime, RuntimeTask, RuntimeResult } from './agent-runtime'
 import { killProcessTree } from './proc'
+import { MCP_TOOL_CALL_TIMEOUT_MS } from '../../agent/timeouts'
 
 /**
  * Claude Code 运行时（pc-agent-runtime / PRD 第四部分 §9）。
@@ -62,8 +63,8 @@ export function buildClaudeEnv(baseUrl: string | undefined, apiKey: string): Nod
 }
 
 /** MCP 工具超时上限：出图/视频动辄几分钟（实测一次出图 178s），远超 CLI 默认值。
- *  与 opencode 适配器的 mcp.timeout 取同一数值，避免两端行为漂移。 */
-const MCP_TIMEOUT_MS = 300_000
+ *  数值来自 agent/timeouts.ts，与另一个 CLI 适配器、以及进程内引擎同源，避免多端漂移。 */
+const MCP_TIMEOUT_MS = MCP_TOOL_CALL_TIMEOUT_MS
 
 /** 一条 stream-json 行解析出的归一事件（多个 content block → 多个事件）。纯函数，便于单测。 */
 export interface ClaudeMappedEvent {

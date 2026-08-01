@@ -2,6 +2,7 @@ import { app } from 'electron'
 import fs from 'fs'
 import path from 'path'
 import { getSettings } from './store'
+import { redactSecrets } from './redact'
 
 /**
  * Opt-in API request log. When the user turns it on in 设置 → 关于&更新, every
@@ -81,7 +82,12 @@ function rolloverIfNeeded(file: string): void {
 
 export function logApiRequest(entry: Omit<ApiRequestLog, 'ts'>): void {
   if (!isApiRequestLoggingEnabled()) return
-  const full: ApiRequestLog = { ts: Date.now(), ...entry }
+  // error 字段常常直接携带失败请求体/上游报错原文，可能夹带密钥——落盘前脱敏。
+  const redacted: Omit<ApiRequestLog, 'ts'> = {
+    ...entry,
+    error: entry.error ? redactSecrets(entry.error) : entry.error,
+  }
+  const full: ApiRequestLog = { ts: Date.now(), ...redacted }
   try {
     const file = resolvePath()
     rolloverIfNeeded(file)

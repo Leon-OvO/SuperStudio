@@ -67,9 +67,13 @@ export function buildSkillTools(opts: BuildSkillToolsOpts): Record<string, Tool>
           basePath: skill.installPath,
           resources: skill.resourceFiles,
           scriptsAllowed: skill.allowScripts,
-          note: skill.allowScripts
-            ? '可用 read_skill_file 读取上面的资源文件；可用 bash 运行 scripts/ 下的脚本（用 basePath 拼出绝对路径）。'
-            : '用户已禁止该技能运行脚本，请勿执行其 scripts/ 目录下的脚本。'
+          // bash 只在 includeBash 时才注册。之前这里无条件写「可用 bash」，会把模型指向
+          // 一个本轮根本不存在的工具（与提示词按 presence 渲染是同一类缺陷）。
+          note: !skill.allowScripts
+            ? '用户已禁止该技能运行脚本，请勿执行其 scripts/ 目录下的脚本。'
+            : includeBash
+              ? '可用 read_skill_file 读取上面的资源文件；可用 bash 运行 scripts/ 下的脚本（用 basePath 拼出绝对路径）。'
+              : '可用 read_skill_file 读取上面的资源文件；本会话未开放运行脚本的工具，不要声称已执行 scripts/ 下的脚本。'
         }
         hooks?.onResult?.('load_skill', { name }, { resources: skill.resourceFiles.length }, false)
         return result
@@ -118,7 +122,9 @@ export function buildSkillTools(opts: BuildSkillToolsOpts): Record<string, Tool>
         '(e.g. `python "<basePath>/scripts/x.py"`, `node "<basePath>/x.js"`, or ' +
         'a `.bat`/`.sh` by absolute path). Captures stdout+stderr, 120s timeout. ' +
         `Working directory: ${cwd}. Reference skill scripts by absolute path ` +
-        '(use the basePath returned by load_skill).',
+        '(use the basePath returned by load_skill). If the result has ' +
+        'truncated=true the middle of the output was elided — the full log is at ' +
+        'logPath, read that file instead of re-running the command.',
       parameters: z.object({
         command: z.string().describe('Shell command to run.')
       }),

@@ -59,7 +59,7 @@ import { scanWorkdirSkills } from '../services/workdir-extensions'
 import { buildSkillTools } from '../agent/skill-tools'
 import { classifyVibeIntent } from '../agent/classify'
 import { agentRunSemaphore } from '../agent/semaphore'
-import { topologicalLevels } from '../agent/pure'
+import { topologicalLevels, neutralizeTags } from '../agent/pure'
 import { runShell } from '../services/shell'
 import * as gitSvc from '../services/git-service'
 import { parseTestOutput, type TestFramework } from '../agent/test-parse'
@@ -287,6 +287,127 @@ function finiteUsage(n: number | undefined | null): number | null {
 }
 
 // ---------------------------------------------------------------------------
+// code_edit 匹配诊断
+//
+// 中文项目 + 多家模型：模型给的 oldString 里混进全角标点、弯引号、全角空格
+// (U+3000)、不换行空格 (U+00A0) 是最高频的失败原因，其次是 Windows 的 CRLF。
+// 光说「未在文件中找到」模型只能瞎猜重试，所以这里给出可执行的下一步：
+// 最接近的候选行 + 只有**验证过确实能匹配**才给出的成因提示。
+//
+// !! 硬约束：归一化只用于「匹配判定与诊断」，绝不能用于写回文件。
+//    中文项目里全角标点是正当内容，按归一化结果写回等于篡改用户代码。
+//    真正的替换永远拿原始 oldString 做精确匹配。
+// ---------------------------------------------------------------------------
+
+/** 易混淆字符归一化（仅供比对/诊断，绝不用于写回）。 */
+export function normalizeConfusables(s: string): string {
+  return s
+    .replace(/[“”〝〞]/g, '"')     // 弯双引号
+    .replace(/[‘’]/g, "'")                  // 弯单引号
+    .replace(/[　   ]/g, ' ')      // 全角空格 / 不换行空格
+    .replace(/[，、]/g, ',')                  // ，、
+    .replace(/[。．]/g, '.')                  // 。．
+    .replace(/：/g, ':').replace(/；/g, ';')
+    .replace(/（/g, '(').replace(/）/g, ')')
+    .replace(/［/g, '[').replace(/］/g, ']')
+    .replace(/｛/g, '{').replace(/｝/g, '}')
+    .replace(/＜/g, '<').replace(/＞/g, '>')
+    .replace(/！/g, '!').replace(/？/g, '?')
+    .replace(/／/g, '/').replace(/＼/g, '\\')
+    .replace(/＝/g, '=').replace(/＋/g, '+')
+    .replace(/[‐-―－]/g, '-')           // 各种连字符/破折号
+    .replace(/＊/g, '*').replace(/＃/g, '#')
+    .replace(/＆/g, '&').replace(/＿/g, '_')
+    .replace(/％/g, '%').replace(/＠/g, '@')
+    .replace(/＄/g, '$').replace(/｜/g, '|')
+}
+
+/** 二元组 Dice 相似度，用于挑「最接近的行」。 */
+function similarity(a: string, b: string): number {
+  if (!a.length || !b.length) return 0
+  if (a === b) return 1
+  const grams = (s: string) => {
+    const m = new Map<string, number>()
+    for (let i = 0; i < s.length - 1; i++) {
+      const g = s.slice(i, i + 2)
+      m.set(g, (m.get(g) ?? 0) + 1)
+    }
+    return m
+  }
+  const ga = grams(a), gb = grams(b)
+  if (!ga.size || !gb.size) return 0
+  let hit = 0
+  for (const [g, n] of ga) hit += Math.min(n, gb.get(g) ?? 0)
+  return (2 * hit) / (a.length - 1 + b.length - 1)
+}
+
+const clipLine = (s: string, n = 100) => (s.length > n ? s.slice(0, n) + '…' : s)
+
+/** 字符下标 → 1 起的行号。 */
+function lineNoAt(text: string, index: number): number {
+  let n = 1
+  for (let i = 0; i < index && i < text.length; i++) if (text[i] === '\n') n++
+  return n
+}
+
+/**
+ * 生成 code_edit 未命中/多次命中的诊断文案。occ === 1 时返回 ''（无需诊断）。
+ * 只描述现状与下一步，不做任何写入。
+ */
+export function diagnoseEditMatch(original: string, oldString: string): string {
+  if (!oldString) return 'oldString 不能为空：请给出文件里要被替换的原文片段。'
+  const occ = original.split(oldString).length - 1
+  if (occ === 1) return ''
+  const lines = original.split('\n')
+
+  if (occ > 1) {
+    // 多次命中：把命中位置的行号列出来，模型据此扩上下文即可。
+    const nos: number[] = []
+    let from = 0
+    for (;;) {
+      const i = original.indexOf(oldString, from)
+      if (i < 0 || nos.length >= 8) break
+      nos.push(lineNoAt(original, i))
+      from = i + Math.max(1, oldString.length)
+    }
+    const more = occ > nos.length ? `（仅列前 ${nos.length} 处）` : ''
+    return `oldString 在文件中匹配了 ${occ} 次，需要更精确的上下文。命中行号：${nos.join('、')}${more}。` +
+      `请把 oldString 向上/向下多带几行使其唯一。`
+  }
+
+  // 未命中：先给最接近的候选行。
+  const target = (oldString.split('\n').find(l => l.trim()) ?? '').trim()
+  const parts: string[] = ['oldString 未在文件中找到。']
+  if (target) {
+    const scored = lines
+      .map((text, i) => ({ no: i + 1, text, score: similarity(target, text.trim()) }))
+      .filter(c => c.score >= 0.4)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 3)
+    if (scored.length) {
+      parts.push(
+        '文件里最接近的行：\n' +
+        scored.map(c => `  ${c.no}: ${clipLine(c.text)}`).join('\n') +
+        '\n请以上面的原文逐字复制成新的 oldString（连缩进和标点都要一致）。'
+      )
+    } else {
+      parts.push('文件里没有相近的行，请先用 code_read 重新读取当前内容再编辑。')
+    }
+  }
+
+  // 成因提示：严格「先验证再建议」——只有归一化后确实能匹配，才敢说是这个原因；
+  // 否则闭嘴，不要瞎猜（猜错会把模型带进死胡同）。
+  const normHit = normalizeConfusables(original).includes(normalizeConfusables(oldString))
+  const crlfHit = original.replace(/\r\n/g, '\n').includes(oldString.replace(/\r\n/g, '\n'))
+  if (crlfHit && original.includes('\r\n')) {
+    parts.push('提示：文件用的是 CRLF 换行，你的 oldString 换行符不一致 —— 按原文换行重发。')
+  } else if (normHit) {
+    parts.push('提示：这次没匹配上很可能是全角标点/弯引号/全角空格导致的 —— 文件里是另一种写法，请照原文逐字复制（应用不会替你改标点）。')
+  }
+  return parts.join('\n')
+}
+
+// ---------------------------------------------------------------------------
 // Tools (reused by APPLY phase)
 // ---------------------------------------------------------------------------
 
@@ -363,16 +484,18 @@ function buildVibeTools(
           // concurrent tasks editing the same file.
           await withFileLock(abs, () => {
             const original = fs.readFileSync(abs, 'utf8')
-            const occ = original.split(oldString).length - 1
-            if (occ === 0) throw new Error('oldString 未在文件中找到')
-            if (occ > 1) throw new Error(`oldString 在文件中匹配了 ${occ} 次，需要更精确的上下文`)
+            const occ = oldString ? original.split(oldString).length - 1 : -1
+            // 不唯一命中一律拒绝，并给出可执行的下一步（最接近的行 / 已验证的成因）。
+            // 注意：诊断里的归一化只用于判定，写回永远用原始 oldString 精确替换。
+            if (occ !== 1) throw new Error(diagnoseEditMatch(original, oldString))
             fs.writeFileSync(abs, original.replace(oldString, newString), 'utf8')
           })
           emit({ type: 'tool_result', toolName: 'code_edit', toolResultPreview: `已修改 ${rel}`, filePath: abs })
           return { ok: true }
         } catch (e) {
           const msg = (e as Error).message
-          emit({ type: 'tool_result', toolName: 'code_edit', toolResultPreview: msg, isError: true })
+          // 诊断文案可能有多行：气泡里只放摘要，完整诊断照旧回给模型。
+          emit({ type: 'tool_result', toolName: 'code_edit', toolResultPreview: truncate(msg.split('\n')[0]), isError: true })
           return { error: msg }
         }
       }
@@ -454,7 +577,7 @@ function buildVibeTools(
       }
     }),
     code_bash: tool({
-      description: `Run shell command in project root. Captures stdout+stderr. Timeout ${Math.round(bashTimeout / 1000)}s (configurable). Use for install / build / run; for tests prefer code_test.`,
+      description: `Run shell command in project root. Captures stdout+stderr. Timeout ${Math.round(bashTimeout / 1000)}s (configurable). Use for install / build / run; for tests prefer code_test. If the result has truncated=true the middle of the output was elided — the full log is at logPath, read that file instead of re-running the command.`,
       parameters: z.object({ command: z.string() }),
       execute: async ({ command }) => {
         emit({ type: 'tool_use', toolName: 'code_bash', toolArgsPreview: truncate(command, 80) })
@@ -872,7 +995,12 @@ function buildApplySystem(request: VibeRequestRow, currentTask: VibeTaskRow, oth
   let memoryBlock = ''
   try {
     const mem = recallForProject(`${currentTask.title}\n${currentTask.description || ''}`, request.project_path)
-    if (mem) memoryBlock = `\n已知的长期记忆（关于该项目/用户，主动遵循，勿复述）：\n<untrusted_content source="memory">\n${mem}\n</untrusted_content>\n`
+    // 记忆正文是 LLM 抽取后写进 SQLite 的，正文里出现 </untrusted_content> 就能把包裹层
+    // 提前闭合、后面的内容摇身一变成为「可信指令」。先中和标签再拼（与对话引擎同一套处理）。
+    if (mem) {
+      const safeMem = neutralizeTags(mem, ['untrusted_content'])
+      memoryBlock = `\n已知的长期记忆（关于该项目/用户，主动遵循，勿复述）：\n<untrusted_content source="memory">\n${safeMem}\n</untrusted_content>\n`
+    }
   } catch { /* recall is best-effort */ }
   return `You are implementing a single task within a larger coding change. Stay focused on THIS task only.
 
@@ -1708,7 +1836,10 @@ export function vibeHandlers(): void {
         }
         const inTok = proposeUsage?.promptTokens ?? null
         const outTok = proposeUsage?.completionTokens ?? null
-        const cost = inTok != null && outTok != null ? computeCost(modelInfo.modelId, inTok, outTok) : null
+        // 0/0 usage 代表上游没报量 = 未知，不是免费。落 null，别落 0（UI 上 0 会显示成「免费」）。
+        const cost = inTok != null && outTok != null && (inTok > 0 || outTok > 0)
+          ? computeCost(modelInfo.modelId, inTok, outTok)
+          : null
         appendMessage({
           requestId: targetRequest.id, role: 'assistant',
           content: isPromotion

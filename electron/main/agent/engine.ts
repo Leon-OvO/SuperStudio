@@ -34,7 +34,9 @@ import { dbRun, dbAll, dbGet } from '../db/sqlite'
 import { computeCost, modelContextWindow } from '../services/model-pricing'
 import { isApproved, isEnumerableDir, registerApproved, registerApprovedRoot, invalidateDbCache } from '../services/path-allow'
 import { agentRunSemaphore } from './semaphore'
-import { buildAutoTitle, computeToolAllowSet, parseSizeFromMessage, friendlyError, truncateToolResult, trimHistoryToBudget, looksTruncated } from './pure'
+import { buildAutoTitle, computeToolAllowSet, parseSizeFromMessage, friendlyError, truncateToolResult, trimHistoryToBudget, looksTruncated, neutralizeTags, noopSignature, shellDiagnosticFields } from './pure'
+import { TOOL, reportPromptIssues } from './prompt-guard'
+import { getToolEnvFacts, describeShellEnv } from './tool-env-facts'
 import { reconcileGrounding } from './grounding'
 import { randomUUID } from 'crypto'
 import path from 'path'
@@ -402,7 +404,9 @@ export async function runAgent(
       : boundEmployee?.soulPrompt
         ? { name: boundEmployee.name, prompt: boundEmployee.soulPrompt }
         : undefined
-    const systemPrompt = buildSystemPrompt(kbContext, mcpTools, activeSkills, scheduledContext, workingDir, persona)
+    // NOTE: 系统提示的装配挪到工具表拼好之后（见下方 buildSystemPrompt 调用）——它要按
+    // 「本轮真实注册了哪些工具」渲染，而工具表受 settings（本地脚本开关）/ 技能白名单 /
+    // MCP 等价工具压制 / workingDir 共同决定，只有拼完才知道。
 
     // @-mentioned context the user pinned for THIS turn (引用某条历史消息 / 已生成产物 /
     // 整段对话摘要) — injected ahead of the user message so the follow-up is anchored
@@ -622,7 +626,9 @@ export async function runAgent(
             cuLegacySkills.map(s => `### ${s.name}\n${(s.systemPrompt || '').trim() || `(${s.description || ''})`}`).join('\n\n')
           : '') +
         (cuRuntimeSkills.length
-          ? `\n\n## 可用技能（按需加载）\n用户启用了以下技能（每个是一份"操作说明 + 资源包"）。当任务和某个技能相关时，【先调用 load_skill(技能名) 加载完整说明再照着做】——纯靠看图点按很慢，技能里通常有更高效的步骤/快捷键/脚本。可用 read_skill_file 读参考文件、bash 跑被允许的脚本（路径用 load_skill 返回的 basePath 拼）。\n` +
+          // 同 buildSystemPrompt：`bash` 只在某个技能开了 allowScripts 时才注册，
+          // 无条件写死等于指使模型去调一个不存在的工具。
+          ? `\n\n## 可用技能（按需加载）\n用户启用了以下技能（每个是一份"操作说明 + 资源包"）。当任务和某个技能相关时，【先调用 ${TOOL.loadSkill}(技能名) 加载完整说明再照着做】——纯靠看图点按很慢，技能里通常有更高效的步骤/快捷键/脚本。可用 ${TOOL.readSkillFile} 读参考文件${cuSkillDefs[TOOL.bash] ? `、${TOOL.bash} 跑被允许的脚本` : ''}（路径用 ${TOOL.loadSkill} 返回的 basePath 拼）。\n` +
             cuRuntimeSkills.map(s => `- ${s.name}: ${s.description || '(无描述)'}`).join('\n')
           : '')
 
@@ -1563,6 +1569,8 @@ export async function runAgent(
     // SSH remote execution — runs a command on a PRECONFIGURED connection
     // (设置 → SSH 连接). Credentials never enter this context; the model passes a
     // connection NAME only. First use of each connection asks the user to confirm.
+    // 本轮 @ 指定的默认服务器说明（走 volatile 段，不进可缓存的工具描述）。
+    let sshPinnedNote = ''
     {
       const sshConns = getSshConnections()
       const connList = sshConns.length
@@ -1573,14 +1581,18 @@ export async function runAgent(
         .map(id => sshConns.find(c => c.id === id))
         .filter((c): c is NonNullable<typeof c> => !!c)
       const defaultConnName = pinnedConns[0]?.name
-      const pinnedDesc = pinnedConns.length
-        ? `本轮用户已用 @ 指定默认服务器：${pinnedConns.map(c => `${c.name}(${c.username}@${c.host})`).join('、')}。未指定 connection 时默认用「${defaultConnName}」；要换机器才显式传 connection。`
+      // 【提示词缓存铁律】这段随用户每轮 @ 的连接变化，绝不能待在工具描述里——工具定义
+      // 属于可缓存前缀，每换一次 @ 就把整个前缀击穿。改为写进 volatile 段（随本轮用户
+      // 消息走），工具描述只留一句不变的指路。
+      sshPinnedNote = pinnedConns.length
+        ? `本轮用户已用 @ 指定默认服务器：${pinnedConns.map(c => `${c.name}(${c.username}@${c.host})`).join('、')}。` +
+          `调用 ${TOOL.sshExec} 未显式传 connection 时就是在「${defaultConnName}」上执行；要换机器才显式传 connection。`
         : ''
       allTools.ssh_exec = tool({
         description:
           '在【预配置的 SSH 连接】上的远程服务器执行一条 shell 命令，返回 { host, exitCode, stdout, stderr }。' +
-          `可用连接：${connList}。connection 传连接名（或其 id）。` + pinnedDesc +
-          'connection 传 "localhost"（或 127.0.0.1 / 本机）则直接在【本机】执行（走本地 shell，无需配置 SSH，等价于 run_script）。' +
+          `可用连接：${connList}。connection 传连接名（或其 id）；省略时用本轮的默认服务器（若用户用 @ 指定过，环境上下文里会写明是哪台）。` +
+          `connection 传 "localhost"（或 127.0.0.1 / 本机）则直接在【本机】执行（走本地 shell，无需配置 SSH，等价于 ${TOOL.runScript}）。` +
           '凭据由本机加密保管，你不会也无需知道密码/私钥。每条命令独立执行（不保留工作目录），' +
           '需要切目录就用 `cd /path && 命令`。' +
           '提权：若该连接在设置里开了「登录后切换用户」，你只管发普通命令即可，系统会自动以目标用户（默认 root）运行（无需你写 sudo）。' +
@@ -1588,9 +1600,8 @@ export async function runAgent(
           '远程连接首次执行会弹窗请用户确认。' +
           '危险/不可逆操作（删除、重启、改配置等）执行前应在回复里向用户说明。',
         parameters: z.object({
-          connection: z.string().optional().describe(defaultConnName
-            ? `已配置的 SSH 连接名称或 id。省略则用本轮默认「${defaultConnName}」`
-            : '已配置的 SSH 连接名称或 id'),
+          // 同上：参数描述也是可缓存前缀的一部分，不能带随本轮 @ 变化的连接名。
+          connection: z.string().optional().describe('已配置的 SSH 连接名称或 id；省略则用本轮默认服务器'),
           command: z.string().describe('要在远程服务器上执行的 shell 命令'),
         }),
         execute: async ({ connection: rawConnection, command }) => {
@@ -1622,7 +1633,7 @@ export async function runAgent(
             }
             try {
               const r = await runShell(command, dir, abort.signal, settings.localScriptsTimeoutMs ?? 300_000)
-              const result = { host: 'localhost', exitCode: r.code, stdout: r.stdout, stderr: r.stderr, timedOut: r.timedOut }
+              const result = { host: 'localhost', exitCode: r.code, stdout: r.stdout, stderr: r.stderr, timedOut: r.timedOut, ...shellDiagnosticFields(r) }
               emit({ stepIndex: myIdx, stepName: 'SSH', toolName: 'ssh_exec', status: r.code === 0 ? 'done' : 'error', message: `exit ${r.code}${r.timedOut ? ' (timeout)' : ''}` })
               toolCallLog.push({ toolName: 'ssh_exec', args: { connection, command }, result })
               return result
@@ -1671,10 +1682,19 @@ export async function runAgent(
     // the user's machine. ON by default (`localScriptsEnabled !== false`); runs
     // without prompts unless the user opts into `localScriptsConfirmEachRun`.
     if (settings.localScriptsEnabled !== false) {
+      // 平台事实注入：以前描述只说"走系统 shell"还举 `bash x.sh` 的例子，Windows 上
+      // 实际是 cmd.exe（services/shell.ts），模型写 grep/sed/head 必然 exit 1，连错几次
+      // 就退化成"脚本给你，你自己跑"。这些事实是会话间不变的，可安全进缓存前缀。
+      const envFacts = getToolEnvFacts()
+      const scriptExample = envFacts.isWindows
+        ? '`python x.py`、`node x.js`、`x.bat`'
+        : '`python x.py`、`node x.js`、`bash x.sh`'
       allTools.run_script = tool({
         description:
-          '在本机执行一条命令 / 运行本地脚本（如 `python x.py`、`x.bat`、`bash x.sh`、`node x.js`，走系统 shell）。' +
-          '真实执行、非口头描述；返回 { code, stdout, stderr, timedOut }。默认工作目录是用户主目录，' +
+          `在本机执行一条命令 / 运行本地脚本（如 ${scriptExample}）。` +
+          describeShellEnv(envFacts) +
+          '真实执行、非口头描述；返回 { code, stdout, stderr, timedOut }。若返回里带 truncated=true，' +
+          '说明输出过长、中间部分已省略，完整输出在 logPath 指向的日志文件里，需要时读取该文件而不是重跑命令。默认工作目录是用户主目录，' +
           '可用 cwd 指定，或在命令里用 `cd /path && 命令`。默认无需用户确认即可执行——遇到需要跑脚本/命令的任务（如用 ' +
           'Python 处理数据、查大表）就直接调它，不要把脚本贴给用户让其自行运行；' +
           '危险/不可逆操作（删除、格式化、改系统配置等）执行前应在回复里先向用户说明。',
@@ -1697,7 +1717,7 @@ export async function runAgent(
           }
           try {
             const r = await runShell(command, dir, abort.signal, settings.localScriptsTimeoutMs ?? 300_000)
-            const result = { code: r.code, stdout: r.stdout, stderr: r.stderr, timedOut: r.timedOut }
+            const result = { code: r.code, stdout: r.stdout, stderr: r.stderr, timedOut: r.timedOut, ...shellDiagnosticFields(r) }
             emit({ stepIndex: myIdx, stepName: '脚本', toolName: 'run_script', status: r.code === 0 ? 'done' : 'error', message: `exit ${r.code}${r.timedOut ? ' (timeout)' : ''}` })
             toolCallLog.push({ toolName: 'run_script', args: { command, cwd: dir }, result })
             return result
@@ -1796,6 +1816,11 @@ export async function runAgent(
     // identical call short-circuits with a corrective message instead of running.
     const repeatCounts = new Map<string, number>()
     const REPEAT_LIMIT = 3
+    // true-noop：按 args 计数的护栏有个洞——模型只要换个无意义参数（`echo ok` → `echo
+    // done` → `true`）就能一直空转到步数用尽。高置信的空转命令折叠到一个常量 key 上
+    // 计数，阈值更低（第 3 次就短路）。判定表刻意保守：含重定向/管道/组合符一律不算
+    // 空转，`true > flag` 那种是有副作用的真实工作。
+    const NOOP_REPEAT_LIMIT = 2
     // Layer 0 — progress monitor (extends the exact-args repeat guard). Track a run
     // of CONSECUTIVE tool errors: steer the model to change approach at 3, and
     // hard-abort the loop at 6 (via progressCtl, folded into combinedSignal) so we
@@ -1818,12 +1843,18 @@ export async function runAgent(
       guardedTools[name] = {
         ...t,
         execute: async (args: unknown, opts: unknown) => {
-          let key = name
-          try { key = name + ':' + JSON.stringify(args ?? {}) } catch { /* unserializable args → key on name only */ }
+          const noopKey = noopSignature(name, args)
+          let key = noopKey ?? name
+          if (!noopKey) {
+            try { key = name + ':' + JSON.stringify(args ?? {}) } catch { /* unserializable args → key on name only */ }
+          }
+          const limit = noopKey ? NOOP_REPEAT_LIMIT : REPEAT_LIMIT
           const n = (repeatCounts.get(key) ?? 0) + 1
           repeatCounts.set(key, n)
-          if (n > REPEAT_LIMIT) {
-            return `[${name}] 你已用相同参数调用了 ${n - 1} 次，结果不会改变。请换一种方法（不同参数 / 不同工具），或停止并直接回复用户——不要再用相同参数重试。`
+          if (n > limit) {
+            return noopKey
+              ? `[${name}] 你已连续 ${n - 1} 次执行不产生任何效果的空命令（true / echo / cd . 之类），这不算干活、也不会有新信息。请直接执行本次任务【真正需要】的那条命令，或停下来如实告诉用户卡在哪里。`
+              : `[${name}] 你已用相同参数调用了 ${n - 1} 次，结果不会改变。请换一种方法（不同参数 / 不同工具），或停止并直接回复用户——不要再用相同参数重试。`
           }
           const out = await origExec(args, opts)
           if (isErrorResult(out)) {
@@ -1845,13 +1876,33 @@ export async function runAgent(
       } as Tool
     }
 
+    // ── 系统提示按「本轮真实注册了哪些工具」装配 ──────────────────────────────
+    // 提示词若点名一个本轮不存在的工具，模型只有两条路：幻觉一次调用（被拒），或者
+    // 干脆放弃动手改成口头汇报。所以把真实的工具键集合喂给 buildSystemPrompt，相关
+    // 段落按 presence 渲染。
+    // 【缓存铁律】这个集合只由会话级配置决定（settings / 技能白名单 / MCP 等价压制 /
+    // workingDir 有无），不含任何逐轮变化的量——否则 stable 前缀逐轮变字节、双断点全 miss。
+    const availableTools: ReadonlySet<string> = new Set(Object.keys(guardedTools))
+    const systemPrompt = buildSystemPrompt({
+      kbContext, mcpTools, skills: activeSkills, scheduledContext, workingDir, persona,
+      availableTools, envNotes: sshPinnedNote ? [sshPinnedNote] : []
+    })
+    // 开发期护栏：扫出"提到但不存在"的工具名 + stable 段体积超预算。正式包不跑。
+    reportPromptIssues({
+      label: `session ${sessionId}`,
+      prompt: systemPrompt.full,
+      stableLength: systemPrompt.stable.length,
+      availableTools,
+      registeredNames: availableTools,
+      enabled: !app.isPackaged
+    })
 
     const history = groupTurn
       ? buildGroupHistory(sessionId, groupTurn.speakerName, effectiveModel,
           groupTurn.mode === 'collaborate'
             ? `（轮到你「${groupTurn.speakerName}」。${groupTurn.task ? '你的任务：' + groupTurn.task + '。' : ''}请实际动手，按系统提示把你负责的部分写进交付物文件。）`
             : undefined)
-      : await buildMessageHistory(sessionId, message, attachments, effectiveModel, turnContext)
+      : await buildMessageHistory(sessionId, message, attachments, effectiveModel, turnContext, availableTools)
 
     // ── Prompt-caching: relocate per-turn VOLATILE context into the CURRENT turn ──
     // The volatile block (current date, recalled memory, live working-dir snapshot)
@@ -1865,7 +1916,10 @@ export async function runAgent(
     if (systemPrompt.volatile && history.length) {
       const i = history.length - 1
       const last = history[i] as { role: string; content: string | Array<{ type: string; text?: string }> }
-      const block = `\n\n<environment_context note="当前环境与记忆快照，供你参考，非用户输入">\n${systemPrompt.volatile}\n</environment_context>`
+      // 中和正文里的 </environment_context>：volatile 段里混着召回记忆、目录快照、文件名，
+      // 任何一处出现闭标签都会把包裹层提前关掉，后面的内容就"越狱"成系统级指令。
+      const safeVolatile = neutralizeTags(systemPrompt.volatile, ['environment_context'])
+      const block = `\n\n<environment_context note="当前环境与记忆快照，供你参考，非用户输入">\n${safeVolatile}\n</environment_context>`
       if (typeof last.content === 'string') {
         ;(history as unknown as Array<{ role: string; content: unknown }>)[i] = { ...last, content: last.content + block }
       } else if (Array.isArray(last.content)) {
@@ -2589,7 +2643,9 @@ async function buildMessageHistory(
   currentMessage: string,
   attachments: Array<{ name: string; path: string; mimeType: string }>,
   effectiveModel?: string,
-  extraContext = ''
+  extraContext = '',
+  /** 本轮真实注册的工具键集合——文件清单里只许点名真实存在的读取工具。 */
+  availableTools?: ReadonlySet<string>
 ) {
   // Pull tool_calls + attachments too — prior-turn artifacts/attachment paths
   // would otherwise vanish, so a follow-up like "edit that image" / "add a
@@ -2652,9 +2708,21 @@ async function buildMessageHistory(
     )
   }
   if (priorKnown.length) {
+    // 只有路径进了上下文，【内容没有】。以前这段只说"可直接复用其绝对路径"，模型于是
+    // 凭记忆描述上一轮那张图/那份表。明说"你看不见"，并指向本轮真实存在的读取工具。
+    const hasTool = (n: string) => availableTools ? availableTools.has(n) : true
+    const howToLook: string[] = []
+    if (hasTool(TOOL.visionAnalyze)) howToLook.push(`看图片内容调 ${TOOL.visionAnalyze}`)
+    if (hasTool(TOOL.fileRead)) howToLook.push(`读文件内容调 ${TOOL.fileRead}`)
+    if (hasTool(TOOL.listDir)) howToLook.push(`确认文件是否还在看工作目录实时快照或调 ${TOOL.listDir}`)
     manifestSections.push(
       `本会话此前已生成/引用的文件（可直接复用其绝对路径）：\n` +
-      priorKnown.map(p => `  - ${p}`).join('\n')
+      priorKnown.map(p => `  - ${p}`).join('\n') +
+      `\n注意：上面【只有路径】，这些文件的内容不在你的上下文里——你看不见它们长什么样、写了什么。` +
+      (howToLook.length
+        ? `需要知道内容就现在去取：${howToLook.join('；')}。`
+        : `本会话没有可读取它们内容的工具，所以【不要】凭印象描述这些文件的内容。`) +
+      `【严禁】凭记忆或推测描述它们的内容。`
     )
   }
   const manifest = (extraContext || '') + (manifestSections.length
@@ -2720,7 +2788,35 @@ async function buildMessageHistory(
   return [...budgetedHistory, { role: 'user' as const, content: userContent }]
 }
 
-function buildSystemPrompt(kbContext: string, mcpTools: McpTool[] = [], skills: InstalledSkill[] = [], scheduledContext = false, workingDir = '', persona?: { name: string; prompt: string }): { stable: string; volatile: string; full: string } {
+export interface SystemPromptInput {
+  /** 本轮召回的长期记忆（volatile）。 */
+  kbContext: string
+  mcpTools?: McpTool[]
+  skills?: InstalledSkill[]
+  scheduledContext?: boolean
+  workingDir?: string
+  persona?: { name: string; prompt: string }
+  /**
+   * 本轮【真实注册】的工具键集合。相关段落按 presence 渲染——点名一个不存在的工具，
+   * 模型要么幻觉调用、要么放弃动手改成口头汇报。省略 = 假定全部存在（仅兜底）。
+   *
+   * 【缓存铁律】这个集合只能由会话级配置推出（settings / 技能白名单 / workingDir 有无），
+   * 绝不能含逐轮变化的量，否则 stable 前缀逐轮变字节、缓存断点全 miss。
+   */
+  availableTools?: ReadonlySet<string>
+  /** 追加进 volatile 段的本轮环境说明（如 @ 指定的默认 SSH 服务器）。 */
+  envNotes?: string[]
+}
+
+export function buildSystemPrompt(input: SystemPromptInput): { stable: string; volatile: string; full: string } {
+  const {
+    kbContext, mcpTools = [], skills = [], scheduledContext = false,
+    workingDir = '', persona, availableTools, envNotes = []
+  } = input
+  /** 本轮是否真的注册了这个工具（未传 availableTools 时一律当作有）。 */
+  const has = (name: string): boolean => availableTools ? availableTools.has(name) : true
+  /** 过滤出本轮真实存在的那几个工具名，用于往提示词里列举。 */
+  const present = (...names: string[]): string[] => names.filter(has)
   const desktop = (() => {
     try { return app.getPath('desktop') } catch { return '' }
   })()
@@ -2747,15 +2843,31 @@ function buildSystemPrompt(kbContext: string, mcpTools: McpTool[] = [], skills: 
   // Anti-fabrication: models love to NARRATE a task as done ("已打开抖音…已获取
   // 第一批数据…已输出 Excel") without ever calling a single tool. Forbid it
   // outright — actions and data must come from REAL tool calls, never prose.
+  // 按 presence 渲染：以前这一段无条件点名 run_script / file_write / web_search，
+  // 而这些工具可能被「本地脚本执行开关」「技能工具白名单」「MCP 等价工具压制」整个
+  // 滤掉。指使模型去调不存在的工具，得到的就是幻觉调用或口头汇报——正是这一段本想禁止的行为。
+  const actionTools = present(
+    TOOL.webSearch, TOOL.webOpen, TOOL.webSnapshot, TOOL.webClick, TOOL.webFill,
+    TOOL.fileWrite, TOOL.writeTextFile, TOOL.imageGenerate, TOOL.videoGenerate
+  )
+  const writeTools = present(TOOL.fileWrite, TOOL.writeTextFile)
   const noFabricationSection =
     `## 真实执行 —— CRITICAL（严禁假动作）\n` +
     `你没有"假装执行"的能力。任何「动作」和「数据」都必须通过【真实调用工具】产生：\n` +
-    `- 需要搜索 / 打开网页 / 抓取页面 / 点击填写 / 读写文件 / 生成图片视频时，就【真的调用对应工具】（web_search / web_open / web_snapshot / web_click / web_fill / file_write / image_generate …），并用工具的真实返回结果继续。\n` +
+    `- 需要搜索 / 打开网页 / 抓取页面 / 点击填写 / 读写文件 / 生成图片视频时，就【真的调用对应工具】` +
+      (actionTools.length ? `（本会话可用的有：${actionTools.join(' / ')} 等）` : '') +
+      `，并用工具的真实返回结果继续。\n` +
     `- 【严禁】在没有实际调用工具的情况下声称或描述你"已搜索 / 已打开 / 已获取数据 / 已滚动加载更多 / 已整理 / 已输出表格 / 已生成 Excel"等——那是凭空捏造，绝对禁止。\n` +
     `- 不要只回一句"好的，我来做…"然后停笔；要做就在本回合内【立刻开始调用工具】，一步步真正完成，不要在步骤之间反问或停下。\n` +
     `- 表格 / 清单 / 统计结果里的每一条都必须来自工具的真实返回；不要编造账号、ID、粉丝数、城市、链接或引用。\n` +
-    `- 写文件【铁律】：只有当你在【本回合】真实调用了 file_write 且其返回结果成功（包含 modified/created、没有 error）时，才可以说"已生成/已写入/已保存文件"。若本回合没有这样的成功调用，【绝对不许】声称文件已生成（哪怕上一回合写过、哪怕你"打算"写）——要么现在就真的调用 file_write，要么如实说"尚未写入"。同理不要凭空输出形如"[本回合已生成文件: …]"的字样，那是系统记账、不是你来写的。\n` +
-    `- 运行脚本【铁律】：任务需要执行脚本/命令（如"用 Python 处理数据""跑一下这个脚本""查这张大表"）时，必须【真的调用 run_script（本机执行，默认已开）或 ssh_exec】并等待其真实返回，再据结果作答。【严禁】把脚本/命令贴进对话、然后让用户"自己复制去跑 / 双击运行 / 把输出贴回来"——那是把本可自己完成的活儿甩给用户，等于没做。若本地执行确被关闭或多次执行失败，就【如实说明"无法执行"并给出开启/排查方式】，绝不假装已跑、也不要用"这是给你的脚本，你去运行"来搪塞。\n` +
+    (writeTools.length
+      ? `- 写文件【铁律】：只有当你在【本回合】真实调用了 ${writeTools.join(' / ')} 且其返回结果成功（包含 modified/created、没有 error）时，才可以说"已生成/已写入/已保存文件"。若本回合没有这样的成功调用，【绝对不许】声称文件已生成（哪怕上一回合写过、哪怕你"打算"写）——要么现在就真的调用写文件工具，要么如实说"尚未写入"。同理不要凭空输出形如"[本回合已生成文件: …]"的字样，那是系统记账、不是你来写的。\n`
+      : `- 写文件【铁律】：本会话【没有】任何写文件的工具。需要产出文件时就把完整内容直接给用户，并如实说明"我这边无法直接写盘"；【绝对不许】声称"已生成/已写入/已保存文件"。\n`) +
+    (has(TOOL.runScript)
+      ? `- 运行脚本【铁律】：任务需要执行脚本/命令（如"用 Python 处理数据""跑一下这个脚本""查这张大表"）时，必须【真的调用 ${TOOL.runScript}（在本机执行）${has(TOOL.sshExec) ? `或 ${TOOL.sshExec}（在远程服务器执行）` : ''}】并等待其真实返回，再据结果作答。【严禁】把脚本/命令贴进对话、然后让用户"自己复制去跑 / 双击运行 / 把输出贴回来"——那是把本可自己完成的活儿甩给用户，等于没做。若多次执行失败，就【如实说明并给出排查方式】，绝不假装已跑、也不要用"这是给你的脚本，你去运行"来搪塞。\n`
+      : has(TOOL.sshExec)
+        ? `- 运行脚本【铁律】：本会话没有本机执行工具，但有 ${TOOL.sshExec}。要在远程服务器上跑命令时必须【真的调用 ${TOOL.sshExec}】并等待真实返回，不要把命令贴给用户让其自行执行；若任务只能在本机完成，就如实说明"本机执行未开启"（可在 设置 → 插件 打开），绝不假装已跑。\n`
+        : `- 运行脚本【铁律】：本会话【没有】任何可以执行命令/脚本的工具。遇到需要跑脚本的任务，就【如实告诉用户你无法直接执行】，把可直接复制运行的命令给他，并说明可在 设置 → 插件 打开「本地脚本执行」后再让你来跑。这种情况下"把脚本交给用户"是唯一正确的做法，但【绝不许】声称你已经运行过、也不许描述任何编造的运行结果。\n`) +
     `- 被要求"重新生成/重做"时，必须重新【真实调用】对应工具产出新结果，不能只用文字复述一遍就当作完成。\n` +
     `- 若工具失败、需要登录、或拿不到足够数据，就【如实说明】并交付你已真实获得的部分结果——绝不用编造来凑数或假装完成。\n` +
     `- 生成图片/视频等失败时，按工具返回的【真实原因】如实说（如"被内容规则拦截，请换个描述""接口超时，请稍后重试"）；【严禁】编造"服务暂时不可用"之类与真实状态不符的说辞，也不要前一句说生成失败、下一句又凭空说已生成。`
@@ -2769,12 +2881,22 @@ function buildSystemPrompt(kbContext: string, mcpTools: McpTool[] = [], skills: 
   // doesn't even replay raw tool results — the staleness is the model leaning on
   // its own earlier prose — so this principle is the main lever, reinforced by the
   // live working-directory snapshot injected per turn.)
+  // 场景清单同样按 presence 渲染：技能白名单可能只放行 web_* 而滤掉 list_dir/file_read。
+  const refetchCases: string[] = []
+  if (has(TOOL.listDir)) refetchCases.push(`「这个目录现在有哪些文件」→ 重新 ${TOOL.listDir}`)
+  if (has(TOOL.fileRead)) refetchCases.push(`「文件现在的内容/数据」→ 重新 ${TOOL.fileRead}`)
+  const pageTools = present(TOOL.webSnapshot, TOOL.webOpen)
+  if (pageTools.length) refetchCases.push(`「页面现在显示什么」→ 重新 ${pageTools.join(' / ')}`)
   const freshnessSection =
     `## 实时状态 —— 不许拿过期快照充数（CRITICAL）\n` +
     `工具返回的内容是【调用那一刻】外部世界的快照。文件、目录、网页、后台数据都会随时间变化；对话历史里更早的工具结果、以及你自己之前的转述，都可能已经过期。\n` +
     `- 当任务依赖某个【可变状态】的最新情况时，就【现在重新调用对应工具】取最新结果，绝不要凭"我上次看到…/历史里列过…/我之前说过…"作答。\n` +
-    `- 这些场景必须重新取数、不得复用旧结果：「这个目录现在有哪些文件」→ 重新 list_dir；「文件现在的内容/数据」→ 重新 file_read；「页面现在显示什么」→ 重新 web_snapshot / web_open；用户说"我刚新增/修改/删除了…"→ 一定重新读取确认，而不是沿用旧印象。\n` +
-    `- 你自己刚写完/改完一个文件后，若后续步骤要基于它的【最新内容】继续，请重新 file_read 它，别用写之前的旧记忆。\n` +
+    (refetchCases.length
+      ? `- 这些场景必须重新取数、不得复用旧结果：${refetchCases.join('；')}；用户说"我刚新增/修改/删除了…"→ 一定重新读取确认，而不是沿用旧印象。\n`
+      : `- 用户说"我刚新增/修改/删除了…"时，一定用手头的工具重新确认，而不是沿用旧印象。\n`) +
+    (has(TOOL.fileRead)
+      ? `- 你自己刚写完/改完一个文件后，若后续步骤要基于它的【最新内容】继续，请重新 ${TOOL.fileRead} 它，别用写之前的旧记忆。\n`
+      : '') +
     `- 唯一例外：用户明确问的是「过去/那时/上一版」的情况，才可引用历史快照；其余一律以"现在重新取到的"为准。\n` +
     `- 一句话：宁可多调一次工具确认最新状态，也不要图省事拿可能过期的旧数据回答。`
 
@@ -2791,7 +2913,10 @@ function buildSystemPrompt(kbContext: string, mcpTools: McpTool[] = [], skills: 
     return `## Current date & time — CRITICAL\n` +
       `现在是 ${stamp}（用户本地时间）。\n` +
       `- 当用户/任务提到"今天 / 今日 / 本周 / 最近 / 最新 / 现在 / 当前"等相对时间时，一律以上面这个日期为基准，绝不要使用你训练数据里的时间感。\n` +
-      `- 用 web_search 查时效性信息（新闻、价格、版本、发布等）时，使用当前年份 ${now.getFullYear()} 或干脆不带年份；绝不要硬编码更早的年份（如 2025）。`
+      // 搜索工具可能被技能白名单滤掉，或被同名 MCP 工具压制掉——那时别再点它的名。
+      (has(TOOL.webSearch)
+        ? `- 用 ${TOOL.webSearch} 查时效性信息（新闻、价格、版本、发布等）时，使用当前年份 ${now.getFullYear()} 或干脆不带年份；绝不要硬编码更早的年份（如 2025）。`
+        : `- 检索时效性信息（新闻、价格、版本、发布等）时，使用当前年份 ${now.getFullYear()} 或干脆不带年份；绝不要硬编码更早的年份（如 2025）。`)
   })()
 
   const displaySection =
@@ -2809,24 +2934,38 @@ function buildSystemPrompt(kbContext: string, mcpTools: McpTool[] = [], skills: 
   // root is active.
   const workingDirFwd = workingDir.replace(/\\/g, '/')
   const defaultLoc = workingDir ? '上面的工作目录' : '桌面'
+  // 写文件相关的每一句都按 presence 渲染：技能白名单可以把 file_write / write_text_file
+  // 整个滤掉，那时再教模型"直接用 write_text_file 存到本地"就是在教它幻觉。
+  const hasXlsxWrite = has(TOOL.fileWrite)
+  const hasTextWrite = has(TOOL.writeTextFile)
+  const writeToolLines =
+    (hasXlsxWrite ? `    · 表格(.xlsx) → ${TOOL.fileWrite}（按单元格 operations 写）。它既能新建也能改已有文件，引用的 sheet 会按需创建；新表先用 set_range 写表头行再填数据。\n` : '') +
+    (hasTextWrite ? `    · 其它一切文本文件（.html / .md / .csv / .json / .svg / 源代码 / .txt …）→ ${TOOL.writeTextFile}，把完整内容放进 content 一次写入。\n` : '')
   const filesystemSection =
     `## File system conventions\n` +
     (workingDir
       ? `- 本会话的工作目录（绝对路径）: ${workingDirFwd}\n` +
         `- 这是当前任务的工作区：用户没指定目录时，读 / 写 / 导出 / 新建文件都默认放到这个工作目录下（例如 "${workingDirFwd}/<文件名>.xlsx"）。文件名取贴合任务的简体中文名。\n` +
-        `- 本提示末尾「工作目录当前内容」是该目录此刻的实时快照（每轮刷新），判断有哪些文件以它为准；它没列出的子目录用 list_dir 查看。\n` +
-        `- list_dir 的结果是「调用那一刻」的快照：用户可能随时新增/删除文件，所以【不要】复用对话历史里更早的 list_dir 结果，需要最新状态就重新调用 list_dir。要读取已存在的文件时先确认确切路径再 file_read，不要凭空猜路径。\n` +
+        `- 本提示末尾「工作目录当前内容」是该目录此刻的实时快照（每轮刷新），判断有哪些文件以它为准${has(TOOL.listDir) ? `；它没列出的子目录用 ${TOOL.listDir} 查看` : ''}。\n` +
+        (has(TOOL.listDir)
+          ? `- ${TOOL.listDir} 的结果是「调用那一刻」的快照：用户可能随时新增/删除文件，所以【不要】复用对话历史里更早的 ${TOOL.listDir} 结果，需要最新状态就重新调用 ${TOOL.listDir}。`
+          : `- `) +
+        (has(TOOL.fileRead) ? `要读取已存在的文件时先确认确切路径再 ${TOOL.fileRead}，不要凭空猜路径。\n` : `要处理已存在的文件时先确认确切路径，不要凭空猜路径。\n`) +
         `- 工作目录及其所有子目录都已授权可读写。\n`
       : desktop
         ? `- User desktop directory (absolute path): ${desktop}\n` +
           `- When the user asks you to save / export / create a file and does NOT specify a directory, default to the desktop above (e.g. "${desktop.replace(/\\/g, '/')}/<filename>.xlsx"). Pick a descriptive Chinese filename matching the task.\n`
         : `- When saving files, always use absolute paths.\n`) +
-    `- Two write tools, pick by file type:\n` +
-    `    · 表格(.xlsx) → file_write（按单元格 operations 写）。它既能新建也能改已有文件，引用的 sheet 会按需创建；新表先用 set_range 写表头行再填数据。\n` +
-    `    · 其它一切文本文件（.html / .md / .csv / .json / .svg / 源代码 / .txt …）→ write_text_file，把完整内容放进 content 一次写入。\n` +
-    `- 用户要"做一个网页/HTML/报告/Markdown/导出文本"时，直接用 write_text_file 把文件【真的存到本地】（默认存到${defaultLoc}），不要只把内容贴进对话让用户自己另存。需要时再把保存路径告诉用户。\n` +
-    `- 不存在的路径会自动创建；已存在的文件写入前会自动备份。若用户没指定目录就默认存到${defaultLoc}，不必反问。\n` +
-    `- 写文件必须给【完整内容】：write_text_file 会用 content 整体覆盖文件，所以严禁用 "…"、"其余省略"、"其余保持不变"、"// rest unchanged" 之类占位符替代正文——那会把原文件覆盖成残缺版。改已有文件就把【整份】最终内容写进 content（系统会校验并拒绝明显截断的写入）。`
+    (writeToolLines ? `- Two write tools, pick by file type:\n` + writeToolLines : '') +
+    (hasTextWrite
+      ? `- 用户要"做一个网页/HTML/报告/Markdown/导出文本"时，直接用 ${TOOL.writeTextFile} 把文件【真的存到本地】（默认存到${defaultLoc}），不要只把内容贴进对话让用户自己另存。需要时再把保存路径告诉用户。\n`
+      : '') +
+    (writeToolLines
+      ? `- 不存在的路径会自动创建；已存在的文件写入前会自动备份。若用户没指定目录就默认存到${defaultLoc}，不必反问。\n`
+      : '') +
+    (hasTextWrite
+      ? `- 写文件必须给【完整内容】：${TOOL.writeTextFile} 会用 content 整体覆盖文件，所以严禁用 "…"、"其余省略"、"其余保持不变"、"// rest unchanged" 之类占位符替代正文——那会把原文件覆盖成残缺版。改已有文件就把【整份】最终内容写进 content（系统会校验并拒绝明显截断的写入）。`
+      : '')
 
   const askUserSection =
     `## 让用户做选择 —— ask_user\n` +
@@ -2844,7 +2983,9 @@ function buildSystemPrompt(kbContext: string, mcpTools: McpTool[] = [], skills: 
     `## 定时任务执行语境 —— CRITICAL\n` +
     `你现在不是在普通对话里，而是被系统的「定时任务」调度器自动触发执行。这意味着：\n` +
     `- 任务文案里的「每天 / 每周 / 定时 / 每隔…」等周期措辞，调度已经由系统负责，你无需也无法自己设置定时——现在这一刻就是该任务的触发时刻。\n` +
-    `- 请把任务文案当作「现在就去做这件事」的指令，立即用你具备的工具（web_open / web_search / file_write 等）实际执行并产出结果。\n` +
+    `- 请把任务文案当作「现在就去做这件事」的指令，立即用你具备的工具` +
+      (actionTools.length ? `（${actionTools.slice(0, 4).join(' / ')} 等）` : '') +
+      `实际执行并产出结果。\n` +
     `- 绝对不要回答「我是被动响应的 / 我无法主动定时执行 / 我做不了自动化 / 这是你需要自己设置的定时」之类的话，也不要给「方案 A/B/C」之类的替代建议来回避执行——直接干活。\n` +
     `- 若任务需要登录态（如 B站消息通知 / 后台数据），相关浏览器分区是持久化共享的；若确实未登录而无法获取，再如实说明并给出最小可行的部分结果。\n` +
     `- 无人值守：本次执行没有用户在旁，不要调用 ask_user 等待点选，也不要中途反问；遇到歧义就按最合理的默认做法继续，并在结果里说明你做了哪些假设。`
@@ -2876,8 +3017,12 @@ function buildSystemPrompt(kbContext: string, mcpTools: McpTool[] = [], skills: 
       `## MCP Tools (user-configured)\n` +
       `The user has configured the following MCP (Model Context Protocol) tools. ` +
       `These are specialized, user-chosen tools — PREFER them over the generic builtin equivalents when the task fits. ` +
-      `For example, if a tool named "<server>__web_search" exists, use it instead of the builtin web_search; ` +
-      `if an "<server>__understand_image" exists, use it instead of vision_analyze.\n\n` +
+      // 举例里点名的 builtin 可能【已经被同名 MCP 工具压制掉】（见 mcpHasWebSearch /
+      // mcpHasVision），那时再让模型"改用 builtin xxx"就是指向一个不存在的工具。
+      (present(TOOL.webSearch, TOOL.visionAnalyze).length
+        ? `For example, if a tool named "<server>__web_search" exists, use it instead of the builtin ` +
+          present(TOOL.webSearch, TOOL.visionAnalyze).join(' / ') + `.\n\n`
+        : `The builtin equivalents have already been removed from this session, so use these MCP tools directly.\n\n`) +
       lines.join('\n')
     )
   }
@@ -2903,13 +3048,21 @@ function buildSystemPrompt(kbContext: string, mcpTools: McpTool[] = [], skills: 
 
     if (runtimeSkills.length) {
       const lines = runtimeSkills.map(s => `- ${s.name}: ${s.description || '(no description)'}`)
+      // 跑技能自带脚本的工具只有在某个技能开了 allowScripts 时才注册（skill-tools.ts）；
+      // 这里以前无条件写 `bash`，没注册时就是在指使模型调一个不存在的工具。没有 bash
+      // 时退回本机执行工具，两个都没有就明说"本会话不能跑脚本"。
+      const scriptHint = has(TOOL.bash)
+        ? `and \`${TOOL.bash}\` to run bundled scripts where permitted.`
+        : has(TOOL.runScript)
+          ? `Bundled scripts must be run with \`${TOOL.runScript}\` (compose the absolute path from the skill's basePath).`
+          : `Bundled scripts CANNOT be run in this session — follow the skill's instructions manually with the tools you do have.`
       sections.push(
         `## Available Skills\n` +
         `The user has enabled the following Agent Skills — each is a self-contained bundle of ` +
         `instructions + resources on disk. Only the name + a one-line description is shown here.\n` +
-        `When a user request matches one of these skills, FIRST call \`load_skill(name)\` to load ` +
-        `its full instructions, then follow them. Use \`read_skill_file\` to read bundled reference ` +
-        `files and \`bash\` to run bundled scripts where permitted.\n\n${lines.join('\n')}`
+        `When a user request matches one of these skills, FIRST call \`${TOOL.loadSkill}(name)\` to load ` +
+        `its full instructions, then follow them. Use \`${TOOL.readSkillFile}\` to read bundled reference ` +
+        `files ${scriptHint}\n\n${lines.join('\n')}`
       )
     }
   }
@@ -2920,7 +3073,23 @@ function buildSystemPrompt(kbContext: string, mcpTools: McpTool[] = [], skills: 
   const stable = sections.join('\n\n')
   const volatileSections: string[] = [dateSection]
   if (kbContext) {
-    volatileSections.push(`## 长期记忆（你对该用户/项目已知的事，应主动运用）\n<untrusted_content source="memory">\n${kbContext}\n</untrusted_content>`)
+    // 记忆正文是 LLM 抽取后写进 SQLite 的，正文里出现 </untrusted_content> 就把包裹层
+    // 提前闭合，后面的内容摇身变成系统级指令。用零宽空格中和（保正文语义，不删字）。
+    const safeMemory = neutralizeTags(kbContext, ['untrusted_content'])
+    // 时效声明：同一份提示词的 freshnessSection 刚说完"历史里的东西都可能过期"，记忆段
+    // 却只说"已知的事，应主动运用"——模型会把三个月前的 episode 当成当前事实。措辞刻意
+    // 限定在【可变状态】，不要把"越用越聪明"的沉淀一起否定掉。
+    volatileSections.push(
+      `## 长期记忆（你对该用户/项目已知的事，应主动运用）\n` +
+      `<untrusted_content source="memory">\n${safeMemory}\n</untrusted_content>\n` +
+      `以上是历史沉淀（偏好、背景、既往结论），默认可以放心用；但它【不是】此刻的实时状态：` +
+      `与本轮的工作目录快照、工具返回冲突时一律以后者为准；涉及可变状态（文件是否存在、当前配置、任务进度、某个数值现在是多少）时，请重新调工具确认再作答。`
+    )
+  }
+  // 本轮环境说明（如 @ 指定的默认 SSH 服务器）——这类逐轮变化的事实只能待在 volatile，
+  // 放进工具描述会把可缓存前缀整段击穿。
+  for (const note of envNotes) {
+    if (note.trim()) volatileSections.push(`## 本轮环境\n${note.trim()}`)
   }
   // Live working-directory snapshot — recomputed every turn and placed in the
   // VOLATILE (non-cached) suffix. This is the fix for "the model can't see files
@@ -2939,7 +3108,7 @@ function buildSystemPrompt(kbContext: string, mcpTools: McpTool[] = [], skills: 
         ? entries.map(e => e.type === 'dir'
             ? `  ${e.name}/`
             : `  ${e.name}${typeof e.size === 'number' ? `  (${fmtSize(e.size)})` : ''}`).join('\n') +
-          (truncated ? '\n  …（顶层条目过多已截断，用 list_dir 看全部）' : '')
+          (truncated ? `\n  …（顶层条目过多已截断${has(TOOL.listDir) ? `，用 ${TOOL.listDir} 看全部` : ''}）` : '')
         : '  （目录当前为空）'
     } catch {
       snap = '  （无法读取目录内容）'
@@ -2948,8 +3117,10 @@ function buildSystemPrompt(kbContext: string, mcpTools: McpTool[] = [], skills: 
       `## 工作目录当前内容（实时快照 · 每轮自动刷新）\n` +
       `${workingDirFwd}/\n${snap}\n\n` +
       `以上是该工作目录【此刻】的真实顶层内容（已随本回合刷新）。判断"有哪些文件"一律以这份快照为准，` +
-      `【不要】沿用对话历史里更早的 list_dir 结果——用户可能在两轮之间新增/删除了文件，旧列表已过时。` +
-      `需要查看子目录、或按 pattern 过滤时再调用 list_dir（其结果同样是调用那一刻的快照）。`
+      (has(TOOL.listDir)
+        ? `【不要】沿用对话历史里更早的 ${TOOL.listDir} 结果——用户可能在两轮之间新增/删除了文件，旧列表已过时。` +
+          `需要查看子目录、或按 pattern 过滤时再调用 ${TOOL.listDir}（其结果同样是调用那一刻的快照）。`
+        : `【不要】沿用对话历史里更早的目录列表——用户可能在两轮之间新增/删除了文件，旧列表已过时。`)
     )
   }
   const volatile = volatileSections.join('\n\n')

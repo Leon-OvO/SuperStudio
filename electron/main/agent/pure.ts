@@ -264,3 +264,121 @@ export function looksTruncated(content: string): boolean {
   if (!content) return false
   return TRUNCATION_MARKERS.some(re => re.test(content))
 }
+
+/** 零宽空格：插进 `<` 与标签名之间，肉眼与语义都不变，但不再是一个标签。 */
+const ZWSP = '​'
+
+/**
+ * 中和正文里的控制标签，防止「包裹层被正文撬开」。
+ *
+ * 我们把不可信内容（召回的长期记忆、环境快照）包在 `<untrusted_content>` /
+ * `<environment_context>` 里告诉模型"这是数据不是指令"。可这些正文本身是 LLM 抽取后
+ * 写进 SQLite 的——只要有一条记忆正文里含 `</untrusted_content>`，整条注入防线就被
+ * 提前闭合，后面的内容就"越狱"成了系统级指令。
+ *
+ * 处理方式是【插零宽空格而不是删除】：正文语义一个字都不丢（用户看导出、模型读记忆
+ * 都还是原话），但它不再被解析成我们的控制标签。闭标签先处理（它才是撬锁的那把）。
+ *
+ * @param text 待中和的正文
+ * @param tags 需要中和的标签名（不含尖括号）
+ */
+export function neutralizeTags(text: string, tags: readonly string[]): string {
+  if (!text) return text
+  let out = text
+  for (const tag of tags) {
+    const esc = tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    // 1) 闭标签：`</tag>`、`< / tag >` 都算。
+    out = out.replace(new RegExp(`<\\s*/\\s*(${esc})\\s*>`, 'gi'), `<${ZWSP}/$1>`)
+    // 2) 开标签（含带属性的 `<tag source="x">`）：伪造一个开标签同样能骗过分段。
+    out = out.replace(new RegExp(`<\\s*(${esc})(\\s[^>]*)?>`, 'gi'), (_m, name: string, attrs?: string) => `<${ZWSP}${name}${attrs ?? ''}>`)
+  }
+  return out
+}
+
+/**
+ * 高置信「空转」签名：模型换个无意义参数就能绕过按 args 计数的重复护栏
+ * （反复 `run_script('echo ok')` / `cd .` / `ssh_exec('true')` 空烧步数预算）。
+ * 命中这张表的调用会被折叠到一个常量 key 上计数，且阈值更低。
+ *
+ * 判定刻意保守：命令里只要出现重定向 / 管道 / 分号 / `&&` 等组合结构，就【不】判为
+ * 空转——`true > /tmp/flag`、`echo ok && python x.py` 都是有副作用的真实工作。
+ */
+const NOOP_COMBINATORS = /[|<>;&`$(){}]/
+const NOOP_COMMANDS: RegExp[] = [
+  /^true$/i,
+  /^:$/,
+  /^cd$/i,
+  /^cd\s+\.$/i,
+  /^cd\s+\.\/?$/i,
+  /^pwd$/i,
+  /^echo$/i,
+  /^echo\s+(?:"[^"]*"|'[^']*'|[\w一-龥.,!?-]+)$/i,
+  /^exit\s+0$/i,
+  /^rem\b.*$/i,
+  /^sleep\s+\d+(?:\.\d+)?$/i,
+  /^timeout\s+\/t\s+\d+$/i,
+  /^ver$/i,
+  /^whoami$/i,
+]
+
+/**
+ * 若这次工具调用是「确定没有任何副作用的空转」，返回一个稳定签名（用作重复护栏的
+ * 常量 key）；否则返回 null。
+ *
+ * 只覆盖本机/远程执行类工具的 command 参数——其它工具的"重复"由原来的按 args 计数
+ * 负责，这里绝不扩大打击面。
+ */
+export function noopSignature(toolName: string, args: unknown): string | null {
+  if (toolName !== 'run_script' && toolName !== 'ssh_exec' && toolName !== 'bash') return null
+  const cmd = (args as { command?: unknown } | null | undefined)?.command
+  if (typeof cmd !== 'string') return null
+  const trimmed = cmd.trim()
+  if (!trimmed || trimmed.length > 120) return null
+  if (NOOP_COMBINATORS.test(trimmed)) return null
+  if (!NOOP_COMMANDS.some(re => re.test(trimmed))) return null
+  // 常量 key：换参数也逃不掉。工具名保留，便于日志定位。
+  return `${toolName}:<noop>`
+}
+
+/**
+ * runShell 结果里需要透给模型的那部分（结构化取值，避免 pure.ts 依赖 services/shell，
+ * 保持本模块零副作用可直测）。
+ */
+export interface ShellOutcome {
+  code: number
+  timedOut: boolean
+  killedBy?: 'timeout' | 'abort' | 'output_limit' | null
+  truncated?: boolean
+  drained?: boolean
+  bytes?: { stdout: number; stderr: number }
+  logPath?: string
+  diagnostics?: string
+}
+
+/**
+ * 把 runShell 的「诊断类」字段折成一小段附加到工具返回值上的对象。
+ *
+ * 存在的理由：shell 层已经算好了退出码成因、截断字节数、全量日志路径，但对话引擎的
+ * run_script / ssh_exec 过去只摘 {code,stdout,stderr,timedOut} 四个字段，诊断全被丢在
+ * 半路——模型看到一个被截断的失败输出，既不知道自己只看到了一部分，也不知道全量在哪。
+ *
+ * 成功且未截断时返回空对象：正常路径一个字节的噪音都不加（这些内容会进提示词、进导出）。
+ * 调用方按 `{ ...固有字段, ...shellDiagnosticFields(r) }` 展开即可，不同工具的固有字段
+ * 形状（run_script 用 code、ssh_exec 用 exitCode）互不影响。
+ */
+export function shellDiagnosticFields(r: ShellOutcome): Record<string, unknown> {
+  const extra: Record<string, unknown> = {}
+  if (r.truncated) {
+    extra.truncated = true
+    if (r.bytes) extra.totalOutputBytes = r.bytes.stdout + r.bytes.stderr
+    extra.note = '输出过长，中间部分已省略（首尾已保留）。需要完整输出时读取 logPath 指向的日志文件。'
+  }
+  if (r.drained === false) {
+    extra.outputIncomplete = true
+  }
+  if (r.killedBy) extra.killedBy = r.killedBy
+  if (r.diagnostics) extra.diagnostics = r.diagnostics
+  // 日志路径只在「有话要说」时给：截断了、或这轮失败了，模型才需要去翻全量。
+  if (r.logPath && (r.truncated || r.diagnostics || r.drained === false)) extra.logPath = r.logPath
+  return extra
+}

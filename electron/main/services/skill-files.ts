@@ -2,6 +2,7 @@ import { app } from 'electron'
 import path from 'path'
 import fs from 'fs'
 import os from 'os'
+import crypto from 'crypto'
 
 // ============================================================================
 // Skill bundle download + on-disk management.
@@ -49,6 +50,97 @@ function safeJoin(base: string, relPath: string): string {
   return resolved
 }
 
+// ----------------------------------------------------------------------------
+// Transactional install helpers.
+//
+// A download/import writes into a throwaway ".staging-<id>-<nonce>" directory
+// first. Only once every file is on disk (and sha256-verified, and a
+// SKILL.md/README.md was found) does it get promoted into place. Promotion is
+// a two-step rename dance — Windows refuses `rename()` onto an existing
+// target, so we can't do it in one atomic swap: first move the current
+// install (if any) to a backup, then move staging into its place. Any
+// failure along the way restores the backup, so a network drop or a locked
+// file mid-download leaves the previously-installed skill untouched instead
+// of a half-written directory.
+// ----------------------------------------------------------------------------
+
+/** Short random suffix for staging/backup dir names — kept small (not a UUID)
+ *  so deeply-nested skill bundles don't trip Windows' ~260 char path limit. */
+function randomSuffix(): string {
+  return crypto.randomBytes(4).toString('hex')
+}
+
+function stagingDirFor(id: string): string {
+  return path.join(skillsRootDir(), `.staging-${sanitizeId(id)}-${randomSuffix()}`)
+}
+
+/** Windows Defender / Explorer can transiently hold a handle open right after
+ *  a file is written, making the immediately-following rename/rm fail with
+ *  EBUSY/EPERM/ENOTEMPTY. Retry a few times with a short backoff before
+ *  giving up. Sleeps synchronously (Atomics.wait) since this whole module's
+ *  filesystem API is sync-first and importLocalSkillBundle must stay sync for
+ *  its existing (unawaited) callers. */
+function withRetry<T>(fn: () => T, attempts = 5, baseDelayMs = 60): T {
+  let lastErr: unknown
+  for (let i = 0; i < attempts; i++) {
+    try { return fn() }
+    catch (e) {
+      lastErr = e
+      if (i < attempts - 1) syncSleepMs(baseDelayMs * (i + 1))
+    }
+  }
+  throw lastErr
+}
+
+function syncSleepMs(ms: number): void {
+  try {
+    const sab = new SharedArrayBuffer(4)
+    Atomics.wait(new Int32Array(sab), 0, 0, ms)
+  } catch { /* SharedArrayBuffer unavailable — best effort, skip the wait */ }
+}
+
+/** Best-effort recursive delete with retry. Never throws — a leftover staging
+ *  or backup directory is disk-space noise, not a correctness problem, and
+ *  must never mask the real error that triggered cleanup. */
+function cleanupDirBestEffort(dir: string): void {
+  try { withRetry(() => fs.rmSync(dir, { recursive: true, force: true })) }
+  catch (e) { console.warn(`[skill-files] cleanup failed for ${dir}:`, (e as Error).message) }
+}
+
+/**
+ * Promote a fully-populated staging directory into the real install location
+ * for `id`. Two-step rename (see module header) with rollback on failure.
+ * On success the staging dir no longer exists at its original path (it *is*
+ * the new install dir); on failure it is left untouched so the caller can
+ * inspect/clean it up, and the previous install (if any) is restored.
+ */
+function commitStagingToFinal(id: string, staging: string): string {
+  const final = skillDir(id)
+  fs.mkdirSync(path.dirname(final), { recursive: true })
+  let backup: string | null = null
+  if (fs.existsSync(final)) {
+    backup = `${final}.bak-${randomSuffix()}`
+    withRetry(() => fs.renameSync(final, backup as string))
+  }
+  try {
+    withRetry(() => fs.renameSync(staging, final))
+  } catch (e) {
+    if (backup) {
+      try { withRetry(() => fs.renameSync(backup as string, final)) }
+      catch (rollbackErr) {
+        console.warn(`[skill-files] 回滚失败，技能 ${id} 可能已丢失，备份在: ${backup}`, (rollbackErr as Error).message)
+      }
+    }
+    throw e
+  }
+  if (backup) cleanupDirBestEffort(backup)
+  return final
+}
+
+function sha256Hex(buf: Buffer): string {
+  return crypto.createHash('sha256').update(buf).digest('hex')
+}
+
 export interface SkillFileEntry { path: string; sha256: string; size: number }
 
 export async function fetchSkillFileList(slug: string, version?: string): Promise<SkillFileEntry[]> {
@@ -72,12 +164,16 @@ export async function fetchSkillFileList(slug: string, version?: string): Promis
   return out
 }
 
-export async function fetchSkillFileText(slug: string, filePath: string, version?: string): Promise<string> {
+/** Fetch a skill file's raw bytes. Must NOT be decoded as text — the bundle can
+ *  contain images/fonts/binaries, and round-tripping those through a UTF-8
+ *  string corrupts them (and makes any sha256 check fail). Only SKILL.md is
+ *  ever interpreted as text, and only after it's safely on disk as bytes. */
+export async function fetchSkillFileBytes(slug: string, filePath: string, version?: string): Promise<Buffer> {
   const v = version ? `&version=${encodeURIComponent(version)}` : ''
   const url = `${SKILLHUB_API}/api/v1/skills/${encodeURIComponent(slug)}/file?path=${encodeURIComponent(filePath)}${v}`
   const res = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT) })
   if (!res.ok) throw new Error(`下载技能文件失败 (${filePath}): HTTP ${res.status}`)
-  return res.text()
+  return Buffer.from(await res.arrayBuffer())
 }
 
 export interface DownloadedBundle { installPath: string; files: string[]; skillMd: string }
@@ -85,6 +181,12 @@ export interface DownloadedBundle { installPath: string; files: string[]; skillM
 /**
  * Download every file of a skill into <userData>/skills/<id>/ and return the
  * install path, the bundle-relative file list, and the SKILL.md content.
+ *
+ * Transactional: files are downloaded + sha256-verified into a staging
+ * directory first, and only promoted over the previous install once the
+ * whole bundle (including a discoverable SKILL.md) is confirmed intact. A
+ * network drop mid-download aborts the staging attempt and leaves whatever
+ * was previously installed exactly as it was.
  */
 export async function downloadSkillBundle(slug: string, id: string, version?: string): Promise<DownloadedBundle> {
   const list = await fetchSkillFileList(slug, version)
@@ -93,28 +195,43 @@ export async function downloadSkillBundle(slug: string, id: string, version?: st
   const total = list.reduce((s, f) => s + (f.size || 0), 0)
   if (total > MAX_TOTAL_SIZE) throw new Error(`技能包过大 (${(total / 1024 / 1024).toFixed(1)} MB)`)
 
-  const dir = skillDir(id)
-  // Fresh install / upgrade — wipe any stale copy so removed files don't linger.
-  fs.rmSync(dir, { recursive: true, force: true })
-  fs.mkdirSync(dir, { recursive: true })
-
-  const written: string[] = []
-  for (const f of list) {
-    if (f.size && f.size > MAX_FILE_SIZE) {
-      console.warn(`[skill-files] skipping oversized file ${f.path} (${f.size} bytes)`)
-      continue
+  const staging = stagingDirFor(id)
+  fs.mkdirSync(staging, { recursive: true })
+  try {
+    const written: string[] = []
+    for (const f of list) {
+      if (f.size && f.size > MAX_FILE_SIZE) {
+        console.warn(`[skill-files] skipping oversized file ${f.path} (${f.size} bytes)`)
+        continue
+      }
+      const dest = safeJoin(staging, f.path)
+      const bytes = await fetchSkillFileBytes(slug, f.path, version)
+      if (f.sha256) {
+        const actual = sha256Hex(bytes)
+        if (actual.toLowerCase() !== f.sha256.toLowerCase()) {
+          throw new Error(`技能文件校验失败（sha256 不匹配）: ${f.path}`)
+        }
+      } else {
+        // SkillHub is a third-party source — don't assume every entry always
+        // carries a hash, but flag it so a silently-tampered file is at least
+        // visible in logs.
+        console.warn(`[skill-files] ${f.path} 缺少 sha256，跳过完整性校验`)
+      }
+      fs.mkdirSync(path.dirname(dest), { recursive: true })
+      fs.writeFileSync(dest, bytes)
+      written.push(f.path.replace(/\\/g, '/'))
     }
-    const dest = safeJoin(dir, f.path)
-    const text = await fetchSkillFileText(slug, f.path, version)
-    fs.mkdirSync(path.dirname(dest), { recursive: true })
-    fs.writeFileSync(dest, text, 'utf8')
-    written.push(f.path.replace(/\\/g, '/'))
-  }
 
-  const skillMdRel = findSkillMd(written)
-  if (!skillMdRel) throw new Error('技能包缺少 SKILL.md（也没有 README.md 兜底）')
-  const skillMd = fs.readFileSync(safeJoin(dir, skillMdRel), 'utf8')
-  return { installPath: dir, files: written, skillMd }
+    const skillMdRel = findSkillMd(written)
+    if (!skillMdRel) throw new Error('技能包缺少 SKILL.md（也没有 README.md 兜底）')
+    const skillMd = fs.readFileSync(safeJoin(staging, skillMdRel), 'utf8')
+
+    const installPath = commitStagingToFinal(id, staging)
+    return { installPath, files: written, skillMd }
+  } catch (e) {
+    cleanupDirBestEffort(staging)
+    throw e
+  }
 }
 
 export interface ImportedBundle extends DownloadedBundle { id: string; name: string }
@@ -226,18 +343,22 @@ export function importLocalSkillBundle(sourcePath: string): ImportedBundle {
   const baseName = name.trim() || path.basename(srcDir)
   const id = 'local-' + sanitizeId(baseName).toLowerCase()
 
-  const dir = skillDir(id)
-  // Fresh copy — wipe any prior import of the same id so removed files don't linger.
-  fs.rmSync(dir, { recursive: true, force: true })
-  fs.mkdirSync(dir, { recursive: true })
-  const written: string[] = []
-  for (const r of rel) {
-    const dest = safeJoin(dir, r)
-    fs.mkdirSync(path.dirname(dest), { recursive: true })
-    fs.copyFileSync(safeJoin(srcDir, r), dest)
-    written.push(r)
+  const staging = stagingDirFor(id)
+  fs.mkdirSync(staging, { recursive: true })
+  try {
+    const written: string[] = []
+    for (const r of rel) {
+      const dest = safeJoin(staging, r)
+      fs.mkdirSync(path.dirname(dest), { recursive: true })
+      fs.copyFileSync(safeJoin(srcDir, r), dest) // byte-for-byte copy — never goes through a text encoding
+      written.push(r)
+    }
+    const installPath = commitStagingToFinal(id, staging)
+    return { id, name: baseName, installPath, files: written, skillMd }
+  } catch (e) {
+    cleanupDirBestEffort(staging)
+    throw e
   }
-  return { id, name: baseName, installPath: dir, files: written, skillMd }
 }
 
 /**
@@ -253,11 +374,16 @@ function importSingleFileSkill(filePath: string): ImportedBundle {
   const baseName = (name.trim() || path.basename(filePath).replace(/\.[^.]+$/, '')).trim() || 'skill'
   const id = 'local-' + sanitizeId(baseName).toLowerCase()
 
-  const dir = skillDir(id)
-  fs.rmSync(dir, { recursive: true, force: true })
-  fs.mkdirSync(dir, { recursive: true })
-  fs.writeFileSync(path.join(dir, 'SKILL.md'), content, 'utf8')
-  return { id, name: baseName, installPath: dir, files: ['SKILL.md'], skillMd: content }
+  const staging = stagingDirFor(id)
+  fs.mkdirSync(staging, { recursive: true })
+  try {
+    fs.writeFileSync(path.join(staging, 'SKILL.md'), content, 'utf8')
+    const installPath = commitStagingToFinal(id, staging)
+    return { id, name: baseName, installPath, files: ['SKILL.md'], skillMd: content }
+  } catch (e) {
+    cleanupDirBestEffort(staging)
+    throw e
+  }
 }
 
 /** Extract a .zip skill bundle into a temp folder (guarding zip-slip via
@@ -355,7 +481,7 @@ function findSkillMd(files: string[]): string | null {
 }
 
 export function removeSkillDir(id: string): void {
-  try { fs.rmSync(skillDir(id), { recursive: true, force: true }) }
+  try { withRetry(() => fs.rmSync(skillDir(id), { recursive: true, force: true })) }
   catch (e) { console.warn('[skill-files] removeSkillDir failed:', (e as Error).message) }
 }
 

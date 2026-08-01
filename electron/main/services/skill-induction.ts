@@ -15,6 +15,7 @@ import { setMemoryStatus, type MemoryRow } from './memory'
 import { IPC } from '../../../src/shared/ipc-types'
 import { FLAVOR } from '../../../src/shared/flavor'
 import { BRAND_SCRUB } from './brand-scrub-list'
+import { redactSecrets } from './redact'
 
 /**
  * Auto-learn skills from conversations — the bridge memory→SKILL.md.
@@ -208,21 +209,10 @@ async function draftSkill(transcript: string, providerId: string, modelId: strin
 
 // --- Validate (lint + brand scrub) ----------------------------------------
 
-/** Redact common secret shapes so a token/key/password living in a transient
- *  tool-call arg (ssh/run_script command, url query) can't be carried into a
- *  persisted, cross-session SKILL.md. Applied to BOTH the distillation input
- *  (arg trace) and the LLM output (name/description/body). */
-function redactSecrets(s: string): string {
-  return s
-    // key: value / key=value / Bearer value  (keeps the key name, drops the value)
-    .replace(/\b(authorization|bearer|api[_-]?key|apikey|access[_-]?token|refresh[_-]?token|token|secret|password|passwd|pwd|credential)\b(\s*[:=]\s*|\s+)(["']?)[^\s"'&]{6,}\3/gi, '$1=<redacted>')
-    // provider key / token shapes
-    .replace(/\bsk-[A-Za-z0-9_-]{12,}/g, 'sk-<redacted>')
-    .replace(/\bgh[posru]_[A-Za-z0-9]{20,}/g, '<redacted-token>')
-    .replace(/\bAKIA[0-9A-Z]{12,}/g, '<redacted-aws-key>')
-    // JWT (three base64url segments)
-    .replace(/\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}/g, '<redacted-jwt>')
-}
+// redactSecrets 已收口进 services/redact.ts（统一脱敏出口，供 error-log/request-log 等共用）。
+// 这里沿用同一份实现，把一个 token/key/password（活在临时 tool-call 参数里，如 ssh/run_script
+// 命令、URL query）挡在持久化、跨会话的 SKILL.md 之外。同时作用于蒸馏输入（参数轨迹）和
+// LLM 输出（name/description/body）。
 
 /** Always-scrub internal infra codenames; DWork additionally scrubs SuperStudio
  *  (including spaced/underscored/hyphenated variants the model might paraphrase to).

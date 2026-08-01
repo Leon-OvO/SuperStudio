@@ -20,7 +20,7 @@ import { simpleGit, type SimpleGit, type StatusResult } from 'simple-git'
 import fs from 'fs'
 import path from 'path'
 import os from 'os'
-import { randomUUID } from 'crypto'
+import { createHash, randomUUID } from 'crypto'
 
 // Neutral, flavor-agnostic identity used ONLY as a fallback when the user has no
 // git identity configured — so checkpoint/commit don't fail on a fresh machine.
@@ -72,6 +72,8 @@ export interface GitDiff {
   hunkCount: number
   /** True when git couldn't text-diff it (binary). */
   binary: boolean
+  /** 每个改动块的内容指纹，顺序与 patch 里的块一致；点块时用它重新定位。 */
+  hunkFingerprints: string[]
 }
 
 export interface GitCommitInfo { hash: string; message: string; date: string; author: string }
@@ -126,6 +128,52 @@ function safeGitEnv(extra: Record<string, string>): Record<string, string> {
 // env we pass explicitly via `.env()`, so an ambient GIT_EDITOR etc. is harmless.
 function git(root: string): SimpleGit {
   return simpleGit(root)
+}
+
+// ---------------------------------------------------------------------------
+// 快照/回滚专用的 git 配置覆盖
+// ---------------------------------------------------------------------------
+
+/**
+ * 快照(capture)与还原(restore)全程强制的 git 配置。
+ *
+ * 用户机器上的 git 配置会直接改变快照往返的字节内容 —— Windows 版 git 安装器
+ * 默认写死 `core.autocrlf=true`，于是「拍快照 → 回滚」会把 LF 文件整篇改写成
+ * CRLF：满屏假 diff，`.sh` / `.py` 之类还可能直接跑不起来。`core.quotepath`
+ * 默认 true 会让文件清单里的中文名变成八进制转义串，回滚删不掉 AI 新建的
+ * 中文名文件。
+ *
+ * 硬约束：capture 与 restore 必须用同一套 —— 只改一半会让往返在两端用不同的
+ * 规则转换，比完全不改更糟。所有参与快照的 raw 调用一律走 snapshotRaw()。
+ */
+const SNAPSHOT_GIT_CONFIG: readonly string[] = [
+  '-c', 'core.autocrlf=false',  // 行尾原样进出，快照往返字节不变
+  '-c', 'core.longpaths=true',  // Windows 上超过 260 字符的路径也能纳入快照
+  '-c', 'core.symlinks=true',   // 符号链接按符号链接存取，不退化成写着目标路径的普通文件
+  '-c', 'core.quotepath=false', // 中文/非 ASCII 文件名原样输出，不返回 \344\270\255 这种转义串
+  '-c', 'core.fsmonitor=false', // 不依赖外部文件监视器，避免其缓存让快照漏文件
+]
+
+/**
+ * 快照专用客户端。
+ *
+ * simple-git 默认拦截一切对 `core.fsmonitor` 的赋值（防止被诱导去执行外部
+ * 程序）。我们传的值写死是 `false`，是**关掉**而不是启用监视器进程，还能顺带
+ * 压过仓库里可能存在的 fsmonitor 配置，比不传更安全，因此显式放行这一项。
+ */
+function snapshotGit(root: string, extraEnv?: Record<string, string>): SimpleGit {
+  const g = simpleGit(root, { unsafe: { allowUnsafeFsMonitor: true } })
+  return extraEnv ? g.env(safeGitEnv(extraEnv)) : g
+}
+
+/** 带上 SNAPSHOT_GIT_CONFIG 执行一条 raw 命令。数组参数不过 shell，`-c k=v` 安全。 */
+function snapshotRaw(g: SimpleGit, args: string[]): Promise<string> {
+  return g.raw([...SNAPSHOT_GIT_CONFIG, ...args])
+}
+
+/** `-z` 输出（NUL 分隔）拆成路径列表。不做 trim —— 文件名首尾的空格是合法的。 */
+function splitZ(out: string): string[] {
+  return out.split('\0').filter(Boolean)
 }
 
 // ---------------------------------------------------------------------------
@@ -212,7 +260,14 @@ export async function gitDiffFile(root: string, rel: string): Promise<GitDiff> {
     try { patch = await g.diff(['HEAD', '--', relPosix]) } catch { patch = '' }
     if (/^Binary files /m.test(patch) || patch.includes('GIT binary patch')) binary = true
   }
-  return { path: relPosix, original, modified, patch, hunkCount: countHunks(patch), binary }
+  // 记下这次给出去的每块指纹：用户之后点「还原块 N」时按指纹重新定位，
+  // 而不是按下标（下标会因为文件被改而指到别的块上）。
+  const fps = hunkFingerprints(patch)
+  rememberServedHunks(root, relPosix, fps)
+  return {
+    path: relPosix, original, modified, patch,
+    hunkCount: fps.length, binary, hunkFingerprints: fps,
+  }
 }
 
 export async function gitLog(root: string, n = 20): Promise<GitCommitInfo[]> {
@@ -314,6 +369,83 @@ export function countHunks(fileDiff: string): number {
   return splitFileDiff(fileDiff).hunks.length
 }
 
+/**
+ * 改动块指纹：`@@` 头（**丢掉起始行号、只留行数**）+ 整块正文的 sha1 前 12 位。
+ *
+ * 丢掉起始行号，是为了让「前面的块变长/变短导致本块整体位移」仍然认得出是同一
+ * 块；正文全量入哈希，是为了让内容只要动一个字符就判定成另一块。
+ */
+export function hunkFingerprint(hunkText: string): string {
+  const lines = hunkText.split('\n')
+  const head = lines[0] ?? ''
+  const m = /^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@(.*)$/.exec(head)
+  const normalizedHead = m ? `@@ -,${m[1] ?? '1'} +,${m[2] ?? '1'} @@${m[3] ?? ''}` : head
+  const body = [normalizedHead, ...lines.slice(1)].join('\n')
+  return createHash('sha1').update(body, 'utf8').digest('hex').slice(0, 12)
+}
+
+/** 一份 diff 里每个改动块的指纹，顺序与 splitFileDiff().hunks 一致。 */
+export function hunkFingerprints(fileDiff: string): string[] {
+  return splitFileDiff(fileDiff).hunks.map(hunkFingerprint)
+}
+
+// ---------------------------------------------------------------------------
+// 「已展示给用户的改动块」台账
+// ---------------------------------------------------------------------------
+
+/**
+ * 渲染层的 diff 刷新是防抖的，用户点「还原块 2」时点的是我们**上一次返回给它的
+ * 那份 diff** 里的第 2 块。如果这中间用户或 agent 又改了同一个文件，最新 diff 的
+ * 第 2 块很可能已经换成了别的内容，按下标直接 `git apply -R` 会静默撤销错误的
+ * 改动块（上下文碰巧对得上时连报错都没有）。
+ *
+ * 因此 gitDiffFile 每次都记下「这次给出去的每块指纹」，点击时先按指纹到最新
+ * diff 里重新定位。找不到就报「已变化，请刷新后重试」——**绝不回退到裸下标**。
+ */
+const servedHunks = new Map<string, string[]>()
+/** 台账上限，超出按最久未用淘汰（Map 的插入顺序即 LRU 顺序）。 */
+const SERVED_HUNKS_MAX = 200
+/** 改动块已漂移时统一的中文提示。 */
+const HUNK_STALE_ERROR = '该改动块已变化，请刷新后重试'
+
+function servedKey(root: string, relPosix: string): string {
+  return `${norm(root)} ${relPosix}`
+}
+
+function rememberServedHunks(root: string, relPosix: string, fps: string[]): void {
+  const key = servedKey(root, relPosix)
+  servedHunks.delete(key)
+  servedHunks.set(key, fps)
+  while (servedHunks.size > SERVED_HUNKS_MAX) {
+    const oldest = servedHunks.keys().next().value
+    if (oldest === undefined) break
+    servedHunks.delete(oldest)
+  }
+}
+
+/** 仅供测试：清空台账，模拟「主进程重启后没有任何已展示记录」。 */
+export function _resetServedHunks(): void {
+  servedHunks.clear()
+}
+
+/**
+ * 把「用户点的第 N 块」翻译成最新 diff 里的真实块，并生成可应用的补丁。
+ * expected 为调用方直接给出的指纹（IPC 以后透传时用），否则查台账。
+ */
+function resolveHunkPatch(
+  root: string, relPosix: string, fileDiff: string, hunkIndex: number, expected?: string
+): { patch: string } | { error: string } {
+  const want = expected || servedHunks.get(servedKey(root, relPosix))?.[hunkIndex]
+  // 没有指纹可比 = 我们从没把这份 diff 给出去过（或已被淘汰）。此时唯一安全的
+  // 做法是让用户刷新，绝不按下标猜。
+  if (!want) return { error: HUNK_STALE_ERROR }
+  const idx = splitFileDiff(fileDiff).hunks.findIndex(h => hunkFingerprint(h) === want)
+  if (idx < 0) return { error: HUNK_STALE_ERROR }
+  const patch = buildHunkPatch(fileDiff, idx)
+  if (!patch) return { error: HUNK_STALE_ERROR }
+  return { patch }
+}
+
 /** Build a minimal, applyable patch for a single hunk (header + one @@ block). */
 export function buildHunkPatch(fileDiff: string, hunkIndex: number): string | null {
   const { header, hunks } = splitFileDiff(fileDiff)
@@ -333,13 +465,17 @@ async function applyPatchString(root: string, patch: string, extraArgs: string[]
   }
 }
 
-/** Revert one hunk in the working tree (reverse-apply against HEAD diff). */
-export async function revertHunk(root: string, rel: string, hunkIndex: number): Promise<{ ok: boolean; error?: string }> {
+/** Revert one hunk in the working tree (reverse-apply against HEAD diff).
+ *  hunkIndex 是「上一次展示给用户的那份 diff」里的下标，服务端按指纹重新定位。 */
+export async function revertHunk(
+  root: string, rel: string, hunkIndex: number, expectedFingerprint?: string
+): Promise<{ ok: boolean; error?: string }> {
   try {
-    const fileDiff = await git(root).diff(['HEAD', '--', rel.replace(/\\/g, '/')])
-    const patch = buildHunkPatch(fileDiff, hunkIndex)
-    if (!patch) return { ok: false, error: '未找到该改动块' }
-    await applyPatchString(root, patch, ['-R'])
+    const relPosix = rel.replace(/\\/g, '/')
+    const fileDiff = await git(root).diff(['HEAD', '--', relPosix])
+    const located = resolveHunkPatch(root, relPosix, fileDiff, hunkIndex, expectedFingerprint)
+    if ('error' in located) return { ok: false, error: located.error }
+    await applyPatchString(root, located.patch, ['-R'])
     return { ok: true }
   } catch (e) {
     return { ok: false, error: (e as Error).message }
@@ -347,12 +483,15 @@ export async function revertHunk(root: string, rel: string, hunkIndex: number): 
 }
 
 /** Stage one hunk into the index (apply --cached against HEAD diff). */
-export async function stageHunk(root: string, rel: string, hunkIndex: number): Promise<{ ok: boolean; error?: string }> {
+export async function stageHunk(
+  root: string, rel: string, hunkIndex: number, expectedFingerprint?: string
+): Promise<{ ok: boolean; error?: string }> {
   try {
-    const fileDiff = await git(root).diff(['HEAD', '--', rel.replace(/\\/g, '/')])
-    const patch = buildHunkPatch(fileDiff, hunkIndex)
-    if (!patch) return { ok: false, error: '未找到该改动块' }
-    await applyPatchString(root, patch, ['--cached'])
+    const relPosix = rel.replace(/\\/g, '/')
+    const fileDiff = await git(root).diff(['HEAD', '--', relPosix])
+    const located = resolveHunkPatch(root, relPosix, fileDiff, hunkIndex, expectedFingerprint)
+    if ('error' in located) return { ok: false, error: located.error }
+    await applyPatchString(root, located.patch, ['--cached'])
     return { ok: true }
   } catch (e) {
     return { ok: false, error: (e as Error).message }
@@ -384,23 +523,22 @@ export function getLatestCheckpoint(root: string): { id: string; ts: number } | 
  * never throws.
  */
 export async function createCheckpoint(root: string): Promise<{ id: string; ts: number } | null> {
+  const tmpIndex = path.join(os.tmpdir(), `vibe-index-${randomUUID()}`)
   try {
     if (!(await isRepo(root))) return null
-    const tmpIndex = path.join(os.tmpdir(), `vibe-index-${randomUUID()}`)
-    const g = simpleGit(root).env(safeGitEnv({ ...FALLBACK_ENV, GIT_INDEX_FILE: tmpIndex }))
+    const g = snapshotGit(root, { ...FALLBACK_ENV, GIT_INDEX_FILE: tmpIndex })
     // Seed the temp index from HEAD when it exists (so unchanged tracked files
     // carry over), then stage everything (incl. untracked) on top.
-    const head = await g.revparse(['HEAD']).then(s => s.trim()).catch(() => '')
-    if (head) await g.raw(['read-tree', 'HEAD']).catch(() => {})
-    await g.raw(['add', '-A'])
-    const tree = (await g.raw(['write-tree'])).trim()
+    const head = await snapshotRaw(g, ['rev-parse', 'HEAD']).then(s => s.trim()).catch(() => '')
+    if (head) await snapshotRaw(g, ['read-tree', 'HEAD']).catch(() => {})
+    await snapshotRaw(g, ['add', '-A'])
+    const tree = (await snapshotRaw(g, ['write-tree'])).trim()
     const args = head
       ? ['commit-tree', tree, '-p', head, '-m', 'vibe-checkpoint']
       : ['commit-tree', tree, '-m', 'vibe-checkpoint']
-    const id = (await g.raw(args)).trim()
-    try { fs.unlinkSync(tmpIndex) } catch { /* ignore */ }
+    const id = (await snapshotRaw(g, args)).trim()
     // Protect the snapshot from GC + allow post-restart rollback.
-    await git(root).raw(['update-ref', CHECKPOINT_REF, id]).catch(() => {})
+    await snapshotRaw(snapshotGit(root), ['update-ref', CHECKPOINT_REF, id]).catch(() => {})
     const ts = await currentTs(root)
     const rec = { id, ts }
     checkpoints.set(norm(root), rec)
@@ -408,6 +546,17 @@ export async function createCheckpoint(root: string): Promise<{ id: string; ts: 
   } catch (e) {
     console.warn('[git] createCheckpoint failed:', (e as Error).message)
     return null
+  } finally {
+    // 临时 index 与它的锁文件必须无条件清理：write-tree 抛异常时旧代码会把这两个
+    // 文件永久留在临时目录里（每次失败泄漏一份）。
+    cleanupTmpIndex(tmpIndex)
+  }
+}
+
+/** 删除一次性 index 及其 `.lock`（git 中途失败时锁文件会留下）。 */
+function cleanupTmpIndex(tmpIndex: string): void {
+  for (const p of [tmpIndex, `${tmpIndex}.lock`]) {
+    try { fs.unlinkSync(p) } catch { /* 不存在或被占用，尽力而为 */ }
   }
 }
 
@@ -431,22 +580,29 @@ export async function rollbackToCheckpoint(root: string, id?: string): Promise<{
     if (!(await isRepo(root))) return { ok: false, error: '不是 git 仓库' }
     const target = id || checkpoints.get(norm(root))?.id || await readCheckpointRef(root)
     if (!target) return { ok: false, error: '没有可回滚的快照' }
-    const g = git(root)
+    // 与 createCheckpoint 用同一套配置覆盖：行尾不改写、中文名不转义。
+    const g = snapshotGit(root)
     // 1. Restore tracked + staged state to the snapshot. Files that existed in
     //    the snapshot (incl. ones that were untracked when snapshotted) get
     //    written back AND staged, so they become tracked.
-    await g.raw(['restore', '--staged', '--worktree', '--source', target, '--', '.'])
+    await snapshotRaw(g, ['restore', '--staged', '--worktree', '--source', target, '--', '.'])
     // 2. Delete files created AFTER the snapshot:
     //    2a. staged/tracked adds — `git diff` reports these as Added vs snapshot;
     //    2b. untracked files — anything still untracked can't have been in the
     //        snapshot (those got staged in step 1), so it was created after.
-    const trackedAdded = (await g.raw(['diff', '--diff-filter=A', '--name-only', target, '--']))
-      .split('\n').map(s => s.trim()).filter(Boolean)
-    const untracked = (await g.raw(['ls-files', '--others', '--exclude-standard']))
-      .split('\n').map(s => s.trim()).filter(Boolean)
+    //    `-z` 让文件名以 NUL 分隔原样输出，配合 quotepath=false 拿到的就是真实
+    //    路径，中文名文件才删得掉。
+    const trackedAdded = splitZ(await snapshotRaw(g, ['diff', '--diff-filter=A', '--name-only', '-z', target, '--']))
+    const untracked = splitZ(await snapshotRaw(g, ['ls-files', '--others', '--exclude-standard', '-z']))
+    const stuck: string[] = []
     for (const f of new Set([...trackedAdded, ...untracked])) {
-      try { fs.unlinkSync(path.join(root, f)) } catch { /* ignore */ }
+      const abs = path.join(root, f)
+      // 必须用 unlinkSync：Windows 上 fs.rmSync(path, { force: true }) 对含非 ASCII
+      // 字符的文件名会「不报错也不删」，正是中文名文件删不掉的第二个坑。
+      try { fs.unlinkSync(abs) } catch { /* 下面统一核对是否真的没了 */ }
+      if (fs.existsSync(abs)) stuck.push(f)
     }
+    if (stuck.length) console.warn('[git] rollback 未能删除的新增文件:', stuck.join(', '))
     return { ok: true }
   } catch (e) {
     return { ok: false, error: (e as Error).message }
@@ -471,14 +627,16 @@ export async function restoreFilesToCheckpoint(
     if (!(await isRepo(root))) return { ok: false, error: '不是 git 仓库' }
     const target = checkpointId || checkpoints.get(norm(root))?.id || await readCheckpointRef(root)
     if (!target) return { ok: false, error: '没有可用的快照' }
-    const g = git(root)
+    // 同样走快照配置：与 createCheckpoint / rollbackToCheckpoint 保持一致。
+    const g = snapshotGit(root)
     const rels = [...new Set(files.map(f => f.replace(/\\/g, '/').trim()).filter(Boolean))]
     let reverted = 0
     for (const rel of rels) {
-      const existed = await g.raw(['cat-file', '-e', `${target}:${rel}`]).then(() => true).catch(() => false)
+      const existed = await snapshotRaw(g, ['cat-file', '-e', `${target}:${rel}`]).then(() => true).catch(() => false)
       if (existed) {
-        await g.raw(['restore', '--staged', '--worktree', '--source', target, '--', rel]).catch(() => {})
+        await snapshotRaw(g, ['restore', '--staged', '--worktree', '--source', target, '--', rel]).catch(() => {})
       } else {
+        // 同上：中文名文件只有 unlinkSync 删得掉。
         try { fs.unlinkSync(path.join(root, rel)) } catch { /* already gone */ }
       }
       reverted++
