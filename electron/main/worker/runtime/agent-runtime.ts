@@ -23,6 +23,10 @@ export interface RuntimeTask {
   taskId: string
   /** 用户消息（提示词）。 */
   message: string
+  /** 会话历史前言（纯文本，protocol-agnostic）——invoker 用 buildConversationPreamble 压好后注入，
+   *  适配器在本轮 prompt 前拼上它。这些 CLI 每轮全新起进程、只收当轮一句话，进程间无会话记忆，
+   *  不带前言用户第二句就"失忆"（正是「第三方引擎对话上下文不关联」的根因）。无历史时为空串。 */
+  history?: string
   /** 工作目录（隔离沙箱，代码类任务在此读写）。 */
   cwd: string
   /** 助手消息 id——invoker 生成，流式 `AGENT_DELTA/DONE` 与落库共用同一个 id（否则流式与持久化分叉）。 */

@@ -13,7 +13,8 @@ import {
   looksTruncated,
   neutralizeTags,
   noopSignature,
-  shellDiagnosticFields
+  shellDiagnosticFields,
+  buildConversationPreamble
 } from './pure'
 
 describe('buildAutoTitle', () => {

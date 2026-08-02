@@ -148,7 +148,7 @@ export class OpenCodeRuntime implements AgentRuntime {
   readonly name = 'opencode'
 
   async run(task: RuntimeTask, sink: AgentSink): Promise<RuntimeResult> {
-    const { sessionId, cwd, model, providerId, providerName, upstream, message, signal, messageId, mcp } = task
+    const { sessionId, cwd, model, providerId, providerName, upstream, message, history, signal, messageId, mcp } = task
     const runStart = Date.now()
     const phase = (p: 'connecting' | 'thinking' | 'responding' | 'tool', label: string, toolName?: string): void =>
       sink.send(IPC.AGENT_PHASE, { sessionId, phase: p, label, startedAt: Date.now(), ...(toolName ? { toolName } : {}) })
@@ -169,7 +169,7 @@ export class OpenCodeRuntime implements AgentRuntime {
     const bin = resolved ?? 'opencode'
     // `--` 选项终止符：message(手机可控)是位置参数，首字符为 `-` 的提示词(「- 帮我…」「-h」)否则会被 opencode
     // 参数解析器当未知 flag → 任务失败/prompt 被吞。`--` 之后一律按位置参数，兼修首字符 `-` + 为参数注入加纵深。
-    const args = ['run', '--format', 'json', '--dir', cwd, '--auto', '-m', `ss/${model}`, '--', message]
+    const args = ['run', '--format', 'json', '--dir', cwd, '--auto', '-m', `ss/${model}`, '--', (history ?? '') + message]
 
     const env: NodeJS.ProcessEnv = {
       ...process.env,

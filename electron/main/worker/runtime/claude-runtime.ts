@@ -8,6 +8,7 @@ import type { AgentSink } from '../../agent/sink'
 import type { AgentRuntime, RuntimeTask, RuntimeResult } from './agent-runtime'
 import { killProcessTree } from './proc'
 import { MCP_TOOL_CALL_TIMEOUT_MS } from '../../agent/timeouts'
+import { summarizeTodoInput } from '../../agent/pure'
 
 /**
  * Claude Code 运行时（pc-agent-runtime / PRD 第四部分 §9）。
@@ -71,6 +72,7 @@ export interface ClaudeMappedEvent {
   kind: 'delta' | 'thinking' | 'tool' | 'session' | 'retry' | 'mcp' | 'result' | 'control' | 'ignore'
   text?: string
   toolName?: string
+  todoSummary?: string
   sessionId?: string
   isError?: boolean
   controlRequestId?: string
@@ -86,6 +88,7 @@ interface ClaudeContentBlock {
   type?: string
   text?: string
   name?: string
+  input?: unknown
 }
 interface ClaudeSDKMessage {
   type?: string
@@ -122,7 +125,10 @@ export function mapClaudeLine(line: string): ClaudeMappedEvent[] {
       for (const b of blocks) {
         if (b.type === 'text' && b.text) out.push({ kind: 'delta', text: b.text })
         else if (b.type === 'thinking') out.push({ kind: 'thinking' })
-        else if (b.type === 'tool_use') out.push({ kind: 'tool', toolName: b.name })
+        else if (b.type === 'tool_use') {
+          const todoSummary = b.name === 'TodoWrite' ? summarizeTodoInput(b.input) : null
+          out.push({ kind: 'tool', toolName: b.name, ...(todoSummary ? { todoSummary } : {}) })
+        }
       }
       return out
     }
@@ -160,7 +166,7 @@ export class ClaudeRuntime implements AgentRuntime {
   readonly name = 'claude'
 
   async run(task: RuntimeTask, sink: AgentSink): Promise<RuntimeResult> {
-    const { sessionId, cwd, model, providerId, providerName, upstream, message, signal, messageId, mcp } = task
+    const { sessionId, cwd, model, providerId, providerName, upstream, message, history, signal, messageId, mcp } = task
     const runStart = Date.now()
     const phase = (p: 'connecting' | 'thinking' | 'responding' | 'tool', label: string, toolName?: string): void =>
       sink.send(IPC.AGENT_PHASE, { sessionId, phase: p, label, startedAt: Date.now(), ...(toolName ? { toolName } : {}) })
@@ -268,7 +274,7 @@ export class ClaudeRuntime implements AgentRuntime {
     // 喂 prompt：单行 JSON user 消息 + 换行；发完**不关 stdin**（留着回 control_request）。
     const userMsg = JSON.stringify({
       type: 'user',
-      message: { role: 'user', content: [{ type: 'text', text: message }] },
+      message: { role: 'user', content: [{ type: 'text', text: (history ?? '') + message }] },
     })
     try {
       child.stdin.write(userMsg + '\n')
@@ -321,7 +327,7 @@ export class ClaudeRuntime implements AgentRuntime {
             if (!started) phase('thinking', '思考中…')
             break
           case 'tool':
-            phase('tool', `执行 ${ev.toolName ?? '工具'}…`, ev.toolName)
+            phase('tool', ev.todoSummary || `执行 ${ev.toolName ?? '工具'}…`, ev.toolName)
             break
           case 'retry': {
             // 让退避期可见：否则用户面对的是几十秒无任何反馈的「假死」。

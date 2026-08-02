@@ -6,12 +6,13 @@ import { IPC, RUNTIME_ADAPTERS_READY, type RuntimeKind } from '../../../src/shar
 import { getSettings, getProviders } from '../services/store'
 import { effectiveProtocol, withApiVersion } from '../services/llm'
 import { readSessionWorkingDir } from './engine'
+import { buildConversationPreamble } from './pure'
 import { makeWindowSink } from './sink'
 import type { AgentRuntime, RuntimeTask } from '../worker/runtime/agent-runtime'
 import { ClaudeRuntime } from '../worker/runtime/claude-runtime'
 import { OpenCodeRuntime } from '../worker/runtime/opencode-runtime'
 import { ensureBridgeStarted, registerRun, unregisterRun, getRunToolCalls } from '../services/mcp-bridge'
-import { dbRun, dbGet } from '../db/sqlite'
+import { dbRun, dbGet, dbAll } from '../db/sqlite'
 
 /**
  * 本地 Agent 运行时入口（PRD 第四部分·Agent 运行时底层升级，去 BFF 版）。
@@ -120,6 +121,21 @@ export async function runViaRuntime(args: RuntimeRunArgs, win: BrowserWindow): P
     }
   }
 
+  // 读会话历史，压成纯文本前言（修「第三方引擎对话上下文不关联」）。**必须在落 user 行之前读**，
+  // 这样取到的都是真正的历史轮次，无需切掉最后一行。只取 user/assistant 两类、正文非空。
+  // 预算刻意保守（6000 tok ≈ 24K 字符）：opencode 把 prompt 作为 argv 位置参数传，Windows CreateProcess
+  // 命令行上限约 32K 字符，历史 + 本轮消息 + 其余 argv 必须一起塞得下，太长会直接把命令行撑爆起不来。
+  let history = ''
+  try {
+    const priorTurns = dbAll<{ role: 'user' | 'assistant'; content: string }>(
+      `SELECT role, content FROM messages WHERE session_id = ? AND role IN ('user','assistant') ORDER BY created_at ASC LIMIT 200`,
+      [sessionId]
+    )
+    history = buildConversationPreamble(priorTurns, { budgetTokens: 6000 })
+  } catch (e) {
+    console.warn('[runtime] 读历史失败，本轮无上下文前言：', (e as Error).message)
+  }
+
   // 落 user 行（与 engine 一致，非 groupTurn）——run 前落，重开对话不丢提问。
   try {
     dbRun(`INSERT INTO messages (id, session_id, role, content, attachments, created_at) VALUES (?, ?, 'user', ?, ?, ?)`, [
@@ -160,6 +176,7 @@ export async function runViaRuntime(args: RuntimeRunArgs, win: BrowserWindow): P
     sessionId,
     taskId,
     message,
+    history,
     cwd,
     messageId,
     model: modelId,
